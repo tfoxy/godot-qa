@@ -1,0 +1,18 @@
+{
+  "name": "process_exit_strict_failure_demo",
+  "scene": "res://ui/main_menu.tscn",
+  "viewport": {
+    "width": 1280,
+    "height": 720
+  },
+  "steps": [
+    {
+      "wait_frames": 5
+    }
+  ],
+  "assert": [
+    {
+      "no_errors": true
+    }
+  ]
+}

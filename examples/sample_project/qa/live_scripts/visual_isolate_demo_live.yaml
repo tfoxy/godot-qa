@@ -1,0 +1,42 @@
+{
+  "name": "visual_isolate_demo_live",
+  "steps": [
+    {
+      "session_start": {
+        "scene": "res://ui/fixtures/visual_isolate_demo.tscn",
+        "viewport": "1280x720",
+        "fastest": true
+      }
+    },
+    {
+      "wait": {
+        "frames": 3
+      }
+    },
+    {
+      "assert": {
+        "state_matches": {
+          "source": "provider",
+          "provider": "visual_isolate_demo_layers",
+          "matches": [
+            {
+              "path": "layers.0.id",
+              "operator": "equals",
+              "expected": "red_panel"
+            },
+            {
+              "path": "layers.1.id",
+              "operator": "equals",
+              "expected": "blue_panel"
+            },
+            {
+              "path": "no_visible_debug_overlay",
+              "operator": "equals",
+              "expected": true
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

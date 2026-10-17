@@ -1,0 +1,60 @@
+{
+  "name": "drive_policy_steer_demo",
+  "scene": "res://ui/fixtures/drive_policy_demo.tscn",
+  "determinism": { "fixed_fps": 60, "seed": 123, "test_mode": true },
+  "snapshots": { "save_tree": true, "save_logs": true },
+  "steps": [
+    { "wait_frames": 5 },
+    {
+      "drive_policy": {
+        "policy": "builtin:steer_toward",
+        "params": {
+          "node": "qa:steer_actor",
+          "target": "qa:steer_target",
+          "tolerance": 24.0
+        },
+        "devices": [0],
+        "max_frames": 600,
+        "tick_every_frames": 6,
+        "until": {
+          "source": "method",
+          "target": "qa:drive_policy_demo",
+          "method": "get_qa_steer_state",
+          "path": "arrived_target",
+          "operator": "equals",
+          "expected": true
+        }
+      }
+    },
+    {
+      "drive_policy": {
+        "policy": "steer_home_policy",
+        "devices": [0],
+        "max_frames": 600,
+        "tick_every_frames": 6,
+        "until": {
+          "source": "method",
+          "target": "qa:drive_policy_demo",
+          "method": "get_qa_steer_state",
+          "path": "arrived_home",
+          "operator": "equals",
+          "expected": true
+        }
+      }
+    }
+  ],
+  "assert": [
+    {
+      "state_matches": {
+        "source": "method",
+        "target": "qa:drive_policy_demo",
+        "method": "get_qa_steer_state",
+        "matches": [
+          { "path": "arrived_home", "operator": "equals", "expected": true },
+          { "path": "home_distance", "operator": "less_than", "expected": 25.0 }
+        ]
+      }
+    },
+    { "no_errors": true }
+  ]
+}

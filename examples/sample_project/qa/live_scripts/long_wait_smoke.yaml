@@ -1,0 +1,5 @@
+name: long_wait_smoke
+steps:
+  - wait:
+      frames: 360
+  - errors: true

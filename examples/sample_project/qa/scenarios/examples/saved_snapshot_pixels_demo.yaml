@@ -1,0 +1,33 @@
+name: saved_snapshot_pixels_demo
+scene: res://ui/fixtures/saved_snapshot_pixels_demo.tscn
+
+viewport:
+  width: 1280
+  height: 720
+
+determinism:
+  fixed_fps: 60
+  seed: 123
+  locale: en
+  test_mode: true
+
+snapshots:
+  save_tree: true
+  save_ui: true
+  save_logs: true
+  save_screenshot: true
+
+steps:
+  - wait_frames: 2
+  - call_method:
+      target: qa:saved_snapshot_pixels_demo
+      method: qa_show_visible_target
+  - wait_frames: 1
+  - snapshot: saved-pixels
+
+assert:
+  - saved_snapshot_pixels:
+      target: qa:saved_pixels_visible_target
+      snapshot: saved-pixels
+      min_ratio: 0.45
+  - no_errors: true

@@ -1,0 +1,17 @@
+{
+  "name": "step_assert_alias_demo",
+  "scene": "res://ui/main_menu.tscn",
+  "steps": [
+    { "wait_frames": 5 },
+    {
+      "assert": [
+        { "exists": "qa:primary_start" },
+        { "visible": "qa:primary_start" },
+        { "text_contains": { "target": "qa:primary_start", "expected": "Start" } }
+      ]
+    }
+  ],
+  "assert": [
+    { "no_errors": true }
+  ]
+}

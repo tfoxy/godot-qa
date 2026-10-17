@@ -1,0 +1,11 @@
+name: screenshot_heavy_regression_gate
+purpose: Regression gate for screenshot-backed visual scenarios that require real rendered pixels.
+required_scenarios:
+  - visual_occlusion_demo
+  - saved_snapshot_pixels_demo
+  - visual_metadata_rect_demo
+  - visual_line_indicator_demo
+recommended_manual_checks:
+  - Inspect summary.json and confirm each child records launch_display metadata.
+  - Inspect summary.json and confirm each run_root points at preserved screenshot artifacts.
+  - Review screenshot evidence and diffs before approving any baseline updates.

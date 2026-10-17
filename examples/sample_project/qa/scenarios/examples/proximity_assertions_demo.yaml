@@ -1,0 +1,33 @@
+name: proximity_assertions_demo
+scene: res://ui/main_menu.tscn
+
+viewport:
+  width: 1280
+  height: 720
+
+determinism:
+  fixed_fps: 60
+  seed: 123
+  locale: en
+  test_mode: true
+
+snapshots:
+  save_tree: true
+  save_ui: true
+  save_logs: true
+
+steps:
+  - wait_frames: 5
+  - call_method:
+      target: qa:main_menu
+      method: qa_proximity_place_far
+  - tap_action: qa_interact
+  - wait_frames: 1
+
+assert:
+  - distance:
+      a: qa:actor
+      b: qa:target
+      min: 96
+  - not_exists: qa:interaction_result
+  - no_errors: true

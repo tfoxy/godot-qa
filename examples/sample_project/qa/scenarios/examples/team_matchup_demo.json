@@ -1,0 +1,54 @@
+{
+  "name": "team_matchup_demo",
+  "scene": "res://ui/fixtures/team_matchup_demo.tscn",
+  "determinism": { "fixed_fps": 60, "seed": 123, "test_mode": true },
+  "snapshots": { "save_tree": true, "save_logs": true },
+  "steps": [
+    { "wait_frames": 5 },
+    {
+      "drive_policy": {
+        "policy": "team_matchup",
+        "params": {
+          "teams": {
+            "a": { "devices": [0, 1], "style": "rush" },
+            "b": { "devices": [2, 3], "style": "hold" }
+          }
+        },
+        "devices": [0, 1, 2, 3],
+        "max_frames": 600,
+        "tick_every_frames": 6,
+        "until": {
+          "source": "method",
+          "target": "qa:team_matchup_demo",
+          "method": "get_qa_team_matchup_state",
+          "path": "decided",
+          "operator": "equals",
+          "expected": true
+        }
+      }
+    },
+    {
+      "record_state": {
+        "name": "match_outcome",
+        "source": "method",
+        "target": "qa:team_matchup_demo",
+        "method": "get_qa_team_matchup_state",
+        "path": "outcome"
+      }
+    }
+  ],
+  "assert": [
+    {
+      "state_matches": {
+        "source": "method",
+        "target": "qa:team_matchup_demo",
+        "method": "get_qa_team_matchup_state",
+        "matches": [
+          { "path": "outcome.winner", "operator": "equals", "expected": "a" },
+          { "path": "decided", "operator": "equals", "expected": true }
+        ]
+      }
+    },
+    { "no_errors": true }
+  ]
+}

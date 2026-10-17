@@ -1,0 +1,15 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://ui/fixtures/drive_policy_demo.gd" id="1"]
+
+[node name="DrivePolicyDemo" type="Node2D"]
+script = ExtResource("1")
+
+[node name="SteerActor" type="Node2D" parent="."]
+position = Vector2(120, 300)
+
+[node name="SteerTarget" type="Node2D" parent="."]
+position = Vector2(480, 300)
+
+[node name="SteerHome" type="Node2D" parent="."]
+position = Vector2(200, 120)

@@ -1,0 +1,6 @@
+name: malformed_bundle_demo
+purpose: Intentionally failing fixture for bundle negative validation coverage.
+required_scenarios:
+  - missing_required_scenario_for_bundle_demo
+recommended_manual_checks:
+  - Confirm the failure payload names the missing required scenario and this manifest path.

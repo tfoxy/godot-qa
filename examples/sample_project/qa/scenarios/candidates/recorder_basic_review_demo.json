@@ -1,0 +1,48 @@
+{
+  "assert": [],
+  "name": "recorder_basic_review_demo",
+  "review": {
+    "artifacts": {
+      "recording": ".qa/artifacts/recordings/recorder_basic_review_demo/1777781820Z/recording.json"
+    },
+    "generated_by": "scenario record",
+    "status": "needs_review",
+    "suggested_assertions": [
+      {
+        "assertion": {
+          "focused": "qa:start_button"
+        },
+        "id": "focused-final-owner",
+        "kind": "positive_focus",
+        "reason": "final focus owner at recording end",
+        "target": {
+          "locator": "qa:start_button"
+        }
+      },
+      {
+        "assertion": {
+          "no_errors": true
+        },
+        "id": "no-errors-final",
+        "kind": "positive_no_errors",
+        "reason": "final errors snapshot contained no runtime errors"
+      }
+    ],
+    "unconverted_events": []
+  },
+  "scene": "res://ui/main_menu.tscn",
+  "steps": [
+    {
+      "wait_frames": 5
+    },
+    {
+      "snapshot": "initial"
+    },
+    {
+      "wait_frames": 5
+    },
+    {
+      "snapshot": "final"
+    }
+  ]
+}

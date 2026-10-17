@@ -1,0 +1,19 @@
+name: audio_unavailable_capture_bus_failure_demo
+scene: res://ui/fixtures/audio_demo.tscn
+
+determinism:
+  fixed_fps: 60
+  seed: 123
+  locale: en
+  test_mode: true
+
+steps:
+  - wait_frames: 1
+  - audio_capture:
+      name: missing_bus_capture
+      duration_seconds: 0.1
+      bus: MissingQABus
+      analyze: true
+
+assert:
+  - no_errors: true

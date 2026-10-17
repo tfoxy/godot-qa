@@ -1,0 +1,1022 @@
+{
+  "assert": [],
+  "name": "recorder_negative_suggestions_demo",
+  "review": {
+    "artifacts": {
+      "recording": ".qa/artifacts/recordings/recorder_negative_suggestions_demo/1777781798Z/recording.json"
+    },
+    "generated_by": "scenario record",
+    "status": "needs_review",
+    "suggested_assertions": [
+      {
+        "assertion": {
+          "no_errors": true
+        },
+        "id": "no-errors-final",
+        "kind": "positive_no_errors",
+        "reason": "final errors snapshot contained no runtime errors"
+      },
+      {
+        "assertion": {
+          "text_equals": {
+            "expected": "invalid:no-op",
+            "snapshot": "invalid_action_post",
+            "target": "qa:qa_invalid_action_result"
+          }
+        },
+        "evidence": {
+          "action": "qa_invalid_action",
+          "post_position": [
+            120.0,
+            900.0
+          ],
+          "post_text": "invalid:no-op",
+          "pre_position": [
+            120.0,
+            900.0
+          ],
+          "pre_text": "invalid:no-op"
+        },
+        "id": "negative-noop-0",
+        "input_moment": {
+          "action": "qa_invalid_action",
+          "command": "input.tap_action",
+          "frame": 31,
+          "index": 0,
+          "snapshot": "invalid_action"
+        },
+        "kind": "negative_noop",
+        "reason": "input left the explicit text-bearing target unchanged",
+        "snapshots": {
+          "post": "invalid_action_post",
+          "pre": "invalid_action_pre"
+        },
+        "target": {
+          "locator": "qa:qa_invalid_action_result"
+        }
+      },
+      {
+        "assertion": {
+          "visible_pixels": {
+            "min_ratio": 0.25,
+            "snapshot": "invalid_action_post",
+            "target": "qa:qa_invalid_action_result"
+          }
+        },
+        "evidence": {
+          "global_rect": [
+            120.0,
+            900.0,
+            580.0,
+            40.0
+          ],
+          "screenshot": ".qa/artifacts/recordings/recorder_negative_suggestions_demo/1777781798Z/snapshots/invalid_action_post/screenshot.png",
+          "visible": true
+        },
+        "id": "negative-visible-pixels-0",
+        "input_moment": {
+          "action": "qa_invalid_action",
+          "command": "input.tap_action",
+          "frame": 31,
+          "index": 0,
+          "snapshot": "invalid_action"
+        },
+        "kind": "negative_visibility_guard",
+        "reason": "input left the explicit target visible in a screenshot-backed snapshot",
+        "snapshots": {
+          "post": "invalid_action_post",
+          "pre": "invalid_action_pre"
+        },
+        "target": {
+          "locator": "qa:qa_invalid_action_result",
+          "role": "invalid_action_result"
+        }
+      },
+      {
+        "assertion": {
+          "not_occluded": {
+            "min_ratio": 0.0001,
+            "snapshot": "invalid_action_post",
+            "target": "qa:qa_invalid_action_result"
+          }
+        },
+        "evidence": {
+          "global_rect": [
+            120.0,
+            900.0,
+            580.0,
+            40.0
+          ],
+          "screenshot": ".qa/artifacts/recordings/recorder_negative_suggestions_demo/1777781798Z/snapshots/invalid_action_post/screenshot.png",
+          "visible": true
+        },
+        "id": "negative-not-occluded-0",
+        "input_moment": {
+          "action": "qa_invalid_action",
+          "command": "input.tap_action",
+          "frame": 31,
+          "index": 0,
+          "snapshot": "invalid_action"
+        },
+        "kind": "negative_not_occluded",
+        "reason": "input left the explicit target visible and eligible for screenshot-backed occlusion review",
+        "snapshots": {
+          "post": "invalid_action_post",
+          "pre": "invalid_action_pre"
+        },
+        "target": {
+          "locator": "qa:qa_invalid_action_result",
+          "role": "invalid_action_result"
+        }
+      },
+      {
+        "assertion": {
+          "text_equals": {
+            "expected": "interaction:cancelled",
+            "snapshot": "cancel_post",
+            "target": "qa:qa_interaction_result"
+          }
+        },
+        "evidence": {
+          "action": "qa_cancel",
+          "post_text": "interaction:cancelled",
+          "pre_text": "interaction:idle"
+        },
+        "id": "negative-cancel-1",
+        "input_moment": {
+          "action": "qa_cancel",
+          "command": "input.tap_action",
+          "frame": 65,
+          "index": 1,
+          "snapshot": "cancel"
+        },
+        "kind": "negative_cancellation_path",
+        "reason": "cancel-like input changed an explicit recorder target into a stable cancellation state",
+        "snapshots": {
+          "post": "cancel_post",
+          "pre": "cancel_pre"
+        },
+        "target": {
+          "locator": "qa:qa_interaction_result",
+          "role": "interaction_result"
+        }
+      },
+      {
+        "assertion": {
+          "visible_pixels": {
+            "min_ratio": 0.25,
+            "snapshot": "cancel_post",
+            "target": "qa:qa_interaction_result"
+          }
+        },
+        "evidence": {
+          "global_rect": [
+            120.0,
+            950.0,
+            580.0,
+            40.0
+          ],
+          "screenshot": ".qa/artifacts/recordings/recorder_negative_suggestions_demo/1777781798Z/snapshots/cancel_post/screenshot.png",
+          "visible": true
+        },
+        "id": "negative-visible-pixels-1",
+        "input_moment": {
+          "action": "qa_cancel",
+          "command": "input.tap_action",
+          "frame": 65,
+          "index": 1,
+          "snapshot": "cancel"
+        },
+        "kind": "negative_visibility_guard",
+        "reason": "input left the explicit target visible in a screenshot-backed snapshot",
+        "snapshots": {
+          "post": "cancel_post",
+          "pre": "cancel_pre"
+        },
+        "target": {
+          "locator": "qa:qa_interaction_result",
+          "role": "interaction_result"
+        }
+      },
+      {
+        "assertion": {
+          "not_occluded": {
+            "min_ratio": 0.0001,
+            "snapshot": "cancel_post",
+            "target": "qa:qa_interaction_result"
+          }
+        },
+        "evidence": {
+          "global_rect": [
+            120.0,
+            950.0,
+            580.0,
+            40.0
+          ],
+          "screenshot": ".qa/artifacts/recordings/recorder_negative_suggestions_demo/1777781798Z/snapshots/cancel_post/screenshot.png",
+          "visible": true
+        },
+        "id": "negative-not-occluded-1",
+        "input_moment": {
+          "action": "qa_cancel",
+          "command": "input.tap_action",
+          "frame": 65,
+          "index": 1,
+          "snapshot": "cancel"
+        },
+        "kind": "negative_not_occluded",
+        "reason": "input left the explicit target visible and eligible for screenshot-backed occlusion review",
+        "snapshots": {
+          "post": "cancel_post",
+          "pre": "cancel_pre"
+        },
+        "target": {
+          "locator": "qa:qa_interaction_result",
+          "role": "interaction_result"
+        }
+      },
+      {
+        "assertion": {
+          "visible_pixels": {
+            "min_ratio": 0.25,
+            "snapshot": "interact_too_far_post",
+            "target": "qa:qa_interactable"
+          }
+        },
+        "evidence": {
+          "global_rect": [
+            580.0,
+            460.0,
+            80.0,
+            80.0
+          ],
+          "screenshot": ".qa/artifacts/recordings/recorder_negative_suggestions_demo/1777781798Z/snapshots/interact_too_far_post/screenshot.png",
+          "visible": true
+        },
+        "id": "negative-visible-pixels-2",
+        "input_moment": {
+          "action": "qa_interact",
+          "command": "input.tap_action",
+          "frame": 100,
+          "index": 2,
+          "snapshot": "interact_too_far"
+        },
+        "kind": "negative_visibility_guard",
+        "reason": "input left the explicit target visible in a screenshot-backed snapshot",
+        "snapshots": {
+          "post": "interact_too_far_post",
+          "pre": "interact_too_far_pre"
+        },
+        "target": {
+          "locator": "qa:qa_interactable",
+          "role": "interactable"
+        }
+      },
+      {
+        "assertion": {
+          "not_occluded": {
+            "min_ratio": 0.0001,
+            "snapshot": "interact_too_far_post",
+            "target": "qa:qa_interactable"
+          }
+        },
+        "evidence": {
+          "global_rect": [
+            580.0,
+            460.0,
+            80.0,
+            80.0
+          ],
+          "screenshot": ".qa/artifacts/recordings/recorder_negative_suggestions_demo/1777781798Z/snapshots/interact_too_far_post/screenshot.png",
+          "visible": true
+        },
+        "id": "negative-not-occluded-2",
+        "input_moment": {
+          "action": "qa_interact",
+          "command": "input.tap_action",
+          "frame": 100,
+          "index": 2,
+          "snapshot": "interact_too_far"
+        },
+        "kind": "negative_not_occluded",
+        "reason": "input left the explicit target visible and eligible for screenshot-backed occlusion review",
+        "snapshots": {
+          "post": "interact_too_far_post",
+          "pre": "interact_too_far_pre"
+        },
+        "target": {
+          "locator": "qa:qa_interactable",
+          "role": "interactable"
+        }
+      },
+      {
+        "assertion": {
+          "distance": {
+            "a": "qa:qa_actor",
+            "b": "qa:qa_interactable",
+            "min": 240.0
+          }
+        },
+        "evidence": {
+          "actor": "qa:qa_actor",
+          "actor_position": [
+            210.0,
+            460.0
+          ],
+          "observed_distance": 370.0,
+          "range": 240.0,
+          "target_position": [
+            580.0,
+            460.0
+          ],
+          "threshold": "min"
+        },
+        "id": "negative-proximity-2",
+        "input_moment": {
+          "action": "qa_interact",
+          "command": "input.tap_action",
+          "frame": 100,
+          "index": 2,
+          "snapshot": "interact_too_far"
+        },
+        "kind": "negative_proximity_requirement",
+        "reason": "interaction target declares an explicit proximity target and range",
+        "snapshots": {
+          "post": "interact_too_far_post",
+          "pre": "interact_too_far_pre"
+        },
+        "target": {
+          "locator": "qa:qa_interactable",
+          "role": "interactable"
+        }
+      },
+      {
+        "assertion": {
+          "within_limits": {
+            "max": 144.0,
+            "min": 0,
+            "property": "position_delta",
+            "sample_every_frames": 1,
+            "target": "qa:qa_actor",
+            "window_frames": 1
+          }
+        },
+        "evidence": {
+          "bounds": {
+            "max_right": 144.0
+          },
+          "observed_delta": 24.0,
+          "post_position": [
+            114.0,
+            300.0
+          ],
+          "pre_position": [
+            90.0,
+            300.0
+          ]
+        },
+        "id": "negative-bounded-movement-3",
+        "input_moment": {
+          "action": "qa_move_right",
+          "command": "input.tap_action",
+          "frame": 135,
+          "index": 3,
+          "snapshot": "move_right_1"
+        },
+        "kind": "negative_bounded_movement",
+        "reason": "target movement stayed within explicit recorder bounds metadata",
+        "snapshots": {
+          "post": "move_right_1_post",
+          "pre": "move_right_1_pre"
+        },
+        "target": {
+          "locator": "qa:qa_actor",
+          "role": "actor"
+        }
+      },
+      {
+        "assertion": {
+          "visible_pixels": {
+            "min_ratio": 0.25,
+            "snapshot": "move_right_1_post",
+            "target": "qa:qa_actor"
+          }
+        },
+        "evidence": {
+          "global_rect": [
+            234.0,
+            460.0,
+            80.0,
+            80.0
+          ],
+          "screenshot": ".qa/artifacts/recordings/recorder_negative_suggestions_demo/1777781798Z/snapshots/move_right_1_post/screenshot.png",
+          "visible": true
+        },
+        "id": "negative-visible-pixels-3",
+        "input_moment": {
+          "action": "qa_move_right",
+          "command": "input.tap_action",
+          "frame": 135,
+          "index": 3,
+          "snapshot": "move_right_1"
+        },
+        "kind": "negative_visibility_guard",
+        "reason": "input left the explicit target visible in a screenshot-backed snapshot",
+        "snapshots": {
+          "post": "move_right_1_post",
+          "pre": "move_right_1_pre"
+        },
+        "target": {
+          "locator": "qa:qa_actor",
+          "role": "actor"
+        }
+      },
+      {
+        "assertion": {
+          "not_occluded": {
+            "min_ratio": 0.0001,
+            "snapshot": "move_right_1_post",
+            "target": "qa:qa_actor"
+          }
+        },
+        "evidence": {
+          "global_rect": [
+            234.0,
+            460.0,
+            80.0,
+            80.0
+          ],
+          "screenshot": ".qa/artifacts/recordings/recorder_negative_suggestions_demo/1777781798Z/snapshots/move_right_1_post/screenshot.png",
+          "visible": true
+        },
+        "id": "negative-not-occluded-3",
+        "input_moment": {
+          "action": "qa_move_right",
+          "command": "input.tap_action",
+          "frame": 135,
+          "index": 3,
+          "snapshot": "move_right_1"
+        },
+        "kind": "negative_not_occluded",
+        "reason": "input left the explicit target visible and eligible for screenshot-backed occlusion review",
+        "snapshots": {
+          "post": "move_right_1_post",
+          "pre": "move_right_1_pre"
+        },
+        "target": {
+          "locator": "qa:qa_actor",
+          "role": "actor"
+        }
+      },
+      {
+        "assertion": {
+          "visible_pixels": {
+            "min_ratio": 0.25,
+            "snapshot": "move_right_2_post",
+            "target": "qa:qa_actor"
+          }
+        },
+        "evidence": {
+          "global_rect": [
+            258.0,
+            460.0,
+            80.0,
+            80.0
+          ],
+          "screenshot": ".qa/artifacts/recordings/recorder_negative_suggestions_demo/1777781798Z/snapshots/move_right_2_post/screenshot.png",
+          "visible": true
+        },
+        "id": "negative-visible-pixels-4",
+        "input_moment": {
+          "action": "qa_move_right",
+          "command": "input.tap_action",
+          "frame": 171,
+          "index": 4,
+          "snapshot": "move_right_2"
+        },
+        "kind": "negative_visibility_guard",
+        "reason": "input left the explicit target visible in a screenshot-backed snapshot",
+        "snapshots": {
+          "post": "move_right_2_post",
+          "pre": "move_right_2_pre"
+        },
+        "target": {
+          "locator": "qa:qa_actor",
+          "role": "actor"
+        }
+      },
+      {
+        "assertion": {
+          "not_occluded": {
+            "min_ratio": 0.0001,
+            "snapshot": "move_right_2_post",
+            "target": "qa:qa_actor"
+          }
+        },
+        "evidence": {
+          "global_rect": [
+            258.0,
+            460.0,
+            80.0,
+            80.0
+          ],
+          "screenshot": ".qa/artifacts/recordings/recorder_negative_suggestions_demo/1777781798Z/snapshots/move_right_2_post/screenshot.png",
+          "visible": true
+        },
+        "id": "negative-not-occluded-4",
+        "input_moment": {
+          "action": "qa_move_right",
+          "command": "input.tap_action",
+          "frame": 171,
+          "index": 4,
+          "snapshot": "move_right_2"
+        },
+        "kind": "negative_not_occluded",
+        "reason": "input left the explicit target visible and eligible for screenshot-backed occlusion review",
+        "snapshots": {
+          "post": "move_right_2_post",
+          "pre": "move_right_2_pre"
+        },
+        "target": {
+          "locator": "qa:qa_actor",
+          "role": "actor"
+        }
+      },
+      {
+        "assertion": {
+          "visible_pixels": {
+            "min_ratio": 0.25,
+            "snapshot": "move_right_3_post",
+            "target": "qa:qa_actor"
+          }
+        },
+        "evidence": {
+          "global_rect": [
+            282.0,
+            460.0,
+            80.0,
+            80.0
+          ],
+          "screenshot": ".qa/artifacts/recordings/recorder_negative_suggestions_demo/1777781798Z/snapshots/move_right_3_post/screenshot.png",
+          "visible": true
+        },
+        "id": "negative-visible-pixels-5",
+        "input_moment": {
+          "action": "qa_move_right",
+          "command": "input.tap_action",
+          "frame": 206,
+          "index": 5,
+          "snapshot": "move_right_3"
+        },
+        "kind": "negative_visibility_guard",
+        "reason": "input left the explicit target visible in a screenshot-backed snapshot",
+        "snapshots": {
+          "post": "move_right_3_post",
+          "pre": "move_right_3_pre"
+        },
+        "target": {
+          "locator": "qa:qa_actor",
+          "role": "actor"
+        }
+      },
+      {
+        "assertion": {
+          "not_occluded": {
+            "min_ratio": 0.0001,
+            "snapshot": "move_right_3_post",
+            "target": "qa:qa_actor"
+          }
+        },
+        "evidence": {
+          "global_rect": [
+            282.0,
+            460.0,
+            80.0,
+            80.0
+          ],
+          "screenshot": ".qa/artifacts/recordings/recorder_negative_suggestions_demo/1777781798Z/snapshots/move_right_3_post/screenshot.png",
+          "visible": true
+        },
+        "id": "negative-not-occluded-5",
+        "input_moment": {
+          "action": "qa_move_right",
+          "command": "input.tap_action",
+          "frame": 206,
+          "index": 5,
+          "snapshot": "move_right_3"
+        },
+        "kind": "negative_not_occluded",
+        "reason": "input left the explicit target visible and eligible for screenshot-backed occlusion review",
+        "snapshots": {
+          "post": "move_right_3_post",
+          "pre": "move_right_3_pre"
+        },
+        "target": {
+          "locator": "qa:qa_actor",
+          "role": "actor"
+        }
+      },
+      {
+        "assertion": {
+          "visible_pixels": {
+            "min_ratio": 0.25,
+            "snapshot": "move_right_4_post",
+            "target": "qa:qa_actor"
+          }
+        },
+        "evidence": {
+          "global_rect": [
+            306.0,
+            460.0,
+            80.0,
+            80.0
+          ],
+          "screenshot": ".qa/artifacts/recordings/recorder_negative_suggestions_demo/1777781798Z/snapshots/move_right_4_post/screenshot.png",
+          "visible": true
+        },
+        "id": "negative-visible-pixels-6",
+        "input_moment": {
+          "action": "qa_move_right",
+          "command": "input.tap_action",
+          "frame": 241,
+          "index": 6,
+          "snapshot": "move_right_4"
+        },
+        "kind": "negative_visibility_guard",
+        "reason": "input left the explicit target visible in a screenshot-backed snapshot",
+        "snapshots": {
+          "post": "move_right_4_post",
+          "pre": "move_right_4_pre"
+        },
+        "target": {
+          "locator": "qa:qa_actor",
+          "role": "actor"
+        }
+      },
+      {
+        "assertion": {
+          "not_occluded": {
+            "min_ratio": 0.0001,
+            "snapshot": "move_right_4_post",
+            "target": "qa:qa_actor"
+          }
+        },
+        "evidence": {
+          "global_rect": [
+            306.0,
+            460.0,
+            80.0,
+            80.0
+          ],
+          "screenshot": ".qa/artifacts/recordings/recorder_negative_suggestions_demo/1777781798Z/snapshots/move_right_4_post/screenshot.png",
+          "visible": true
+        },
+        "id": "negative-not-occluded-6",
+        "input_moment": {
+          "action": "qa_move_right",
+          "command": "input.tap_action",
+          "frame": 241,
+          "index": 6,
+          "snapshot": "move_right_4"
+        },
+        "kind": "negative_not_occluded",
+        "reason": "input left the explicit target visible and eligible for screenshot-backed occlusion review",
+        "snapshots": {
+          "post": "move_right_4_post",
+          "pre": "move_right_4_pre"
+        },
+        "target": {
+          "locator": "qa:qa_actor",
+          "role": "actor"
+        }
+      },
+      {
+        "assertion": {
+          "visible_pixels": {
+            "min_ratio": 0.25,
+            "snapshot": "interact_near_post",
+            "target": "qa:qa_interactable"
+          }
+        },
+        "evidence": {
+          "global_rect": [
+            580.0,
+            460.0,
+            80.0,
+            80.0
+          ],
+          "screenshot": ".qa/artifacts/recordings/recorder_negative_suggestions_demo/1777781798Z/snapshots/interact_near_post/screenshot.png",
+          "visible": true
+        },
+        "id": "negative-visible-pixels-7",
+        "input_moment": {
+          "action": "qa_interact",
+          "command": "input.tap_action",
+          "frame": 276,
+          "index": 7,
+          "snapshot": "interact_near"
+        },
+        "kind": "negative_visibility_guard",
+        "reason": "input left the explicit target visible in a screenshot-backed snapshot",
+        "snapshots": {
+          "post": "interact_near_post",
+          "pre": "interact_near_pre"
+        },
+        "target": {
+          "locator": "qa:qa_interactable",
+          "role": "interactable"
+        }
+      },
+      {
+        "assertion": {
+          "not_occluded": {
+            "min_ratio": 0.0001,
+            "snapshot": "interact_near_post",
+            "target": "qa:qa_interactable"
+          }
+        },
+        "evidence": {
+          "global_rect": [
+            580.0,
+            460.0,
+            80.0,
+            80.0
+          ],
+          "screenshot": ".qa/artifacts/recordings/recorder_negative_suggestions_demo/1777781798Z/snapshots/interact_near_post/screenshot.png",
+          "visible": true
+        },
+        "id": "negative-not-occluded-7",
+        "input_moment": {
+          "action": "qa_interact",
+          "command": "input.tap_action",
+          "frame": 276,
+          "index": 7,
+          "snapshot": "interact_near"
+        },
+        "kind": "negative_not_occluded",
+        "reason": "input left the explicit target visible and eligible for screenshot-backed occlusion review",
+        "snapshots": {
+          "post": "interact_near_post",
+          "pre": "interact_near_pre"
+        },
+        "target": {
+          "locator": "qa:qa_interactable",
+          "role": "interactable"
+        }
+      },
+      {
+        "assertion": {
+          "visible_pixels": {
+            "min_ratio": 0.25,
+            "snapshot": "debug_overlay_on_post",
+            "target": "qa:qa_debug_overlay"
+          }
+        },
+        "evidence": {
+          "global_rect": [
+            1420.0,
+            160.0,
+            430.0,
+            180.0
+          ],
+          "screenshot": ".qa/artifacts/recordings/recorder_negative_suggestions_demo/1777781798Z/snapshots/debug_overlay_on_post/screenshot.png",
+          "visible": true
+        },
+        "id": "negative-visible-pixels-8",
+        "input_moment": {
+          "action": "qa_toggle_debug",
+          "command": "input.tap_action",
+          "frame": 312,
+          "index": 8,
+          "snapshot": "debug_overlay_on"
+        },
+        "kind": "negative_visibility_guard",
+        "reason": "input left the explicit target visible in a screenshot-backed snapshot",
+        "snapshots": {
+          "post": "debug_overlay_on_post",
+          "pre": "debug_overlay_on_pre"
+        },
+        "target": {
+          "locator": "qa:qa_debug_overlay",
+          "role": "debug_overlay"
+        }
+      },
+      {
+        "assertion": {
+          "not_occluded": {
+            "min_ratio": 0.0001,
+            "snapshot": "debug_overlay_on_post",
+            "target": "qa:qa_debug_overlay"
+          }
+        },
+        "evidence": {
+          "global_rect": [
+            1420.0,
+            160.0,
+            430.0,
+            180.0
+          ],
+          "screenshot": ".qa/artifacts/recordings/recorder_negative_suggestions_demo/1777781798Z/snapshots/debug_overlay_on_post/screenshot.png",
+          "visible": true
+        },
+        "id": "negative-not-occluded-8",
+        "input_moment": {
+          "action": "qa_toggle_debug",
+          "command": "input.tap_action",
+          "frame": 312,
+          "index": 8,
+          "snapshot": "debug_overlay_on"
+        },
+        "kind": "negative_not_occluded",
+        "reason": "input left the explicit target visible and eligible for screenshot-backed occlusion review",
+        "snapshots": {
+          "post": "debug_overlay_on_post",
+          "pre": "debug_overlay_on_pre"
+        },
+        "target": {
+          "locator": "qa:qa_debug_overlay",
+          "role": "debug_overlay"
+        }
+      },
+      {
+        "assertion": {
+          "no_overlap": {
+            "a": "qa:qa_debug_overlay",
+            "b": "qa:qa_playfield"
+          }
+        },
+        "evidence": {
+          "overlay_rect": [
+            1420.0,
+            160.0,
+            430.0,
+            180.0
+          ],
+          "overlay_visible": true,
+          "playfield": "qa:qa_playfield",
+          "playfield_rect": [
+            120.0,
+            160.0,
+            1200.0,
+            700.0
+          ],
+          "screenshot": ".qa/artifacts/recordings/recorder_negative_suggestions_demo/1777781798Z/snapshots/debug_overlay_on_post/screenshot.png"
+        },
+        "id": "negative-overlay-separation-8",
+        "input_moment": {
+          "action": "qa_toggle_debug",
+          "command": "input.tap_action",
+          "frame": 312,
+          "index": 8,
+          "snapshot": "debug_overlay_on"
+        },
+        "kind": "negative_overlay_separation",
+        "reason": "debug overlay became visible while remaining outside the explicit playfield target",
+        "snapshots": {
+          "post": "debug_overlay_on_post",
+          "pre": "debug_overlay_on_pre"
+        },
+        "target": {
+          "locator": "qa:qa_debug_overlay",
+          "role": "debug_overlay"
+        }
+      }
+    ],
+    "unconverted_events": []
+  },
+  "scene": "res://ui/fixtures/recorder_negative_suggestions.tscn",
+  "steps": [
+    {
+      "wait_frames": 5
+    },
+    {
+      "snapshot": "initial"
+    },
+    {
+      "wait_frames": 2
+    },
+    {
+      "snapshot": "invalid_action_pre"
+    },
+    {
+      "tap_action": "qa_invalid_action"
+    },
+    {
+      "snapshot": "invalid_action_post"
+    },
+    {
+      "wait_frames": 4
+    },
+    {
+      "snapshot": "cancel_pre"
+    },
+    {
+      "tap_action": "qa_cancel"
+    },
+    {
+      "snapshot": "cancel_post"
+    },
+    {
+      "wait_frames": 4
+    },
+    {
+      "snapshot": "interact_too_far_pre"
+    },
+    {
+      "tap_action": "qa_interact"
+    },
+    {
+      "snapshot": "interact_too_far_post"
+    },
+    {
+      "wait_frames": 4
+    },
+    {
+      "snapshot": "move_right_1_pre"
+    },
+    {
+      "tap_action": "qa_move_right"
+    },
+    {
+      "snapshot": "move_right_1_post"
+    },
+    {
+      "wait_frames": 4
+    },
+    {
+      "snapshot": "move_right_2_pre"
+    },
+    {
+      "tap_action": "qa_move_right"
+    },
+    {
+      "snapshot": "move_right_2_post"
+    },
+    {
+      "wait_frames": 4
+    },
+    {
+      "snapshot": "move_right_3_pre"
+    },
+    {
+      "tap_action": "qa_move_right"
+    },
+    {
+      "snapshot": "move_right_3_post"
+    },
+    {
+      "wait_frames": 4
+    },
+    {
+      "snapshot": "move_right_4_pre"
+    },
+    {
+      "tap_action": "qa_move_right"
+    },
+    {
+      "snapshot": "move_right_4_post"
+    },
+    {
+      "wait_frames": 4
+    },
+    {
+      "snapshot": "interact_near_pre"
+    },
+    {
+      "tap_action": "qa_interact"
+    },
+    {
+      "snapshot": "interact_near_post"
+    },
+    {
+      "wait_frames": 4
+    },
+    {
+      "snapshot": "debug_overlay_on_pre"
+    },
+    {
+      "tap_action": "qa_toggle_debug"
+    },
+    {
+      "snapshot": "debug_overlay_on_post"
+    },
+    {
+      "wait_frames": 4
+    },
+    {
+      "snapshot": "debug_overlay_off_pre"
+    },
+    {
+      "tap_action": "qa_toggle_debug"
+    },
+    {
+      "snapshot": "debug_overlay_off_post"
+    },
+    {
+      "wait_frames": 7
+    },
+    {
+      "snapshot": "final"
+    }
+  ]
+}

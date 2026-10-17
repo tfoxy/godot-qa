@@ -1,0 +1,18 @@
+name: frame_budget_demo
+scene: res://ui/main_menu.tscn
+# Declared run timeout + default frame pacing => the engine enforces
+# ceil(1s x 60fps) = 60 frames. The oversized wait can never finish inside
+# the budget, so the run fails with scenario_frame_budget_exceeded via a
+# clean engine exit (normal result.json, timed_out: false) on any host,
+# regardless of load.
+timeout_seconds: 1
+
+viewport:
+  width: 1280
+  height: 720
+
+steps:
+  - wait_frames: 999999
+
+assert:
+  - no_errors: true

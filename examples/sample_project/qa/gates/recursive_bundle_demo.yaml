@@ -1,0 +1,7 @@
+name: recursive_bundle_demo
+purpose: Intentional self-inclusion fixture for negative bundle composition coverage.
+required_bundles:
+  - recursive_bundle_demo
+required_scenarios: []
+recommended_manual_checks:
+  - Running this named bundle should fail before child scenarios execute with bundle_cycle.

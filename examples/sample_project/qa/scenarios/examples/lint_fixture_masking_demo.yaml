@@ -1,0 +1,36 @@
+name: lint_fixture_masking_demo
+scene: res://ui/main_menu.tscn
+
+viewport:
+  width: 1280
+  height: 720
+
+determinism:
+  fixed_fps: 60
+  seed: 123
+  locale: en
+  test_mode: true
+
+lint:
+  visual_coverage: true
+
+snapshots:
+  save_tree: true
+  save_ui: true
+  save_logs: true
+  save_screenshot: false
+
+steps:
+  - wait_frames: 2
+  - click: qa:start_button
+  - wait_frames: 1
+  - set_property:
+      target: qa:status_label
+      property: text
+      value: "DEBUG: start accepted"
+  - snapshot: after_forced_status
+
+assert:
+  - text_contains:
+      target: qa:status_label
+      expected: "DEBUG"

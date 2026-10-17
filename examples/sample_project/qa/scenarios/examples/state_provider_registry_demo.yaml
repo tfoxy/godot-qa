@@ -1,0 +1,20 @@
+name: state_provider_registry_demo
+scene: res://ui/fixtures/qa_state_schema_demo.tscn
+viewport:
+  width: 960
+  height: 540
+steps:
+  - wait_frames: 1
+assert:
+  - state_matches:
+      source: provider
+      provider: schema_demo
+      path: provider_contract
+      operator: equals
+      expected: registered_state_provider
+  - state_matches:
+      source: provider
+      provider: schema_demo
+      path: status
+      operator: equals
+      expected: ready

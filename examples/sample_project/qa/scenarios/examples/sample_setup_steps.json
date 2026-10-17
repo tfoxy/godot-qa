@@ -1,0 +1,79 @@
+{
+  "name": "sample_setup_steps",
+  "scene": "res://ui/main_menu.tscn",
+  "viewport": {
+    "width": 1280,
+    "height": 720
+  },
+  "steps": [
+    {
+      "wait_frames": 5
+    },
+    {
+      "set_property": {
+        "target": "qa:main_menu_title",
+        "property": "text",
+        "value": "Scenario Setup Ready"
+      }
+    },
+    {
+      "call_method": {
+        "target": "qa:main_menu",
+        "method": "qa_set_subtitle",
+        "args": [
+          "Fixture method ran"
+        ]
+      }
+    },
+    {
+      "fixture_teleport": {
+        "target": "qa:main_menu_title",
+        "to": "qa:main_menu_subtitle"
+      }
+    },
+    {
+      "teleport_node": {
+        "target": "qa:main_menu_title",
+        "position": {
+          "x": 80,
+          "y": 96
+        }
+      }
+    },
+    {
+      "spawn_scene": {
+        "scene": "res://ui/pause_menu.tscn",
+        "parent": "qa:main_menu",
+        "name": "SpawnedPauseMenu",
+        "qa_id": "spawned_pause_menu",
+        "position": {
+          "x": 720,
+          "y": 128
+        }
+      }
+    },
+    {
+      "wait_frames": 5
+    }
+  ],
+  "assert": [
+    {
+      "text_contains": {
+        "target": "qa:main_menu_title",
+        "expected": "Scenario Setup Ready"
+      }
+    },
+    {
+      "text_contains": {
+        "target": "qa:main_menu_subtitle",
+        "expected": "Fixture method ran"
+      }
+    },
+    {
+      "exists": "qa:spawned_pause_menu"
+    },
+    {
+      "no_errors": true
+    }
+  ]
+}

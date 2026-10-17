@@ -1,0 +1,38 @@
+name: visual_occlusion_failure_demo
+scene: res://ui/fixtures/visual_occlusion_demo.tscn
+
+viewport:
+  width: 1280
+  height: 720
+
+determinism:
+  fixed_fps: 60
+  seed: 123
+  locale: en
+  test_mode: true
+
+snapshots:
+  save_tree: true
+  save_ui: true
+  save_logs: true
+  save_screenshot: true
+
+steps:
+  - wait_frames: 2
+  - call_method:
+      target: qa:visual_occlusion_demo
+      method: qa_show_full_occlusion
+  - wait_frames: 1
+  - snapshot: occluded
+
+assert:
+  - visible_pixels:
+      target: qa:important_actor
+      snapshot: occluded
+      min_ratio: 0.25
+  - not_occluded:
+      target: qa:important_actor
+      snapshot: occluded
+      occluder: qa:full_occluder
+      min_ratio: 0.01
+  - no_errors: true

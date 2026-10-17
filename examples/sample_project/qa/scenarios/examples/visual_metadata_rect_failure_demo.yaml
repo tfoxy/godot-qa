@@ -1,0 +1,28 @@
+name: visual_metadata_rect_failure_demo
+scene: res://ui/fixtures/visual_occlusion_demo.tscn
+
+viewport:
+  width: 1280
+  height: 720
+
+determinism:
+  fixed_fps: 60
+  seed: 123
+  locale: en
+  test_mode: true
+
+snapshots:
+  save_tree: true
+  save_ui: true
+  save_logs: true
+  save_screenshot: true
+
+steps:
+  - wait_frames: 2
+  - snapshot: invalid-metadata-rect
+
+assert:
+  - visible_pixels:
+      target: qa:invalid_metadata_visual_actor
+      snapshot: invalid-metadata-rect
+      min_ratio: 0.45

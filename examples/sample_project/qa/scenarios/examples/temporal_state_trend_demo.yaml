@@ -1,0 +1,64 @@
+name: temporal_state_trend_demo
+scene: res://ui/main_menu.tscn
+
+viewport:
+  width: 1280
+  height: 720
+
+# No determinism.fixed_fps: this demo carries a frame_time assertion, which is
+# incompatible with forced frame pacing (wall-clock frame times would be
+# meaningless). The demo actor's motion is frame-driven, so it stays
+# deterministic per frame anyway.
+determinism:
+  seed: 123
+  locale: en
+  test_mode: true
+
+snapshots:
+  save_tree: true
+  save_ui: true
+  save_logs: true
+
+steps:
+  - wait_frames: 5
+  - call_method:
+      target: qa:main_menu
+      method: qa_temporal_set_mode
+      args:
+        - steady
+  - wait_frames: 2
+
+assert:
+  # `within` operator: y stays at 420 within an absolute tolerance.
+  - state_matches:
+      target: qa:main_menu
+      source: method
+      method: get_raft_motion_qa_state
+      path: motion.position.y
+      operator: within
+      expected: 420
+      tolerance: 1
+  # within_limits over a state expression instead of a node property.
+  - within_limits:
+      source: method
+      target: qa:main_menu
+      method: get_raft_motion_qa_state
+      path: motion.position.y
+      window_frames: 12
+      min: 400
+      max: 440
+  # trend over a state expression: x advances ~8 px per frame in steady mode.
+  - trend:
+      source: method
+      target: qa:main_menu
+      method: get_raft_motion_qa_state
+      path: motion.position.x
+      trend: increasing
+      min_delta: 32
+      window_frames: 12
+  # frame_time perf gate with intentionally generous headless CI bounds.
+  - frame_time:
+      window_frames: 30
+      max_avg_ms: 250
+      max_p95_ms: 1000
+  - no_errors: true

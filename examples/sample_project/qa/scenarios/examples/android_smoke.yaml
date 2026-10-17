@@ -1,0 +1,36 @@
+# Android-preflight-clean smoke scenario: runs at project-default pacing and is
+# used for on-device one-shot validation (`scenario run --target android`).
+#
+# It is deliberately STANDALONE (no `extends`) and carries none of the options
+# the Android one-shot preflight rejects: no `viewport`, no
+# `determinism.fixed_fps`, no `godot_args`, and no `screenshot_match`. Device
+# pacing is real, so the process-level frame budget is intentionally absent; the
+# same document runs identically on desktop at the project's default viewport.
+name: android_smoke
+description: Android-preflight-clean main-menu start smoke for on-device one-shot validation
+scene: res://ui/main_menu.tscn
+
+determinism:
+  seed: 123
+  locale: en
+  test_mode: true
+
+snapshots:
+  save_tree: true
+  save_ui: true
+  save_screenshot: true
+  save_logs: true
+
+steps:
+  - wait_frames: 5
+  - snapshot: before
+  - click: qa:start_button
+  - wait_frames: 10
+  - snapshot: after_start
+
+assert:
+  - exists: qa:pause_menu
+  - visible: qa:pause_menu
+  - focused: qa:resume_button
+  - hidden: qa:main_menu_buttons
+  - no_errors: true

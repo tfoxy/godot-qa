@@ -1,0 +1,10 @@
+name: composed_regression_gate
+purpose: Regression gate that composes reusable menu coverage with direct checks.
+required_bundles:
+  - reusable_menu_gate
+required_scenarios:
+  - sample_settings_layout
+  - bundle_godot_args_demo
+recommended_manual_checks:
+  - Inspect summary.json and confirm reusable children record bundle_chain metadata.
+  - Confirm direct children preserve scenario-owned godot_args metadata.

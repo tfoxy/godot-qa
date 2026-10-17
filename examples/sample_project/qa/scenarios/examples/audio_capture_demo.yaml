@@ -1,0 +1,28 @@
+name: audio_capture_demo
+scene: res://ui/fixtures/audio_demo.tscn
+
+determinism:
+  fixed_fps: 60
+  seed: 123
+  locale: en
+  test_mode: true
+
+steps:
+  - wait_frames: 1
+  - call_method:
+      target: qa:audio_controller
+      method: qa_start_deterministic_playback
+      args:
+        - dodgeball_rush_loop
+  - audio_capture:
+      name: dodgeball_music
+      duration_seconds: 4.0
+      bus: Master
+      analyze: true
+  - call_method:
+      target: qa:audio_controller
+      method: qa_stop_deterministic_playback
+  - wait_frames: 2
+
+assert:
+  - no_errors: true

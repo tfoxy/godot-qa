@@ -1,0 +1,11 @@
+name: engine_log_error_demo_gate
+purpose: Prove a game-side push_error is reported as the same godot_log_error cold and warm.
+# Two scenarios on purpose: run with --warm --jobs 1 so the single warm session is
+# genuinely reused (a bundle with count <= parallelism always runs cold), which is
+# what makes engine_log_error_demo's output arrive in a SHARED session log.
+# This gate is expected to be RED — engine_log_error_demo fails by design.
+required_scenarios:
+  - engine_log_error_demo
+  - fixture_driver_registry_demo
+recommended_manual_checks:
+  - Compare the cold and warm `godot_log_error` failures; `actual` must match byte for byte.

@@ -1,0 +1,17 @@
+name: sample_layout_single_viewport
+scene: res://ui/settings_menu.tscn
+
+# A SINGLE viewport entry no longer fans out into the viewport matrix: this
+# scenario runs the normal single-run path and its layout_audit is applied as a
+# CLI post-process over the run's snapshot. The lone viewport just sets the
+# window resolution. (Multi-viewport coverage lives in sample_settings_layout.)
+viewports:
+  - [1280, 720]
+
+steps:
+  - wait_frames: 5
+  - snapshot: default
+
+assert:
+  - layout_audit: strict
+  - no_errors: true

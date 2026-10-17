@@ -1,0 +1,21 @@
+name: audio_non_qa_method_failure_demo
+scene: res://ui/fixtures/audio_demo.tscn
+
+determinism:
+  fixed_fps: 60
+  seed: 123
+  locale: en
+  test_mode: true
+
+steps:
+  - wait_frames: 1
+  - audio_export:
+      name: non_qa_method
+      target: qa:audio_controller
+      method: export_audio_track
+      args:
+        - dodgeball_rush_loop
+      analyze: true
+
+assert:
+  - no_errors: true

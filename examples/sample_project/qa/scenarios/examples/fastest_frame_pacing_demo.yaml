@@ -1,0 +1,34 @@
+name: fastest_frame_pacing_demo
+scene: res://ui/main_menu.tscn
+
+viewport:
+  width: 1280
+  height: 720
+
+snapshots:
+  save_tree: true
+  save_ui: true
+  save_logs: true
+
+steps:
+  - wait_frames: 2
+  - call_method:
+      target: qa:main_menu
+      method: qa_start_accelerated_timer
+
+assert:
+  - observe_until:
+      target: qa:main_menu
+      source: method
+      method: get_accelerated_timer_qa_state
+      matches:
+        status: complete
+      window_seconds: 1.25
+      sample_every_frames: 1
+  - state_matches:
+      target: qa:main_menu
+      source: method
+      method: get_accelerated_timer_qa_state
+      matches:
+        status: complete
+  - no_errors: true

@@ -1,0 +1,17 @@
+name: fixture_call_setup_smoke
+steps:
+  - session_start:
+      scene: res://ui/fixtures/qa_state_schema_demo.tscn
+      headless: true
+  - fixture_call:
+      driver: schema_driver
+      action: set_status
+      params:
+        status: live-script
+  - state_matches:
+      source: provider
+      provider: schema_demo
+      path: status
+      operator: equals
+      expected: live-script
+  - session_stop: true

@@ -1,0 +1,32 @@
+name: sample_main_menu_start
+scene: res://ui/main_menu.tscn
+
+viewport:
+  width: 1920
+  height: 1080
+
+determinism:
+  fixed_fps: 60
+  seed: 123
+  locale: en
+  test_mode: true
+
+snapshots:
+  save_tree: true
+  save_ui: true
+  save_screenshot: true
+  save_logs: true
+
+steps:
+  - wait_frames: 5
+  - snapshot: before
+  - click: qa:start_button
+  - wait_frames: 10
+  - snapshot: after_start
+
+assert:
+  - exists: qa:pause_menu
+  - visible: qa:pause_menu
+  - focused: qa:resume_button
+  - hidden: qa:main_menu_buttons
+  - no_errors: true

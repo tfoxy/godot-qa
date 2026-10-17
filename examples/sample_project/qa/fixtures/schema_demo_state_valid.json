@@ -1,0 +1,26 @@
+{
+  "fixture": "qa_state_schema_demo",
+  "schema_version": 1,
+  "status": "ready",
+  "score": 42.5,
+  "frame": 12,
+  "tags": ["schema", "demo"],
+  "metrics": {
+    "health": 95,
+    "stamina": 64
+  },
+  "controls": {
+    "focused": true,
+    "enabled": true
+  },
+  "samples": [
+    {
+      "name": "baseline",
+      "value": 1.25
+    },
+    {
+      "name": "settled",
+      "value": 2.5
+    }
+  ]
+}

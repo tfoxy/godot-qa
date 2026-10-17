@@ -1,0 +1,40 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://ui/fixtures/project_args_probe.gd" id="1"]
+
+[node name="ProjectArgsProbe" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1")
+
+[node name="Canvas" type="ColorRect" parent="."]
+layout_mode = 0
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0.0862745, 0.105882, 0.121569, 1)
+
+[node name="TitleLabel" type="Label" parent="Canvas"]
+layout_mode = 0
+offset_left = 96.0
+offset_top = 96.0
+offset_right = 760.0
+offset_bottom = 146.0
+theme_override_font_sizes/font_size = 32
+text = "Project Args Probe"
+
+[node name="BodyLabel" type="Label" parent="Canvas"]
+layout_mode = 0
+offset_left = 96.0
+offset_top = 168.0
+offset_right = 900.0
+offset_bottom = 232.0
+theme_override_font_sizes/font_size = 18
+text = "QA state exposes Godot user arguments after filtering QA runner control flags."
+autowrap_mode = 3

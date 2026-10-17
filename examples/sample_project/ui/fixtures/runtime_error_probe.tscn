@@ -1,0 +1,40 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://ui/fixtures/runtime_error_probe.gd" id="1"]
+
+[node name="RuntimeErrorProbe" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1")
+
+[node name="Canvas" type="ColorRect" parent="."]
+layout_mode = 0
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0.14902, 0.0941176, 0.0941176, 1)
+
+[node name="TitleLabel" type="Label" parent="Canvas"]
+layout_mode = 0
+offset_left = 180.0
+offset_top = 160.0
+offset_right = 760.0
+offset_bottom = 214.0
+theme_override_font_sizes/font_size = 34
+text = "Runtime Error Probe"
+
+[node name="BodyLabel" type="Label" parent="Canvas"]
+layout_mode = 0
+offset_left = 180.0
+offset_top = 240.0
+offset_right = 940.0
+offset_bottom = 310.0
+theme_override_font_sizes/font_size = 20
+text = "This fixture emits one structured QA runtime error after the live-session bridge becomes available."
+autowrap_mode = 3

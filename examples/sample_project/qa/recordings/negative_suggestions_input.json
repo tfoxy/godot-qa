@@ -1,0 +1,64 @@
+{
+  "steps": [
+    {
+      "frame": 2,
+      "command": "input.tap_action",
+      "params": {"action": "qa_invalid_action", "target": "qa:qa_invalid_action_result"},
+      "snapshot": "invalid_action"
+    },
+    {
+      "frame": 6,
+      "command": "input.tap_action",
+      "params": {"action": "qa_cancel", "target": "qa:qa_interaction_result"},
+      "snapshot": "cancel"
+    },
+    {
+      "frame": 10,
+      "command": "input.tap_action",
+      "params": {"action": "qa_interact", "target": "qa:qa_interactable"},
+      "snapshot": "interact_too_far"
+    },
+    {
+      "frame": 14,
+      "command": "input.tap_action",
+      "params": {"action": "qa_move_right", "target": "qa:qa_actor"},
+      "snapshot": "move_right_1"
+    },
+    {
+      "frame": 18,
+      "command": "input.tap_action",
+      "params": {"action": "qa_move_right", "target": "qa:qa_actor"},
+      "snapshot": "move_right_2"
+    },
+    {
+      "frame": 22,
+      "command": "input.tap_action",
+      "params": {"action": "qa_move_right", "target": "qa:qa_actor"},
+      "snapshot": "move_right_3"
+    },
+    {
+      "frame": 26,
+      "command": "input.tap_action",
+      "params": {"action": "qa_move_right", "target": "qa:qa_actor"},
+      "snapshot": "move_right_4"
+    },
+    {
+      "frame": 30,
+      "command": "input.tap_action",
+      "params": {"action": "qa_interact", "target": "qa:qa_interactable"},
+      "snapshot": "interact_near"
+    },
+    {
+      "frame": 34,
+      "command": "input.tap_action",
+      "params": {"action": "qa_toggle_debug", "target": "qa:qa_debug_overlay"},
+      "snapshot": "debug_overlay_on"
+    },
+    {
+      "frame": 38,
+      "command": "input.tap_action",
+      "params": {"action": "qa_toggle_debug", "target": "qa:qa_debug_overlay"},
+      "snapshot": "debug_overlay_off"
+    }
+  ]
+}

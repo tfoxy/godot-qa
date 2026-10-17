@@ -1,0 +1,30 @@
+{
+  "name": "probe_provider_registry_demo",
+  "scene": "res://ui/fixtures/qa_state_schema_demo.tscn",
+  "viewport": {
+    "width": 960,
+    "height": 540
+  },
+  "steps": [
+    {
+      "wait_frames": 1
+    }
+  ],
+  "assert": [
+    {
+      "surface_probe": {
+        "target": "qa:schema_state_provider",
+        "provider_id": "schema_surface",
+        "coordinate_space": "world_2d",
+        "surfaces": ["water"],
+        "points": [
+          {
+            "x": 0,
+            "y": 0,
+            "expected": "water"
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+name: visual_line_indicator_zero_length_failure_demo
+scene: res://ui/fixtures/visual_line_indicator_demo.tscn
+
+viewport:
+  width: 1280
+  height: 720
+
+determinism:
+  fixed_fps: 60
+  seed: 123
+  locale: en
+  test_mode: true
+
+snapshots:
+  save_tree: true
+  save_ui: true
+  save_logs: true
+  save_screenshot: true
+
+steps:
+  - wait_frames: 2
+  - call_method:
+      target: qa:visual_line_indicator_demo
+      method: qa_show_zero_length_line
+  - wait_frames: 1
+  - snapshot: line-zero-length
+
+assert:
+  - visible_pixels:
+      target: qa:zero_length_line_indicator
+      snapshot: line-zero-length
+      min_count: 1

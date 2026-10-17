@@ -1,0 +1,59 @@
+{
+  "trace_id": "schema-demo-trace",
+  "samples": [
+    {
+      "frame": 1,
+      "state": {
+        "fixture": "qa_state_schema_demo",
+        "schema_version": 1,
+        "status": "ready",
+        "score": 40.0,
+        "frame": 12,
+        "tags": ["schema", "demo"],
+        "metrics": {
+          "health": 95,
+          "stamina": 64
+        },
+        "controls": {
+          "focused": true,
+          "enabled": true
+        },
+        "samples": [
+          {
+            "name": "baseline",
+            "value": 1.25
+          }
+        ]
+      }
+    },
+    {
+      "frame": 2,
+      "state": {
+        "fixture": "qa_state_schema_demo",
+        "schema_version": 1,
+        "status": "running",
+        "score": 55.5,
+        "frame": 13,
+        "tags": ["schema", "trace"],
+        "metrics": {
+          "health": 94,
+          "stamina": 61
+        },
+        "controls": {
+          "focused": true,
+          "enabled": true
+        },
+        "samples": [
+          {
+            "name": "baseline",
+            "value": 1.5
+          },
+          {
+            "name": "settled",
+            "value": 2.75
+          }
+        ]
+      }
+    }
+  ]
+}

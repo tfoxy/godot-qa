@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "title": "Sample project runtime evidence",
+  "sources": [
+    {
+      "id": "presented-startup",
+      "run_root": "../examples/sample_project/.qa/artifacts/presented-startup/example-run",
+      "result": "result.json",
+      "revision": {"tool": "0.1.0", "project": "example-commit", "build": "debug"},
+      "environment": {"renderer": "vulkan", "display_backend": "gamescope", "resolution": [1920, 1080], "instrumented": false},
+      "images": [
+        {"id": "startup", "path": "presented.png", "role": "original", "snapshot": "startup"}
+      ]
+    },
+    {
+      "id": "native-soak",
+      "run_root": "../examples/sample_project/.qa/artifacts/soak/example-run",
+      "result": "result.json",
+      "revision": {"tool": "0.1.0", "project": "example-commit", "build": "debug"},
+      "environment": {"renderer": "vulkan", "display_backend": "gamescope", "vsync": "enabled", "pacing": "default", "instrumented": true},
+      "metrics": [
+        {"id": "frame-timing", "path": "profile.json", "fields": {"p95_ms": "/frame_timing/p95_ms"}}
+      ]
+    },
+    {
+      "id": "external-roster",
+      "run_root": "../examples/sample_project/.qa/artifacts/external-roster/example-run",
+      "result": "verdict.json",
+      "revision": {"tool": "0.1.0", "project": "example-commit", "build": "debug"},
+      "environment": {"display_backend": "gamescope", "resolution": [1920, 1080]},
+      "images": [
+        {"id": "all-deployables", "path": "snapshots/all-deployables.png", "role": "original"},
+        {"id": "overview-sheet", "path": "snapshots/overview-sheet.png", "role": "contact_sheet"}
+      ]
+    },
+    {
+      "id": "expected-negative-stale",
+      "run_root": "../examples/sample_project/.qa/artifacts/stale-fixture/example-run",
+      "result": "verdict.json",
+      "revision": {"tool": "0.1.0", "project": "example-commit", "build": "debug"}
+    }
+  ]
+}

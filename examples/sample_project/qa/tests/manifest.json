@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "id": "main_menu_startup",
+      "kind": "scene",
+      "target": "res://ui/main_menu.tscn",
+      "startup_frames": 5,
+      "tags": ["smoke", "ui", "scenario-adjacent"]
+    },
+    {
+      "id": "accelerated_main_menu_startup",
+      "kind": "scene",
+      "target": "res://ui/main_menu.tscn",
+      "startup_frames": 5,
+      "tags": ["physics", "time-control", "ui"],
+      "time_control": {
+        "time_scale": 4.0,
+        "physics_ticks_per_second": 240,
+        "max_physics_steps_per_frame": 16
+      }
+    },
+    {
+      "id": "sample_script_test",
+      "kind": "script",
+      "target": "res://qa/tests/script_smoke.gd",
+      "tags": ["smoke", "script"]
+    },
+    {
+      "id": "sample_script_state_test",
+      "kind": "script",
+      "target": "res://qa/tests/script_state_smoke.gd",
+      "tags": ["smoke", "script"]
+    },
+    {
+      "id": "slow_manifest_test",
+      "kind": "script",
+      "target": "res://qa/tests/slow_manifest_test.gd",
+      "tags": ["diagnostic", "slow-summary"],
+      "slow_summary_threshold_ms": 50
+    },
+    {
+      "id": "engine_drift_manifest_test",
+      "kind": "script",
+      "target": "res://qa/tests/script_engine_drift.gd",
+      "tags": ["diagnostic", "engine-drift"]
+    }
+  ],
+  "profiles": {
+    "smoke": {
+      "tags": ["smoke"]
+    },
+    "physics": {
+      "tags": ["physics"]
+    },
+    "scenario-adjacent": {
+      "tags": ["scenario-adjacent"]
+    },
+    "full": {
+      "tests": [
+        "main_menu_startup",
+        "accelerated_main_menu_startup",
+        "sample_script_test",
+        "sample_script_state_test"
+      ]
+    }
+  }
+}

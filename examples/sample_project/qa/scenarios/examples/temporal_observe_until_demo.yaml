@@ -1,0 +1,35 @@
+name: temporal_observe_until_demo
+scene: res://ui/main_menu.tscn
+
+viewport:
+  width: 1280
+  height: 720
+
+determinism:
+  fixed_fps: 60
+  seed: 123
+  locale: en
+  test_mode: true
+  temporal_sampling:
+    mode: fixed_delta
+    fixed_delta_seconds: 0.016666667
+
+snapshots:
+  save_tree: true
+  save_ui: true
+  save_logs: true
+
+steps:
+  - wait_frames: 2
+  - click: qa:temporal_pending_button
+
+assert:
+  - observe_until:
+      target: qa:main_menu
+      source: qa:main_menu
+      method: get_temporal_pending_qa_state
+      matches:
+        status: pending
+      window_frames: 3
+      sample_every_frames: 1
+  - no_errors: true

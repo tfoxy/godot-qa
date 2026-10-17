@@ -1,0 +1,41 @@
+name: physics_overlay_demo
+scene: res://ui/fixtures/physics_overlay_demo.tscn
+
+viewport:
+  width: 1000
+  height: 620
+
+determinism:
+  fixed_fps: 60
+  seed: 123
+  locale: en
+  test_mode: true
+
+snapshots:
+  save_tree: true
+  save_ui: true
+  save_logs: true
+  save_screenshot: true
+
+steps:
+  - wait_frames: 2
+  - snapshot: aligned
+  - physics_overlay:
+      name: overlay_actor
+      target: qa:overlay_actor
+      snapshot: aligned
+      radius: 400
+      frames: 2
+      include_aabb: true
+      state_method: get_qa_visual_footprint_state
+  - physics_overlay:
+      name: oversized_collider_actor
+      target: qa:oversized_collider_actor
+      snapshot: aligned
+      radius: 400
+      frames: 2
+      include_aabb: true
+      state_method: get_qa_visual_footprint_state
+
+assert:
+  - no_errors: true

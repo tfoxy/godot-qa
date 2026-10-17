@@ -1,0 +1,85 @@
+name: joy_lifecycle_cleanup_smoke
+steps:
+  - session_start:
+      scene: res://ui/fixtures/live_input_probe.tscn
+      headless: true
+  - joy_connect:
+      devices: [40]
+      name: Synthetic QA gamepad
+  - input_joy_state:
+      inputs:
+        - device: 40
+          button: {name: b, pressed: true}
+        - device: 40
+          motion: {axis: left_x, value: 1.0}
+      frames: 1
+  - state_matches:
+      source: method
+      target: qa:live_input_probe
+      method: get_qa_virtual_pad_cleanup
+      path: effective_roster_count
+      operator: equals
+      expected: 1
+  - state_matches:
+      source: method
+      target: qa:live_input_probe
+      method: get_qa_virtual_pad_cleanup
+      path: device40_b_pressed
+      operator: equals
+      expected: true
+  - state_matches:
+      source: method
+      target: qa:live_input_probe
+      method: get_qa_virtual_pad_cleanup
+      path: device40_left_x
+      operator: within
+      expected: 1.0
+      tolerance: 0.001
+  - session_change_scene: res://ui/fixtures/live_input_probe.tscn
+  - state_matches:
+      source: method
+      target: qa:live_input_probe
+      method: get_qa_virtual_pad_cleanup
+      path: effective_roster_count
+      operator: equals
+      expected: 0
+  - state_matches:
+      source: method
+      target: qa:live_input_probe
+      method: get_qa_virtual_pad_cleanup
+      path: device40_b_pressed
+      operator: equals
+      expected: false
+  - state_matches:
+      source: method
+      target: qa:live_input_probe
+      method: get_qa_virtual_pad_cleanup
+      path: device40_left_x
+      operator: within
+      expected: 0.0
+      tolerance: 0.001
+  - joy_connect:
+      devices: [40]
+  - input_joy_state:
+      inputs:
+        - device: 40
+          button: {name: b, pressed: true}
+        - device: 40
+          motion: {axis: left_x, value: -1.0}
+      frames: 1
+  - state_matches:
+      source: method
+      target: qa:live_input_probe
+      method: get_qa_virtual_pad_cleanup
+      path: device40_b_pressed
+      operator: equals
+      expected: true
+  - state_matches:
+      source: method
+      target: qa:live_input_probe
+      method: get_qa_virtual_pad_cleanup
+      path: device40_left_x
+      operator: within
+      expected: -1.0
+      tolerance: 0.001
+  - session_stop: true

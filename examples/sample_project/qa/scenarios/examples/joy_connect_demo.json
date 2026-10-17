@@ -1,0 +1,73 @@
+{
+  "name": "joy_connect_demo",
+  "scene": "res://ui/fixtures/live_input_probe.tscn",
+  "viewport": { "width": 1280, "height": 720 },
+  "determinism": { "fixed_fps": 60, "seed": 123, "locale": "en", "test_mode": true },
+  "snapshots": { "save_tree": true, "save_ui": true, "save_logs": true },
+  "steps": [
+    { "wait_frames": 5 },
+    {
+      "assert": [
+        {
+          "state_matches": {
+            "source": "method",
+            "target": "qa:live_input_probe",
+            "method": "get_qa_joypad_roster",
+            "matches": [
+              { "path": "count", "operator": "equals", "expected": 0 },
+              { "path": "effective_roster_count", "operator": "equals", "expected": 0 }
+            ]
+          }
+        }
+      ]
+    },
+    { "joy_connect": { "devices": [0, 1, 2, 3, 4, 5], "name": "QA Virtual Pad" } },
+    {
+      "assert": [
+        {
+          "state_matches": {
+            "source": "method",
+            "target": "qa:live_input_probe",
+            "method": "get_qa_joypad_roster",
+            "matches": [
+              { "path": "count", "operator": "equals", "expected": 6 },
+              { "path": "effective_roster_count", "operator": "equals", "expected": 6 },
+              { "path": "last_event_roster", "operator": "equals", "expected": "0,1,2,3,4,5" }
+            ]
+          }
+        }
+      ]
+    },
+    { "joy_disconnect": { "devices": [3] } },
+    {
+      "assert": [
+        {
+          "state_matches": {
+            "source": "method",
+            "target": "qa:live_input_probe",
+            "method": "get_qa_joypad_roster",
+            "matches": [
+              { "path": "count", "operator": "equals", "expected": 5 },
+              { "path": "effective_roster_count", "operator": "equals", "expected": 5 },
+              { "path": "last_event_roster", "operator": "equals", "expected": "0,1,2,4,5" }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "assert": [
+    {
+      "state_matches": {
+        "source": "method",
+        "target": "qa:live_input_probe",
+        "method": "get_qa_joypad_roster",
+        "matches": [
+          { "path": "count", "operator": "equals", "expected": 5 },
+          { "path": "effective_roster_count", "operator": "equals", "expected": 5 }
+        ]
+      }
+    },
+    { "no_errors": true }
+  ]
+}

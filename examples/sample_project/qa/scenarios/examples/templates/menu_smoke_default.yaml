@@ -1,0 +1,9 @@
+# Concrete child: name + var overrides only. Everything else (scene, steps,
+# snapshots, asserts) is inherited from the base and re-parameterized by these
+# vars.
+name: menu_smoke_default
+extends: menu_smoke.base.yaml
+
+vars:
+  wait_frames: 8
+  post_click_frames: 12

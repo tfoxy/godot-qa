@@ -1,0 +1,26 @@
+name: sample_settings_layout
+scene: res://ui/settings_menu.tscn
+
+viewports:
+  - [1280, 720]
+  - [1280, 800]
+  - [1920, 1080]
+  - [2560, 1440]
+
+locales:
+  - en
+  - es
+
+# A viewport matrix cannot be honoured by a reused warm session, so this scenario
+# is structurally cold. Declaring the opt-out makes that intentional and exempts
+# it from --warm-strict enforcement instead of failing every warm bundle run.
+execution:
+  isolation: cold
+
+steps:
+  - wait_frames: 5
+  - snapshot: default
+
+assert:
+  - layout_audit: strict
+  - no_errors: true

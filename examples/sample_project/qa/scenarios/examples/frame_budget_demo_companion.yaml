@@ -1,0 +1,15 @@
+name: frame_budget_demo_companion
+scene: res://ui/main_menu.tscn
+# Tiny passing scenario so frame_budget_demo_gate has two scenarios: a warm
+# bundle only reuses a session when the scenario count exceeds parallelism,
+# and the gate exists to prove the frame budget inside a REAL warm lane.
+
+viewport:
+  width: 1280
+  height: 720
+
+steps:
+  - wait_frames: 2
+
+assert:
+  - no_errors: true

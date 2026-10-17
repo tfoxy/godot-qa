@@ -1,0 +1,5 @@
+#!/bin/sh
+# Git for Windows also supplies the shell used to execute Git hooks.
+# Release preparation may still be running xtask.exe, which Windows locks.
+# Keep hook builds separate so version changes never replace that executable.
+cargo run --quiet --package xtask --target-dir target/commit-hook -- commit-msg "$1"

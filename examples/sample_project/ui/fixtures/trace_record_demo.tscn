@@ -1,0 +1,40 @@
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://ui/fixtures/trace_record_demo.gd" id="1"]
+
+[sub_resource type="CircleShape2D" id="CircleShape2D_probe"]
+radius = 18.0
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_hidden"]
+size = Vector2(48, 48)
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_layer"]
+size = Vector2(40, 40)
+
+[node name="TraceRecordDemo" type="Node2D"]
+script = ExtResource("1")
+
+[node name="TraceProbe" type="CharacterBody2D" parent="."]
+position = Vector2(240, 240)
+collision_layer = 1
+collision_mask = 1
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="TraceProbe"]
+shape = SubResource("CircleShape2D_probe")
+
+[node name="HiddenBlocker" type="StaticBody2D" parent="."]
+visible = false
+position = Vector2(310, 240)
+collision_layer = 1
+collision_mask = 1
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="HiddenBlocker"]
+shape = SubResource("RectangleShape2D_hidden")
+
+[node name="LayerMismatchBody" type="StaticBody2D" parent="."]
+position = Vector2(430, 240)
+collision_layer = 8
+collision_mask = 8
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="LayerMismatchBody"]
+shape = SubResource("RectangleShape2D_layer")

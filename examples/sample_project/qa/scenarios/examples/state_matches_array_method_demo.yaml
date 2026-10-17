@@ -1,0 +1,67 @@
+name: state_matches_array_method_demo
+scene: res://ui/main_menu.tscn
+
+viewport:
+  width: 1280
+  height: 720
+
+determinism:
+  fixed_fps: 60
+  seed: 123
+  locale: en
+  test_mode: true
+
+steps:
+  - wait_frames: 5
+
+assert:
+  - state_matches:
+      target: qa:demo_actor
+      source: method
+      method: get_qa_probe_values_state
+      path: 0.id
+      operator: equals
+      expected: front
+  - state_matches:
+      target: qa:demo_actor
+      source: method
+      method: get_qa_probe_values_state
+      path: ""
+      where:
+        id: front
+      value_path: force
+      operator: approx_equals
+      expected: 1.4
+      epsilon: 0.001
+  - state_matches:
+      target: qa:demo_actor
+      source: method
+      method: get_qa_probe_values_state
+      path: ""
+      where:
+        id: back
+      value_path: force
+      operator: approximately_equals
+      expected: -1.4
+      epsilon: 0.001
+  - state_matches:
+      target: qa:demo_actor
+      source: method
+      method: get_qa_probe_values_state
+      path: ""
+      where:
+        id: front
+      value_path: offset
+      operator: greater_than
+      expected: 2.5
+  - state_matches:
+      target: qa:demo_actor
+      source: method
+      method: get_qa_probe_values_state
+      path: ""
+      where:
+        id: back
+      value_path: offset
+      operator: less_than
+      expected: -1.5
+  - no_errors: true

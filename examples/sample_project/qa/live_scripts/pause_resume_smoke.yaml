@@ -1,0 +1,10 @@
+name: pause_resume_smoke
+steps:
+  - session_start:
+      scene: res://ui/main_menu.tscn
+      headless: true
+  - session_pause: true
+  - session_resume: true
+  - wait:
+      frames: 1
+  - session_stop: true

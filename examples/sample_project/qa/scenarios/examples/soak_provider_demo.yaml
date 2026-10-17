@@ -1,0 +1,12 @@
+name: soak_provider_demo
+scene: res://qa/fixtures/soak_world.tscn
+time_control:
+  time_scale: 1.0
+timeout_seconds: 10
+project_args:
+  - --qa-soak-duration=2
+steps:
+  - wait_frames: 2
+
+assert:
+  - no_errors: true

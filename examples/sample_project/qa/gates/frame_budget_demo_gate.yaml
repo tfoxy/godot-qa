@@ -1,0 +1,7 @@
+name: frame_budget_demo_gate
+purpose: Prove the engine-enforced frame budget fails deterministically in warm bundles too.
+# Two scenarios on purpose: run with --warm --jobs 1 so the single warm session
+# is genuinely reused (a bundle with count <= parallelism always runs cold).
+required_scenarios:
+  - frame_budget_demo
+  - frame_budget_demo_companion

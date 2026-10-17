@@ -1,0 +1,34 @@
+# Exercises visible_pixels when the OS window resolution differs from the 2D
+# canvas resolution. With display/window/stretch/mode="canvas_items", the canvas
+# stays 1920x1080 while `--resolution 960x540` makes the captured screenshot half
+# that size, so target rects (canvas space) must be converted to screenshot space
+# before pixel sampling. Structurally cold because godot_args force a standalone
+# launch. Before the coordinate-space fix this measured wrong pixels (~0 ratio);
+# after the fix target_rect_screenshot ~= 0.5 * target_rect and the actor renders.
+name: visual_stretch_window_override_demo
+scene: res://ui/fixtures/visual_occlusion_demo.tscn
+
+godot_args: ["--resolution", "960x540"]
+
+determinism:
+  fixed_fps: 60
+  seed: 123
+  locale: en
+  test_mode: true
+
+snapshots:
+  save_tree: true
+  save_ui: true
+  save_logs: true
+  save_screenshot: true
+
+steps:
+  - wait_frames: 2
+  - snapshot: stretched
+
+assert:
+  - visible_pixels:
+      target: qa:important_actor
+      snapshot: stretched
+      min_ratio: 0.45
+  - no_errors: true

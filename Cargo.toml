@@ -1,0 +1,24 @@
+[workspace]
+members = ["xtask", "crates/godot-qa-cli", "crates/godot-qa-core", "crates/godot-qa-debug", "crates/godot-qa-process", "crates/godot-qa-runtime", "crates/godot-qa-scenario", "crates/godot-qa-scene"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["godot-qa contributors"]
+
+[workspace.dependencies]
+clap = { version = "4.5", features = ["derive"] }
+getrandom = "0.3"
+libc = "0.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+yaml_serde = "0.10.4"
+
+# Portable optimized binaries: never compile for the build machine CPU.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

@@ -1,0 +1,28 @@
+name: CI
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  commits:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install pinned Rust
+        run: rustup toolchain install 1.95.0 --profile minimal
+      - name: Validate Conventional Commits
+        env:
+          BASE_COMMIT: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: cargo xtask check-commits "$BASE_COMMIT" "$HEAD_COMMIT"
+  quality:
+    uses: ./.github/workflows/quality.yml

@@ -1,0 +1,25 @@
+{
+  "pairs": [
+    {
+      "source": "collision.contact",
+      "requires_within_msec": 140,
+      "any_of": ["vfx.collision_spark", "sfx.collision_hit"]
+    },
+    {
+      "source": "ui.button_confirm",
+      "requires_within_msec": 80,
+      "any_of": ["sfx.ui_confirm"]
+    },
+    {
+      "source": "gameplay.powerup_collected",
+      "requires_within_msec": 120,
+      "any_of": ["vfx.powerup_flash", "sfx.powerup_confirm"]
+    }
+  ],
+  "rate_limits": [
+    {
+      "event_type": "sfx.weapon_tick",
+      "max_per_second": 4
+    }
+  ]
+}

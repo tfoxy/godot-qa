@@ -1,0 +1,8 @@
+name: joy_lifecycle_failure_cleanup
+purpose: Expected-negative warm fixture proving held virtual input is cleared after a failed scenario.
+required_scenarios:
+  - joy_lifecycle_expected_fail
+  - joy_lifecycle_after_fail
+recommended_manual_checks:
+  - Expect the bundle to fail because joy_lifecycle_expected_fail deliberately asserts a false roster count.
+  - Require joy_lifecycle_after_fail to pass on the same warm process with clean roster, button, axis and logs.

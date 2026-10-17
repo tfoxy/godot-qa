@@ -1,0 +1,71 @@
+[gd_scene load_steps=7 format=3]
+
+[ext_resource type="Script" path="res://ui/fixtures/physics_inspect_demo.gd" id="1"]
+
+[sub_resource type="CircleShape2D" id="CircleShape2D_probe"]
+radius = 24.0
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_small"]
+size = Vector2(40, 40)
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_disabled"]
+size = Vector2(52, 52)
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_oversized"]
+size = Vector2(420, 360)
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_layer"]
+size = Vector2(44, 44)
+
+[node name="PhysicsInspectDemo" type="Node2D"]
+script = ExtResource("1")
+
+[node name="PhysicsProbe" type="CharacterBody2D" parent="."]
+position = Vector2(300, 300)
+collision_layer = 1
+collision_mask = 1
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="PhysicsProbe"]
+shape = SubResource("CircleShape2D_probe")
+
+[node name="VisibleBlocker" type="StaticBody2D" parent="."]
+position = Vector2(360, 300)
+collision_layer = 1
+collision_mask = 1
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="VisibleBlocker"]
+shape = SubResource("RectangleShape2D_small")
+
+[node name="HiddenBlocker" type="StaticBody2D" parent="."]
+visible = false
+position = Vector2(420, 300)
+collision_layer = 1
+collision_mask = 1
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="HiddenBlocker"]
+shape = SubResource("RectangleShape2D_small")
+
+[node name="DisabledBlocker" type="StaticBody2D" parent="."]
+position = Vector2(300, 380)
+collision_layer = 1
+collision_mask = 1
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="DisabledBlocker"]
+shape = SubResource("RectangleShape2D_disabled")
+disabled = true
+
+[node name="OversizedBlocker" type="StaticBody2D" parent="."]
+position = Vector2(520, 300)
+collision_layer = 1
+collision_mask = 1
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="OversizedBlocker"]
+shape = SubResource("RectangleShape2D_oversized")
+
+[node name="LayerMismatchBody" type="StaticBody2D" parent="."]
+position = Vector2(300, 450)
+collision_layer = 8
+collision_mask = 8
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="LayerMismatchBody"]
+shape = SubResource("RectangleShape2D_layer")

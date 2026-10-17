@@ -1,0 +1,47 @@
+# OS/editor/AI
+.DS_Store
+.idea/
+.vscode/
+.agents/
+.codex
+.ai/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+build/
+dist/
+pip-wheel-metadata/
+target/
+
+# Godot
+.godot/
+.import/
+*.import
+export.cfg
+export_presets.cfg
+*.translation
+
+# QA generated output
+.qa/
+qa/artifacts/
+qa/tmp/
+qa/reports/
+
+# Local configuration
+.env
+.env.*
+*.local
+.godot-qa.local.toml
+**/qa/config.local.yaml
+
+# Materialized by cargo xtask prepare-sample on every platform.
+/examples/sample_project/addons/godot_qa/

@@ -1,0 +1,45 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://ui/fixtures/visual_risk_blockout_demo.gd" id="1"]
+
+[node name="VisualRiskBlockoutDemo" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1")
+
+[node name="Canvas" type="ColorRect" parent="."]
+layout_mode = 0
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0.16, 0.16, 0.18, 1)
+
+[node name="BlockoutPanel" type="ColorRect" parent="Canvas"]
+layout_mode = 0
+offset_left = 96.0
+offset_top = 80.0
+offset_right = 1184.0
+offset_bottom = 560.0
+color = Color(0.22, 0.22, 0.24, 1)
+
+[node name="DebugPrimaryStrip" type="ColorRect" parent="Canvas"]
+layout_mode = 0
+offset_left = 96.0
+offset_top = 592.0
+offset_right = 1184.0
+offset_bottom = 672.0
+color = Color(1, 0, 0, 1)
+
+[node name="DebugPrimaryAccent" type="ColorRect" parent="Canvas"]
+layout_mode = 0
+offset_left = 1040.0
+offset_top = 96.0
+offset_right = 1168.0
+offset_bottom = 224.0
+color = Color(0, 0, 1, 1)

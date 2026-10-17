@@ -1,0 +1,7 @@
+version: 1
+duration_seconds: 2
+window_seconds: 1
+state: {provider: soak_fixture, epoch: epoch, tick: tick, active: active, phase: phase}
+gauges:
+  - {name: nodes, path: counts.nodes, max: 12, final_max: 12}
+budgets: {frame_p95_ms: 1000, frame_max_ms: 150, min_active_ticks_per_second: 20}

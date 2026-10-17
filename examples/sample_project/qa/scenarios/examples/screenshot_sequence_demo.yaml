@@ -1,0 +1,15 @@
+name: screenshot_sequence_demo
+scene: res://ui/fixtures/screenshot_sequence_demo.tscn
+
+viewport:
+  width: 1280
+  height: 720
+
+determinism:
+  fixed_fps: 60
+  seed: 123
+  locale: en
+  test_mode: true
+
+steps:
+  - wait_frames: 1

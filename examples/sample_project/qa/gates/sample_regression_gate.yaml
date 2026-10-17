@@ -1,0 +1,10 @@
+name: sample_regression_gate
+purpose: Regression gate for core sample menu and settings flows.
+required_scenarios:
+  - sample_main_menu_start
+  - sample_settings_layout
+optional_scenarios:
+  - sample_world_inside_viewport
+recommended_manual_checks:
+  - Inspect the bundle summary artifact and verify each child run root path is present.
+  - Review screenshot and layout evidence before approving any baseline updates.

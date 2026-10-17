@@ -1,0 +1,14 @@
+{
+  "name": "collision_report_demo",
+  "scene": "res://ui/fixtures/collision_report_demo.tscn",
+  "viewport": {"width": 1000, "height": 620},
+  "determinism": {"fixed_fps": 60, "seed": 123, "locale": "en", "test_mode": true},
+  "snapshots": {"save_tree": true, "save_ui": true, "save_logs": true},
+  "steps": [
+    {"wait_frames": 4}
+  ],
+  "assert": [
+    {"state_matches": {"target": "qa:slide_actor", "source": "method", "method": "get_qa_collision_state", "matches": {"fixture": "collision_report_demo", "qa_id": "slide_actor"}}},
+    {"no_errors": true}
+  ]
+}

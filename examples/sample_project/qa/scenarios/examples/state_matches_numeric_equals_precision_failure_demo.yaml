@@ -1,0 +1,27 @@
+name: state_matches_numeric_equals_precision_failure_demo
+scene: res://ui/main_menu.tscn
+
+viewport:
+  width: 1280
+  height: 720
+
+determinism:
+  fixed_fps: 60
+  seed: 123
+  locale: en
+  test_mode: true
+
+steps:
+  - wait_frames: 5
+
+assert:
+  - state_matches:
+      target: qa:demo_actor
+      source: method
+      method: get_qa_probe_values_state
+      path: ""
+      where:
+        id: front
+      value_path: force
+      operator: equals
+      expected: 1.4

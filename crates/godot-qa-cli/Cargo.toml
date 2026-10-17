@@ -1,0 +1,27 @@
+[package]
+name = "godot-qa-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "godot-qa"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+ctrlc = "3.4"
+godot-qa-core = { path = "../godot-qa-core" }
+godot-qa-debug = { path = "../godot-qa-debug" }
+godot-qa-process = { path = "../godot-qa-process" }
+godot-qa-runtime = { path = "../godot-qa-runtime" }
+godot-qa-scenario = { path = "../godot-qa-scenario" }
+getrandom.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }
+libc.workspace = true
+notify = "6.1"
+serde_json.workspace = true
+
+[dev-dependencies]
+godot-qa-test-support = { path = "../godot-qa-test-support" }

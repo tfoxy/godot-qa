@@ -1,0 +1,34 @@
+name: wait_until_demo
+scene: res://ui/main_menu.tscn
+
+viewport:
+  width: 1280
+  height: 720
+
+determinism:
+  fixed_fps: 60
+  seed: 123
+  locale: en
+  test_mode: true
+
+snapshots:
+  save_tree: true
+  save_ui: true
+  save_logs: true
+
+steps:
+  - wait_frames: 2
+  - click: qa:temporal_pending_button
+  - wait_until:
+      source: method
+      target: qa:main_menu
+      method: get_temporal_pending_qa_state
+      path: status
+      operator: equals
+      expected: complete
+      timeout_frames: 120
+      poll_every_frames: 1
+  - snapshot: after_complete
+
+assert:
+  - no_errors: true

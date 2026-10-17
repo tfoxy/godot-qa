@@ -1,0 +1,120 @@
+[gd_scene load_steps=9 format=3]
+
+[ext_resource type="Script" path="res://ui/fixtures/physics_overlay_demo.gd" id="1"]
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_overlay"]
+size = Vector2(72, 48)
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_offset"]
+size = Vector2(64, 40)
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_oversized"]
+size = Vector2(160, 120)
+
+[sub_resource type="CircleShape2D" id="CircleShape2D_trigger"]
+radius = 48.0
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_decorative"]
+size = Vector2(46, 46)
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_floor"]
+size = Vector2(760, 18)
+
+[node name="PhysicsOverlayDemo" type="Node2D"]
+script = ExtResource("1")
+
+[node name="Backdrop" type="Polygon2D" parent="."]
+color = Color(0.105882, 0.12549, 0.145098, 1)
+polygon = PackedVector2Array(80, 120, 920, 120, 920, 540, 80, 540)
+
+[node name="Floor" type="StaticBody2D" parent="."]
+position = Vector2(500, 506)
+collision_layer = 4
+collision_mask = 4
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="Floor"]
+shape = SubResource("RectangleShape2D_floor")
+
+[node name="FloorVisual" type="Polygon2D" parent="Floor"]
+color = Color(0.239216, 0.286275, 0.317647, 1)
+polygon = PackedVector2Array(-380, -9, 380, -9, 380, 9, -380, 9)
+
+[node name="OverlayActor" type="StaticBody2D" parent="."]
+position = Vector2(260, 260)
+collision_layer = 1
+collision_mask = 1
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="OverlayActor"]
+shape = SubResource("RectangleShape2D_overlay")
+
+[node name="VisualBody" type="Polygon2D" parent="OverlayActor"]
+color = Color(0.145098, 0.658824, 0.431373, 1)
+polygon = PackedVector2Array(-36, -24, 36, -24, 36, 24, -36, 24)
+
+[node name="VisualHighlight" type="Polygon2D" parent="OverlayActor"]
+color = Color(0.764706, 0.92549, 0.419608, 1)
+polygon = PackedVector2Array(-22, -14, 22, -14, 22, 14, -22, 14)
+
+[node name="OffsetColliderActor" type="StaticBody2D" parent="."]
+position = Vector2(455, 260)
+collision_layer = 1
+collision_mask = 1
+
+[node name="VisualBody" type="Polygon2D" parent="OffsetColliderActor"]
+color = Color(0.176471, 0.521569, 0.764706, 1)
+polygon = PackedVector2Array(-32, -20, 32, -20, 32, 20, -32, 20)
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="OffsetColliderActor"]
+position = Vector2(34, 0)
+shape = SubResource("RectangleShape2D_offset")
+
+[node name="OffsetMarker" type="Polygon2D" parent="OffsetColliderActor"]
+position = Vector2(34, 0)
+color = Color(0.827451, 0.764706, 0.192157, 0.42)
+polygon = PackedVector2Array(-32, -20, 32, -20, 32, 20, -32, 20)
+
+[node name="OversizedColliderActor" type="StaticBody2D" parent="."]
+position = Vector2(675, 260)
+collision_layer = 1
+collision_mask = 1
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="OversizedColliderActor"]
+shape = SubResource("RectangleShape2D_oversized")
+
+[node name="ColliderHint" type="Polygon2D" parent="OversizedColliderActor"]
+color = Color(0.827451, 0.184314, 0.372549, 0.22)
+polygon = PackedVector2Array(-80, -60, 80, -60, 80, 60, -80, 60)
+
+[node name="VisualBody" type="Polygon2D" parent="OversizedColliderActor"]
+color = Color(0.894118, 0.384314, 0.231373, 1)
+polygon = PackedVector2Array(-26, -26, 26, -26, 26, 26, -26, 26)
+
+[node name="TriggerArea" type="Area2D" parent="."]
+position = Vector2(345, 410)
+collision_layer = 2
+collision_mask = 1
+monitoring = true
+monitorable = true
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="TriggerArea"]
+shape = SubResource("CircleShape2D_trigger")
+
+[node name="TriggerVisual" type="Polygon2D" parent="TriggerArea"]
+color = Color(0.176471, 0.780392, 0.811765, 0.35)
+polygon = PackedVector2Array(48, 0, 33.941, 33.941, 0, 48, -33.941, 33.941, -48, 0, -33.941, -33.941, 0, -48, 33.941, -33.941)
+
+[node name="DecorativePaddingActor" type="StaticBody2D" parent="."]
+position = Vector2(560, 410)
+collision_layer = 1
+collision_mask = 1
+
+[node name="PaddingVisual" type="Polygon2D" parent="DecorativePaddingActor"]
+color = Color(0.619608, 0.505882, 0.831373, 0.32)
+polygon = PackedVector2Array(-50, -36, 50, -36, 50, 36, -50, 36)
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="DecorativePaddingActor"]
+shape = SubResource("RectangleShape2D_decorative")
+
+[node name="SolidVisual" type="Polygon2D" parent="DecorativePaddingActor"]
+color = Color(0.541176, 0.388235, 0.729412, 1)
+polygon = PackedVector2Array(-23, -23, 23, -23, 23, 23, -23, 23)

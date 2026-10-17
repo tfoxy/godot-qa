@@ -1,0 +1,18 @@
+[package]
+name = "godot-qa-scenario"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+godot-qa-core = { path = "../godot-qa-core" }
+godot-qa-process = { path = "../godot-qa-process" }
+godot-qa-runtime = { path = "../godot-qa-runtime" }
+getrandom.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+godot-qa-test-support = { path = "../godot-qa-test-support" }

@@ -1,0 +1,38 @@
+{
+  "name": "record_state_demo",
+  "scene": "res://ui/fixtures/qa_state_schema_demo.tscn",
+  "viewport": { "width": 960, "height": 540 },
+  "determinism": { "fixed_fps": 60, "seed": 123, "locale": "en", "test_mode": true },
+  "snapshots": { "save_tree": true, "save_ui": true, "save_logs": true },
+  "steps": [
+    { "wait_frames": 2 },
+    {
+      "record_state": {
+        "name": "match_summary",
+        "source": "provider",
+        "provider": "schema_demo",
+        "path": "metrics"
+      }
+    },
+    {
+      "record_state": {
+        "name": "full_state",
+        "source": "method",
+        "target": "qa:schema_state_provider",
+        "method": "get_qa_schema_demo_state"
+      }
+    }
+  ],
+  "assert": [
+    {
+      "state_matches": {
+        "source": "provider",
+        "provider": "schema_demo",
+        "matches": [
+          { "path": "metrics.health", "operator": "equals", "expected": 95 }
+        ]
+      }
+    },
+    { "no_errors": true }
+  ]
+}

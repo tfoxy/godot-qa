@@ -1,0 +1,59 @@
+name: project_args_demo
+scene: res://ui/fixtures/project_args_probe.tscn
+
+godot_args:
+  - --single-window
+
+project_args:
+  - --save-slot
+  - qa-profile
+  - --seed=42
+
+viewport:
+  width: 1280
+  height: 720
+
+determinism:
+  fixed_fps: 60
+  seed: 123
+  locale: en
+  test_mode: true
+
+snapshots:
+  save_tree: true
+  save_ui: true
+  save_screenshot: false
+  save_logs: true
+
+lint:
+  validates_project_args: true
+
+steps:
+  - wait_frames: 2
+
+assert:
+  - state_matches:
+      target: qa:project_args_probe
+      source: method
+      method: get_project_args_qa_state
+      path: project_args
+      operator: equals
+      expected:
+        - --save-slot
+        - qa-profile
+        - --seed=42
+  - state_matches:
+      target: qa:project_args_probe
+      source: method
+      method: get_project_args_qa_state
+      path: project_arg_count
+      operator: equals
+      expected: 3
+  - state_matches:
+      target: qa:project_args_probe
+      source: method
+      method: get_project_args_qa_state
+      path: observed_qa_separator_side
+      operator: equals
+      expected: true
+  - no_errors: true

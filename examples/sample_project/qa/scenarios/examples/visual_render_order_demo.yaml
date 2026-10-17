@@ -1,0 +1,42 @@
+name: visual_render_order_demo
+scene: res://ui/fixtures/visual_occlusion_demo.tscn
+
+viewport:
+  width: 1280
+  height: 720
+
+determinism:
+  fixed_fps: 60
+  seed: 123
+  locale: en
+  test_mode: true
+
+snapshots:
+  save_tree: true
+  save_ui: true
+  save_logs: true
+  save_screenshot: true
+
+steps:
+  - wait_frames: 2
+  - call_method:
+      target: qa:visual_occlusion_demo
+      method: qa_show_partial_occlusion
+  - wait_frames: 1
+  - snapshot: order_before
+  - call_method:
+      target: qa:visual_occlusion_demo
+      method: qa_swap_z_order
+  - wait_frames: 1
+  - snapshot: order_after
+
+assert:
+  - renders_below:
+      target: qa:important_actor
+      other: qa:partial_occluder
+      snapshot: order_before
+  - renders_above:
+      target: qa:important_actor
+      other: qa:partial_occluder
+      snapshot: order_after
+  - no_errors: true

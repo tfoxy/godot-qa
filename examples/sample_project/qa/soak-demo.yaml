@@ -1,0 +1,5 @@
+version: 1
+duration_seconds: 1
+window_seconds: 1
+budgets:
+  frame_max_ms: 1000

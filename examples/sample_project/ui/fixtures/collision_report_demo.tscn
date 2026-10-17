@@ -1,0 +1,132 @@
+[gd_scene load_steps=9 format=3]
+
+[ext_resource type="Script" path="res://ui/fixtures/collision_report_demo.gd" id="1"]
+
+[sub_resource type="CircleShape2D" id="CircleShape2D_actor"]
+radius = 16.0
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_wall"]
+size = Vector2(34, 120)
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_floor"]
+size = Vector2(180, 26)
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_trigger"]
+size = Vector2(96, 64)
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_gap_left"]
+size = Vector2(28, 96)
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_gap_right"]
+size = Vector2(28, 96)
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_pad"]
+size = Vector2(140, 28)
+
+[node name="CollisionReportDemo" type="CharacterBody2D"]
+script = ExtResource("1")
+metadata/collision_report_role = "scene"
+
+[node name="SlideActor" type="CharacterBody2D" parent="."]
+position = Vector2(120, 120)
+collision_layer = 1
+collision_mask = 1
+script = ExtResource("1")
+metadata/collision_report_role = "slide_actor"
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="SlideActor"]
+shape = SubResource("CircleShape2D_actor")
+
+[node name="SlideSurface" type="StaticBody2D" parent="."]
+position = Vector2(330, 220)
+collision_layer = 1
+collision_mask = 1
+metadata/qa_id = "slide_surface"
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="SlideSurface"]
+shape = SubResource("RectangleShape2D_wall")
+
+[node name="BouncyActor" type="CharacterBody2D" parent="."]
+position = Vector2(130, 320)
+collision_layer = 1
+collision_mask = 1
+script = ExtResource("1")
+metadata/collision_report_role = "bouncy_actor"
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="BouncyActor"]
+shape = SubResource("CircleShape2D_actor")
+
+[node name="ReboundWall" type="StaticBody2D" parent="."]
+position = Vector2(210, 320)
+collision_layer = 1
+collision_mask = 1
+metadata/qa_id = "rebound_wall"
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="ReboundWall"]
+shape = SubResource("RectangleShape2D_wall")
+
+[node name="SoftActor" type="CharacterBody2D" parent="."]
+position = Vector2(490, 120)
+collision_layer = 1
+collision_mask = 1
+script = ExtResource("1")
+metadata/collision_report_role = "soft_actor"
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="SoftActor"]
+shape = SubResource("CircleShape2D_actor")
+
+[node name="SoftTrigger" type="Area2D" parent="."]
+position = Vector2(590, 120)
+collision_layer = 1
+collision_mask = 1
+metadata/qa_id = "soft_trigger"
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="SoftTrigger"]
+shape = SubResource("RectangleShape2D_trigger")
+
+[node name="DampingActor" type="CharacterBody2D" parent="."]
+position = Vector2(490, 320)
+collision_layer = 1
+collision_mask = 1
+script = ExtResource("1")
+metadata/collision_report_role = "damping_actor"
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="DampingActor"]
+shape = SubResource("CircleShape2D_actor")
+
+[node name="DampingPad" type="StaticBody2D" parent="."]
+position = Vector2(490, 420)
+collision_layer = 1
+collision_mask = 1
+metadata/qa_id = "damping_pad"
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="DampingPad"]
+shape = SubResource("RectangleShape2D_pad")
+
+[node name="StuckActor" type="CharacterBody2D" parent="."]
+position = Vector2(820, 220)
+collision_layer = 1
+collision_mask = 1
+script = ExtResource("1")
+metadata/collision_report_role = "stuck_actor"
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="StuckActor"]
+shape = SubResource("CircleShape2D_actor")
+
+[node name="StuckGapLeft" type="StaticBody2D" parent="."]
+position = Vector2(792, 220)
+collision_layer = 1
+collision_mask = 1
+metadata/qa_id = "stuck_gap_left"
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="StuckGapLeft"]
+shape = SubResource("RectangleShape2D_gap_left")
+
+[node name="StuckGapRight" type="StaticBody2D" parent="."]
+position = Vector2(848, 220)
+collision_layer = 1
+collision_mask = 1
+metadata/qa_id = "stuck_gap_right"
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="StuckGapRight"]
+shape = SubResource("RectangleShape2D_gap_right")

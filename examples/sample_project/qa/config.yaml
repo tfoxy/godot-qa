@@ -1,0 +1,2 @@
+# Machine-specific overrides belong in config.local.yaml.
+godot: {}

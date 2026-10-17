@@ -1,0 +1,31 @@
+{
+  "name": "surface_probe_demo",
+  "scene": "res://ui/main_menu.tscn",
+  "viewport": {"width": 1280, "height": 720},
+  "determinism": {"fixed_fps": 60, "seed": 123, "locale": "en", "test_mode": true},
+  "snapshots": {"save_tree": true, "save_ui": true, "save_logs": true},
+  "steps": [
+    {"wait_frames": 5},
+    {"call_method": {"target": "qa:main_menu", "method": "qa_surface_place_matching"}},
+    {"wait_frames": 2}
+  ],
+  "assert": [
+    {
+      "surface_probe": {
+        "target": "qa:demo_actor",
+        "provider": "qa:demo_actor",
+        "provider_method": "qa_probe_surface",
+        "coordinate_space": "world_2d",
+        "surfaces": ["walkable", "blocked", "water"],
+        "points": [
+          {"x": 56, "y": 388, "expected": "walkable"},
+          {"x": 120, "y": 420, "expected": "walkable"},
+          {"x": 184, "y": 420, "expected": "blocked"},
+          {"x": 120, "y": 484, "expected": "water"}
+        ]
+      }
+    },
+    {"surface_matches": {"target": "qa:demo_actor", "surface": "walkable"}},
+    {"no_errors": true}
+  ]
+}

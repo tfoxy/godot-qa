@@ -1,0 +1,11 @@
+name: long_wait_fastest_smoke
+steps:
+  - session_start:
+      scene: res://ui/main_menu.tscn
+      headless: true
+      frame_pacing:
+        mode: fastest
+        fixed_fps: 60
+  - wait:
+      frames: 360
+  - errors: true

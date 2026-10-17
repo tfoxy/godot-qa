@@ -1,0 +1,11 @@
+name: soak_provider_600
+scene: res://qa/fixtures/soak_world.tscn
+time_control:
+  time_scale: 1.0
+timeout_seconds: 660
+project_args:
+  - --qa-soak-duration=600
+steps:
+  - wait_frames: 2
+assert:
+  - no_errors: true

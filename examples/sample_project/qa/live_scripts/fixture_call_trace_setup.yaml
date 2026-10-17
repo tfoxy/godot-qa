@@ -1,0 +1,10 @@
+name: fixture_call_trace_setup
+steps:
+  - session_start:
+      scene: res://ui/fixtures/trace_record_demo.tscn
+      headless: true
+  - fixture_call:
+      driver: trace_driver
+      action: prepare_trace
+  - wait:
+      frames: 2

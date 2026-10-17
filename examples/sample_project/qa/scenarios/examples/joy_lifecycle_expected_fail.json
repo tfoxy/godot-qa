@@ -1,0 +1,19 @@
+{
+  "name": "joy_lifecycle_expected_fail",
+  "scene": "res://ui/fixtures/live_input_probe.tscn",
+  "viewport": {"width": 1280, "height": 720},
+  "determinism": {"fixed_fps": 60, "seed": 123, "locale": "en", "test_mode": true},
+  "snapshots": {"save_tree": false, "save_ui": false, "save_logs": true},
+  "steps": [
+    {"joy_connect": {"devices": [40]}},
+    {"input_joy_state": {"inputs": [
+      {"device": 40, "button": {"name": "b", "pressed": true}},
+      {"device": 40, "motion": {"axis": "left_x", "value": 1.0}}
+    ], "frames": 1}},
+    {"assert": [{"state_matches": {"source": "method", "target": "qa:live_input_probe",
+      "method": "get_qa_virtual_pad_cleanup", "matches": [
+        {"path": "effective_roster_count", "operator": "equals", "expected": 0}
+      ]}}]}
+  ],
+  "assert": []
+}

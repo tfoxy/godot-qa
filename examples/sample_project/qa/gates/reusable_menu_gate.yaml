@@ -1,0 +1,8 @@
+name: reusable_menu_gate
+purpose: Reusable sample menu checks for composed regression gates.
+required_scenarios:
+  - sample_main_menu_start
+optional_scenarios:
+  - sample_world_inside_viewport
+recommended_manual_checks:
+  - Confirm included child runs keep their source_bundle metadata.

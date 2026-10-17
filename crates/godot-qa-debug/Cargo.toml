@@ -1,0 +1,11 @@
+[package]
+name = "godot-qa-debug"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+godot-qa-scene = { path = "../godot-qa-scene" }
+serde.workspace = true
+serde_json.workspace = true

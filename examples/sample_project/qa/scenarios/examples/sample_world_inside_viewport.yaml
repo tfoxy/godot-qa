@@ -1,0 +1,26 @@
+name: sample_world_inside_viewport
+scene: res://ui/fixtures/world_inside_viewport_probe.tscn
+
+viewport:
+  width: 1280
+  height: 720
+
+determinism:
+  fixed_fps: 60
+  seed: 123
+  locale: en
+  test_mode: true
+
+snapshots:
+  save_tree: true
+  save_ui: true
+  save_logs: true
+
+steps:
+  - wait_frames: 5
+  - snapshot: settled
+
+assert:
+  - exists: qa:world_probe_player
+  - inside_viewport: qa:world_probe_player
+  - no_errors: true

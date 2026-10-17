@@ -1,0 +1,50 @@
+{
+  "name": "input_joy_state_demo",
+  "scene": "res://ui/fixtures/live_input_probe.tscn",
+  "viewport": { "width": 1280, "height": 720 },
+  "determinism": { "fixed_fps": 60, "seed": 123, "locale": "en", "test_mode": true },
+  "snapshots": { "save_tree": true, "save_ui": true, "save_logs": true },
+  "steps": [
+    { "wait_frames": 5 },
+    {
+      "input_joy_state": {
+        "inputs": [
+          { "device": 0, "button": { "name": "a", "pressed": true } },
+          { "device": 3, "button": { "name": "x", "pressed": true } },
+          { "device": 3, "motion": { "axis": "left_x", "value": -1.0 } }
+        ],
+        "frames": 10
+      }
+    },
+    {
+      "assert": [
+        {
+          "state_matches": {
+            "source": "method",
+            "target": "qa:live_input_probe",
+            "method": "get_qa_joy_state",
+            "matches": [
+              { "path": "device0_a", "operator": "equals", "expected": true },
+              { "path": "device3_x", "operator": "equals", "expected": true },
+              { "path": "both_buttons_held", "operator": "equals", "expected": true },
+              { "path": "device3_left_x", "operator": "within", "expected": -1.0, "tolerance": 0.01 }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "assert": [
+    {
+      "state_matches": {
+        "source": "method",
+        "target": "qa:live_input_probe",
+        "method": "get_qa_joy_state",
+        "matches": [
+          { "path": "both_buttons_held", "operator": "equals", "expected": true }
+        ]
+      }
+    },
+    { "no_errors": true }
+  ]
+}

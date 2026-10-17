@@ -1,0 +1,77 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://ui/fixtures/screenshot_sequence_demo.gd" id="1"]
+
+[node name="ScreenshotSequenceDemo" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1")
+
+[node name="Canvas" type="ColorRect" parent="."]
+layout_mode = 0
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0.08, 0.09, 0.1, 1)
+
+[node name="Title" type="Label" parent="Canvas"]
+layout_mode = 0
+offset_left = 96.0
+offset_top = 64.0
+offset_right = 640.0
+offset_bottom = 112.0
+theme_override_font_sizes/font_size = 32
+text = "Screenshot Sequence Demo"
+
+[node name="Track" type="ColorRect" parent="Canvas"]
+layout_mode = 0
+offset_left = 96.0
+offset_top = 292.0
+offset_right = 1184.0
+offset_bottom = 324.0
+color = Color(0.18, 0.21, 0.25, 1)
+
+[node name="Marker" type="ColorRect" parent="Canvas"]
+layout_mode = 0
+offset_left = 88.0
+offset_top = 252.0
+offset_right = 136.0
+offset_bottom = 364.0
+color = Color(0.13, 0.62, 0.94, 1)
+
+[node name="PhaseBar" type="ColorRect" parent="Canvas"]
+layout_mode = 0
+offset_left = 200.0
+offset_top = 456.0
+offset_right = 1080.0
+offset_bottom = 504.0
+color = Color(0.16, 0.17, 0.19, 1)
+
+[node name="Fill" type="ColorRect" parent="Canvas/PhaseBar"]
+layout_mode = 0
+offset_right = 1.0
+offset_bottom = 48.0
+color = Color(0.35, 0.78, 0.45, 1)
+
+[node name="Pulse" type="ColorRect" parent="Canvas"]
+layout_mode = 0
+offset_left = 96.0
+offset_top = 448.0
+offset_right = 160.0
+offset_bottom = 512.0
+color = Color(0.95, 0.29, 0.18, 1)
+
+[node name="FrameLabel" type="Label" parent="Canvas"]
+layout_mode = 0
+offset_left = 96.0
+offset_top = 584.0
+offset_right = 420.0
+offset_bottom = 624.0
+theme_override_font_sizes/font_size = 28
+text = "Frame 0000"

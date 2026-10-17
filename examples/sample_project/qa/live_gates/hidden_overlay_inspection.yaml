@@ -1,0 +1,15 @@
+name: hidden_overlay_inspection
+scene: res://ui/main_menu.tscn
+overlay:
+  required: hidden
+anchors:
+  required:
+    - main_menu
+    - start_button
+    - demo_actor
+  optional:
+    - deliberately_optional_missing_anchor
+methods:
+  - main_menu.get_raft_motion_qa_state
+probes:
+  - demo_actor.qa_probe_surface

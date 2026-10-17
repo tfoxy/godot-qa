@@ -1,0 +1,22 @@
+{
+  "fixture": "qa_state_schema_demo",
+  "schema_version": 1,
+  "status": "broken",
+  "score": "too-high",
+  "frame": 12,
+  "tags": ["schema", "demo"],
+  "metrics": {
+    "health": 95,
+    "stamina": 64
+  },
+  "controls": {
+    "focused": true,
+    "enabled": true
+  },
+  "samples": [
+    {
+      "name": "baseline",
+      "value": 1.25
+    }
+  ]
+}

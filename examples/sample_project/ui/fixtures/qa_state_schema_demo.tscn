@@ -1,0 +1,40 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://ui/fixtures/qa_state_schema_demo.gd" id="1"]
+
+[node name="QaStateSchemaDemo" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1")
+
+[node name="Background" type="ColorRect" parent="."]
+layout_mode = 0
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0.08, 0.09, 0.11, 1)
+
+[node name="TitleLabel" type="Label" parent="Background"]
+layout_mode = 0
+offset_left = 80.0
+offset_top = 80.0
+offset_right = 780.0
+offset_bottom = 126.0
+theme_override_font_sizes/font_size = 30
+text = "QA State Schema Demo"
+
+[node name="BodyLabel" type="Label" parent="Background"]
+layout_mode = 0
+offset_left = 80.0
+offset_top = 148.0
+offset_right = 860.0
+offset_bottom = 214.0
+theme_override_font_sizes/font_size = 18
+text = "Deterministic provider for qa-state validate schema fixtures."
+autowrap_mode = 3

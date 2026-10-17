@@ -1,0 +1,18 @@
+name: fixture_driver_registry_demo
+scene: res://ui/fixtures/qa_state_schema_demo.tscn
+viewport:
+  width: 960
+  height: 540
+steps:
+  - fixture_call:
+      driver: schema_driver
+      action: set_status
+      params:
+        status: gameplay
+assert:
+  - state_matches:
+      source: provider
+      provider: schema_demo
+      path: status
+      operator: equals
+      expected: gameplay

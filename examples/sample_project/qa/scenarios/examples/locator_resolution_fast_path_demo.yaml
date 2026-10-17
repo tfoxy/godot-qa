@@ -1,0 +1,28 @@
+name: locator_resolution_fast_path_demo
+scene: res://ui/main_menu.tscn
+
+viewport:
+  width: 1280
+  height: 720
+
+determinism:
+  fixed_fps: 60
+  seed: 123
+  locale: en
+  test_mode: true
+
+snapshots:
+  save_tree: true
+  save_ui: true
+  save_logs: true
+
+steps:
+  - wait_frames: 5
+
+assert:
+  - exists: qa:metadata_only_target
+  - exists: qa:canonical_group_only_target
+  - exists: qa:compat_group_only_target
+  - exists: qa:alias_only_target
+  - not_exists: qa:mismatched_group_target
+  - no_errors: true

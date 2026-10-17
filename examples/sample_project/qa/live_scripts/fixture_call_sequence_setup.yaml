@@ -1,0 +1,12 @@
+name: fixture_call_sequence_setup
+steps:
+  - session_start:
+      scene: res://ui/fixtures/screenshot_sequence_demo.tscn
+      headless: false
+  - fixture_call:
+      driver: screenshot_sequence_driver
+      action: set_status
+      params:
+        status: screenshot-sequence
+  - wait:
+      frames: 2

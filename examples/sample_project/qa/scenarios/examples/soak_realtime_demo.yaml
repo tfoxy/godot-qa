@@ -1,0 +1,9 @@
+name: soak_realtime_demo
+scene: res://ui/main_menu.tscn
+time_control:
+  time_scale: 1.0
+timeout_seconds: 5
+steps:
+  - wait_frames: 2
+assert:
+  - no_errors: true

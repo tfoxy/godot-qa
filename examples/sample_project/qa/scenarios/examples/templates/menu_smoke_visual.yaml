@@ -1,0 +1,17 @@
+# Concrete child that opts into screenshot capture and REPLACES the inherited
+# steps array wholesale (arrays never merge). The replacement adds one extra
+# trailing `wait_frames` step to demonstrate array-replace semantics: to change
+# a single step you must restate the whole list, or parameterize it with a var.
+name: menu_smoke_visual
+extends: menu_smoke.base.yaml
+
+vars:
+  save_screenshot: true
+
+steps:
+  - wait_frames: "${wait_frames}"
+  - snapshot: "${snapshot_before}"
+  - click: qa:start_button
+  - wait_frames: "${post_click_frames}"
+  - snapshot: "${snapshot_after}"
+  - wait_frames: 3

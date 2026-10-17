@@ -1,0 +1,4 @@
+interface:
+  display_name: "Godot QA"
+  short_description: "Validate Godot behavior with runtime evidence"
+  default_prompt: "Use $godot-qa to validate this Godot project with focused checks and runtime evidence."

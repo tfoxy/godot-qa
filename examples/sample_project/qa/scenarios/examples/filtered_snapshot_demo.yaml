@@ -1,0 +1,36 @@
+name: filtered_snapshot_demo
+scene: res://ui/main_menu.tscn
+
+viewport:
+  width: 1920
+  height: 1080
+
+determinism:
+  fixed_fps: 60
+  seed: 123
+  locale: en
+  test_mode: true
+
+viewports: []
+
+snapshots:
+  save_tree: true
+  save_ui: true
+  save_screenshot: true
+  save_logs: true
+  target: qa:main_menu_buttons
+  max_depth: 1
+  qa_only: true
+  include_metadata: true
+  metadata_keys:
+    - qa_id
+    - qa_aliases
+
+steps:
+  - wait_frames: 5
+  - snapshot: filtered_menu_buttons
+
+assert:
+  - visible: qa:start_button
+  - visible: qa:settings_button
+  - no_errors: true

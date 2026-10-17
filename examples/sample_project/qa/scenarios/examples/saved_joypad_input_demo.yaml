@@ -1,0 +1,39 @@
+name: saved_joypad_input_demo
+scene: res://ui/fixtures/live_input_probe.tscn
+
+viewport:
+  width: 1280
+  height: 720
+
+determinism:
+  fixed_fps: 60
+  seed: 123
+  locale: en
+  test_mode: true
+
+snapshots:
+  save_tree: true
+  save_ui: true
+  save_logs: true
+
+steps:
+  - wait_frames: 5
+  - input_joy_button:
+      button: start
+      device: 2
+      frames: 2
+  - assert:
+      - text_contains:
+          target: qa:input_probe_result
+          expected: joy:start:device=2
+  - input_joy_motion:
+      axis: left_x
+      value: 1.0
+      device: 2
+      frames: 2
+
+assert:
+  - text_contains:
+      target: qa:input_probe_result
+      expected: joy:motion:device=2:left_x=1.00
+  - no_errors: true

@@ -1,0 +1,74 @@
+name: Native quality and packages
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust
+        shell: bash
+        run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy
+      - name: Install Linux runtime dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb xauth libgl1 libasound2 libxcursor1 libxinerama1 libxrandr2 libxi6
+      - name: Install pinned Godot with checksum verification
+        shell: pwsh
+        run: ./.github/scripts/install-godot.ps1
+      - name: Prepare portable sample and import
+        shell: pwsh
+        run: |
+          cargo xtask prepare-sample
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          & $env:GODOT_BIN --headless --path examples/sample_project --import
+          exit $LASTEXITCODE
+      - name: Rust tests (Linux virtual display)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a cargo test --workspace --locked --no-fail-fast
+      - name: Rust tests (Windows desktop)
+        if: runner.os == 'Windows'
+        run: cargo test --workspace --locked --no-fail-fast
+      - name: Formatting
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Optimized package and runtime acceptance (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a cargo xtask package ${{ matrix.target }}
+      - name: Optimized package and runtime acceptance (Windows)
+        if: runner.os == 'Windows'
+        run: cargo xtask package ${{ matrix.target }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 7
+      - name: Failure evidence
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: failure-${{ matrix.target }}
+          path: examples/sample_project/.qa/artifacts/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7

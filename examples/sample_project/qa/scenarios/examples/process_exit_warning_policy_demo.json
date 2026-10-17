@@ -1,0 +1,23 @@
+{
+  "name": "process_exit_warning_policy_demo",
+  "scene": "res://ui/main_menu.tscn",
+  "viewport": {
+    "width": 1280,
+    "height": 720
+  },
+  "process_outcome_policy": {
+    "known_wrapper_exit_codes": [
+      7
+    ]
+  },
+  "steps": [
+    {
+      "wait_frames": 5
+    }
+  ],
+  "assert": [
+    {
+      "no_errors": true
+    }
+  ]
+}

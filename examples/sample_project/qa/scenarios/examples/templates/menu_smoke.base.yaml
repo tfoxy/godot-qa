@@ -1,0 +1,56 @@
+# Abstract scenario template. `abstract: true` keeps it out of `scenario list`,
+# run-by-name, and bundle resolution: it is only ever pulled in through a
+# concrete child's `extends`. It mirrors the real, runnable main-menu flow from
+# sample_main_menu_start.yaml, parameterized with `${...}` vars so children can
+# retune it without repeating the whole document.
+abstract: true
+
+vars:
+  # `wait_frames: "${...}"` is the canonical quoted-string example: the exact
+  # string is replaced by the raw typed JSON value, so it becomes an integer.
+  wait_frames: 5
+  post_click_frames: 10
+  save_screenshot: false
+  snapshot_before: before
+  snapshot_after: after_start
+  menu_target: qa:pause_menu
+  save_slot: qa-profile
+
+scene: res://ui/main_menu.tscn
+
+viewport:
+  width: 1920
+  height: 1080
+
+determinism:
+  fixed_fps: 60
+  seed: 123
+  locale: en
+  test_mode: true
+
+# Parameterized project_args (passed to the game after `--`). The main-menu
+# scene ignores these, so they are safe filler that demonstrates substitution
+# inside a list.
+project_args:
+  - --save-slot
+  - "${save_slot}"
+
+snapshots:
+  save_tree: true
+  save_ui: true
+  save_screenshot: "${save_screenshot}"
+  save_logs: true
+
+steps:
+  - wait_frames: "${wait_frames}"
+  - snapshot: "${snapshot_before}"
+  - click: qa:start_button
+  - wait_frames: "${post_click_frames}"
+  - snapshot: "${snapshot_after}"
+
+assert:
+  - exists: "${menu_target}"
+  - visible: "${menu_target}"
+  - focused: qa:resume_button
+  - hidden: qa:main_menu_buttons
+  - no_errors: true
