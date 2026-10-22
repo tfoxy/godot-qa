@@ -2180,6 +2180,7 @@ mod tests {
     use std::env;
     use std::fs::{self, File};
     use std::io::Write;
+    #[cfg(unix)]
     use std::path::Path;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicU64, Ordering};
