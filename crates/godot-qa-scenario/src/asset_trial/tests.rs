@@ -4,7 +4,8 @@ use std::collections::BTreeMap;
 fn root() -> PathBuf {
     let root = std::env::temp_dir().join(format!("godot-qa-trial-test-{}", random_id().unwrap()));
     fs::create_dir_all(&root).unwrap();
-    root
+    // Production journals store the canonical path, including the Windows prefix.
+    fs::canonicalize(root).unwrap()
 }
 fn journal(root: &Path) -> Journal {
     let id = random_id().unwrap();
