@@ -9,6 +9,7 @@ mod args;
 mod artifact;
 mod artifact_export;
 mod artifact_verdict;
+mod asset_commands;
 mod audio;
 mod check_command;
 mod collision_report;
@@ -121,6 +122,7 @@ where
         Commands::Doctor(ref args) => doctor_result(&cli, args),
         Commands::InstallSkills => install_skills::install_skills_result(&cli),
         Commands::Import => import_result(&cli),
+        Commands::Asset(ref args) => asset_commands::asset_result(&cli, args),
         Commands::Check(ref args) if args.tests => check_tests_result(&cli, args),
         Commands::Check(_) => check_result(&cli),
         Commands::Diagnostics(ref args) => match args.command {
@@ -231,6 +233,20 @@ fn run_debug_host(args: &DebugHostArgs) -> Result<i32, i32> {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
+    let _project_lease = args
+        .project_root
+        .as_deref()
+        .map(|project| {
+            godot_qa_process::project_access::LaunchLease::acquire(
+                project,
+                godot_qa_process::project_access::LaunchClass::SourceWriter,
+            )
+        })
+        .transpose()
+        .map_err(|error| {
+            eprintln!("godot-qa: {}", error.message.unwrap_or(error.kind));
+            1
+        })?;
     let shutdown = Arc::new(AtomicBool::new(false));
     let handler_flag = Arc::clone(&shutdown);
     let _ = ctrlc::set_handler(move || handler_flag.store(true, Ordering::SeqCst));
@@ -461,6 +477,12 @@ fn command_path(command: &Commands) -> &'static str {
         Commands::Doctor(_) => "doctor",
         Commands::InstallSkills => "install-skills",
         Commands::Import => "import",
+        Commands::Asset(args) => match args.command {
+            AssetCommands::Try { .. } => "asset try",
+            AssetCommands::Status { .. } => "asset status",
+            AssetCommands::Keep { .. } => "asset keep",
+            AssetCommands::Discard { .. } => "asset discard",
+        },
         Commands::Check(_) => "check",
         Commands::Diagnostics(args) => match args.command {
             DiagnosticsCommands::Editor(_) => "diagnostics editor",

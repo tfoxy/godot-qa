@@ -484,7 +484,11 @@ fn select_run_dirs_for_removal<K: Ord + Clone>(
     keep: usize,
     parse_run_id: impl Fn(&str) -> Option<K>,
 ) -> (Vec<PathBuf>, Option<K>) {
-    if keep == 0 {
+    if keep == 0
+        || run_parent
+            .ancestors()
+            .any(|path| path.join(".asset-trial-pin").is_file())
+    {
         return (Vec::new(), None);
     }
     let Ok(entries) = fs::read_dir(run_parent) else {

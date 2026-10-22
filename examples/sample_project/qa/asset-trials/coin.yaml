@@ -1,0 +1,25 @@
+format: godot-qa.asset-trial.v1
+scene: res://ui/fixtures/asset_coin.tscn
+validation:
+  scenario: asset_coin_pickup
+bindings:
+  - id: coin_texture
+    source: assets/asset_trial/coin_trial.png
+    destination: res://assets/asset_trial/coin_candidate.png
+    edit_path: CoinSprite
+    runtime_target: qa:asset_coin_sprite
+    property: texture
+    evidence:
+      snapshot: asset_coin_visible
+      state_before: asset_coin_before
+      state_after: asset_coin_after
+  - id: pickup_sfx
+    source: assets/asset_trial/pickup_trial.wav
+    destination: res://assets/asset_trial/pickup_candidate.wav
+    edit_path: PickupSound
+    runtime_target: qa:asset_coin_sfx
+    property: stream
+    evidence:
+      audio: asset_coin_sfx
+      state_before: asset_audio_before
+      state_after: asset_audio_after

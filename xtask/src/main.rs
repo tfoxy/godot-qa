@@ -141,6 +141,11 @@ fn copy_distribution(stage: &Path) -> Result {
 
 fn prepare_sample() -> Result {
     let sample = root().join("examples/sample_project");
+    let _project_lease = godot_qa_process::project_access::LaunchLease::acquire(
+        &sample,
+        godot_qa_process::project_access::LaunchClass::SourceWriter,
+    )
+    .map_err(|error| std::io::Error::other(serde_json::to_string(&error).unwrap_or_default()))?;
     let target = sample.join("addons/godot_qa");
     if let Ok(metadata) = fs::symlink_metadata(&target) {
         if metadata.file_type().is_symlink() {

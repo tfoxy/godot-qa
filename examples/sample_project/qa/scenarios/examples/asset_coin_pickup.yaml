@@ -1,0 +1,64 @@
+name: asset_coin_pickup
+scene: res://ui/fixtures/asset_trial_gameplay.tscn
+
+viewport:
+  width: 960
+  height: 540
+
+determinism:
+  fixed_fps: 60
+  seed: 321
+  locale: en
+  test_mode: true
+
+project_args: []
+
+snapshots:
+  save_tree: true
+  save_ui: true
+  save_logs: true
+  save_screenshot: true
+
+steps:
+  - wait_frames: 2
+  - record_state:
+      name: asset_coin_before
+      source: method
+      target: qa:asset_trial_gameplay
+      method: get_asset_trial_qa_state
+  - snapshot: asset_coin_visible
+  - record_state:
+      name: asset_coin_after
+      source: method
+      target: qa:asset_trial_gameplay
+      method: get_asset_trial_qa_state
+  - call_method:
+      target: qa:asset_trial_gameplay
+      method: qa_schedule_pickup
+      args: [0.3]
+  - record_state:
+      name: asset_audio_before
+      source: method
+      target: qa:asset_trial_gameplay
+      method: get_asset_trial_qa_state
+  - audio_capture:
+      name: asset_coin_sfx
+      duration_seconds: 1.0
+      bus: SFX
+      analyze: true
+  - record_state:
+      name: asset_audio_after
+      source: method
+      target: qa:asset_trial_gameplay
+      method: get_asset_trial_qa_state
+
+assert:
+  - state_matches:
+      source: method
+      target: qa:asset_trial_gameplay
+      method: get_asset_trial_qa_state
+      matches:
+        - path: pickup_count
+          operator: equals
+          expected: 1
+  - no_errors: true

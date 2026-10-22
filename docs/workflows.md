@@ -365,6 +365,57 @@ godot-qa scenario bundle run composed_regression_gate --project examples/sample_
 godot-qa scenario bundle run screenshot_heavy_regression_gate --project examples/sample_project --json
 ```
 
+## Verify a texture and sound asset trial
+
+An asset trial binds source media into an existing saved scene temporarily,
+runs one deterministic scenario, and leaves passing changes ready for an
+explicit keep or discard. The sample manifest binds a PNG to a coin sprite and
+a PCM16 WAV to its persistent pickup sound player. The gameplay scenario starts
+a parent scene that instances the edited scene, captures the visible sprite,
+then schedules the pickup before capturing SFX playback.
+
+The opt-in Rust integration acceptance covers PNG-only, WAV-only, and combined
+trials; status, discard, keep plus fresh replay; and conflict retry recovery.
+It creates disposable copies of the complete sample and
+runs real Godot imports, rendered captures, and non-silent audio capture. On a
+local Linux desktop with Godot, Gamescope, and an audio server available, run
+the rendered acceptance in a headless Gamescope display:
+
+```bash
+XMODIFIERS=@im=none /usr/games/gamescope --backend headless \
+  --expose-wayland -W 1920 -H 1080 -- env XMODIFIERS=@im=none \
+  GODOT_QA_ASSET_TRIAL_ACCEPTANCE=1 cargo test -p godot-qa-cli \
+  --test asset_trial_cli real_asset_trial_lifecycle_acceptance \
+  -- --exact --nocapture
+```
+
+CI runs this acceptance in a private Xvfb display only when
+`asset_trial_acceptance` is enabled on the manual workflow dispatch. Local
+rendered acceptance uses headless Gamescope as shown above. The normal quality
+matrix runs the workspace tests on both Linux and Windows, including the
+platform-native filesystem coverage.
+
+Run the trial only against a disposable copy because `asset try` changes the
+selected project's scene until it is kept or discarded. For example:
+
+```bash
+cp -a examples/sample_project /tmp/godot-qa-asset-trial
+godot-qa asset try qa/asset-trials/coin.yaml --project /tmp/godot-qa-asset-trial --json
+godot-qa asset status --project /tmp/godot-qa-asset-trial --json
+godot-qa asset discard <trial-id> --project /tmp/godot-qa-asset-trial --json
+```
+
+`status` includes the generated trial ID and before/after evidence paths. After
+reviewing a passing candidate, use `asset keep <trial-id>` instead of discard.
+The sample project includes a pre-existing `.gdignore` under `.qa/artifacts/`
+so its evidence cannot be imported as game content. The standalone scenario and
+regression bundle can be run without applying a trial:
+
+```bash
+godot-qa scenario run asset_coin_pickup --project examples/sample_project --json
+godot-qa scenario bundle run asset_trials --project examples/sample_project --json
+```
+
 ## Android live sessions
 
 Android is a first-class target for authenticated live sessions:

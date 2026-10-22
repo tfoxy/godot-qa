@@ -29,6 +29,24 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub(crate) fn run_session_watch(cli: &Cli, args: &SessionWatchArgs) -> Result<i32, i32> {
     let config = runtime_config(cli);
+    let _project_lease = match godot_qa_process::project_access::LaunchLease::acquire(
+        &config.project_root,
+        godot_qa_process::project_access::LaunchClass::SourceWriter,
+    ) {
+        Ok(lease) => lease,
+        Err(failure) => {
+            let result = CommandResult {
+                ok: false,
+                command: "session watch".into(),
+                message: "project is reserved by an asset trial".into(),
+                data: Map::new(),
+                failures: vec![failure],
+                exit_code: 1,
+            };
+            print_result(&result, cli.json).map_err(|_| 1)?;
+            return Ok(result.exit_code);
+        }
+    };
     let status = runtime::session_status_result(&config);
     if !status.ok {
         print_result(&status, cli.json).map_err(|_| 1)?;

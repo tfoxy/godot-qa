@@ -35,6 +35,7 @@ pub(crate) enum Commands {
     #[command(name = "qa-state")]
     QaState(QaStateArgs),
     Artifact(ArtifactArgs),
+    Asset(AssetArgs),
     Session(SessionArgs),
     Input(InputArgs),
     Snapshot(SnapshotArgs),
@@ -65,6 +66,24 @@ pub(crate) enum Commands {
     DebugHost(DebugHostArgs),
     #[command(name = "__presented-helper", hide = true)]
     PresentedHelper(PresentedHelperArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct AssetArgs {
+    #[command(subcommand)]
+    pub(crate) command: AssetCommands,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum AssetCommands {
+    /// Import candidates and compare original/candidate runtime evidence.
+    Try { manifest: String },
+    /// Inspect a trial, or list the project's journals and active reservation.
+    Status { trial_id: Option<String> },
+    /// Accept a verified trial without approving screenshot baselines.
+    Keep { trial_id: String },
+    /// Restore the original scene, including interrupted trial recovery.
+    Discard { trial_id: String },
 }
 
 #[derive(Debug, Args)]

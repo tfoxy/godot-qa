@@ -205,3 +205,32 @@ The same idle path bounds `_processed_file_requests`, which previously grew one 
 per file request for the lifetime of a pooled session. Pruning runs only while nothing
 is in flight, so an entry can only be dropped after its request file has been deleted
 by the request that owned it, and a dropped key can never be re-listed.
+
+## Decision 018: Asset trials are journaled saved-scene edits
+
+Version 1 asset trials accept only PNG textures and PCM16 mono/stereo WAV
+streams bound to direct native resource slots on an existing saved scene. The
+manifest names exactly one ordinary validation scenario; a trial does not
+introduce a second scenario language or execute a provider/generator. Godot
+loads and saves scene resources through a dedicated offline runner, and a
+semantic save gate proves that unrequested scene topology, instances,
+connections, overrides, and resource content survived before publication.
+The workflow is verified on Godot 4.5.2 and requires the supported
+`ResourceSaver.set_uid` API; the `asset_trial_v1` capability includes loading
+the writer and probes before any candidate source is staged.
+
+Trial state and original bytes are stored in the selected project under
+`.qa/asset-trials/`, while before/after evidence stays in the configured artifact
+root and is pinned against pruning. A durable journal records each mutation
+intent and receipt so `asset discard` can safely resume interrupted cleanup.
+Only one trial may be active for a project; the project access guard blocks
+conflicting Godot launches and source writes while the trial is active. The
+explicit `asset keep` operation accepts only a passing candidate and never
+approves visual baselines. These limits keep media acceptance inspectable and
+reversible without turning the live bridge into a file-writing API.
+
+External editors must be closed during a trial. Cooperative launch leases and
+detached-process receipts cover CLI-owned processes; Linux additionally inspects
+accessible Godot command lines for the selected project. External-process
+detection is best effort (especially on other platforms), and no user process
+is killed automatically.

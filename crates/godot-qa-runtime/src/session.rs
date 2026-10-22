@@ -615,7 +615,10 @@ fn append_android_deployment_output(
 }
 
 fn append_android_deployment_note(path: &Path, note: &str) -> std::io::Result<()> {
-    let mut file = fs::OpenOptions::new().create(true).append(true).open(path)?;
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
     writeln!(file, "\n[godot-qa android]\n{note}")
 }
 
@@ -756,9 +759,7 @@ fn android_obtain_session_apk(
 
     // Read side: skipped docker-style under --no-apk-cache; the fresh export still refreshes it.
     let mut deferred_notes: Vec<String> = Vec::new();
-    if !no_apk_cache
-        && let Some(entry) = apk_cache::lookup(&cache_root, &key)
-    {
+    if !no_apk_cache && let Some(entry) = apk_cache::lookup(&cache_root, &key) {
         match fs::copy(&entry.apk_path, apk_path) {
             Ok(_) => {
                 apk_cache::touch(&entry);
@@ -789,7 +790,8 @@ fn android_obtain_session_apk(
         let _ = append_android_deployment_note(deployment_log, note);
     }
     if no_apk_cache {
-        let _ = append_android_deployment_note(deployment_log, "apk-cache: bypassed (--no-apk-cache)");
+        let _ =
+            append_android_deployment_note(deployment_log, "apk-cache: bypassed (--no-apk-cache)");
     }
 
     let manifest_files = apk_cache::manifest_file_count(&key_inputs).unwrap_or(0);
@@ -814,7 +816,8 @@ fn android_obtain_session_apk(
     match apk_cache::store(&cache_root, &key, apk_path, meta) {
         Ok(_) => {
             apk_cache::prune(&cache_root, apk_cache::APK_CACHE_KEEP);
-            let _ = append_android_deployment_note(deployment_log, &format!("apk-cache: stored {key}"));
+            let _ =
+                append_android_deployment_note(deployment_log, &format!("apk-cache: stored {key}"));
         }
         Err(error) => {
             let _ = append_android_deployment_note(
@@ -889,8 +892,7 @@ fn deploy_apk_error(
     needs_cleanup: bool,
     record: SessionRecord,
 ) -> AndroidDeployError {
-    let mut data_extras =
-        Map::from_iter([("apk_cache".to_string(), apk_cache.to_json())]);
+    let mut data_extras = Map::from_iter([("apk_cache".to_string(), apk_cache.to_json())]);
     if let Some(apk_path) = retained_apk {
         data_extras.insert("retained_apk".to_string(), json!(apk_path));
     }
@@ -1082,22 +1084,20 @@ fn android_deploy_stages(
         .as_ref()
         .map(|android| android.device_port)
         .unwrap_or(persisted.port);
-    let forward =
-        match godot_qa_process::android::create_forward(adb, &device.serial, persisted.port, device_port)
-        {
-            Ok(output) => output,
-            Err(failure) => {
-                append_android_deployment_failure(
-                    deployment_log,
-                    "forward",
-                    &failure,
-                    &prepared.token,
-                );
-                return Err(deploy_apk_error(
-                    failure, &apk_cache, None, true, false, true, persisted,
-                ));
-            }
-        };
+    let forward = match godot_qa_process::android::create_forward(
+        adb,
+        &device.serial,
+        persisted.port,
+        device_port,
+    ) {
+        Ok(output) => output,
+        Err(failure) => {
+            append_android_deployment_failure(deployment_log, "forward", &failure, &prepared.token);
+            return Err(deploy_apk_error(
+                failure, &apk_cache, None, true, false, true, persisted,
+            ));
+        }
+    };
     append_android_deployment_output(deployment_log, "forward", &forward);
     let launch = match godot_qa_process::android::launch_app(adb, &device.serial, &preset.package) {
         Ok(result) => result,
@@ -2139,7 +2139,28 @@ pub fn session_stop_result(config: &ProjectConfig) -> CommandResult {
     result
 }
 
+fn asset_trial_reload_lease(
+    config: &ProjectConfig,
+) -> Result<godot_qa_process::project_access::LaunchLease, CommandResult> {
+    godot_qa_process::project_access::LaunchLease::acquire(
+        &config.project_root,
+        godot_qa_process::project_access::LaunchClass::SourceWriter,
+    )
+    .map_err(|failure| CommandResult {
+        ok: false,
+        command: "session reload".into(),
+        message: "project is reserved by an asset trial".into(),
+        data: Map::new(),
+        failures: vec![failure],
+        exit_code: 1,
+    })
+}
+
 pub fn session_reload_result(config: &ProjectConfig) -> CommandResult {
+    let _project_lease = match asset_trial_reload_lease(config) {
+        Ok(lease) => lease,
+        Err(result) => return result,
+    };
     run_live_protocol_command(config, "session reload", SESSION_RELOAD_SCENE, Map::new())
 }
 
@@ -2245,6 +2266,7 @@ fn debug_host_send(
     command: &str,
     request: &godot_qa_debug::host::ControlRequest,
 ) -> Result<godot_qa_debug::host::ControlResponse, CommandResult> {
+    let _project_lease = asset_trial_reload_lease(config)?;
     if let Ok(record) = load_session_record(config, command)
         && record.target == SessionTarget::Android
     {
@@ -2507,7 +2529,6 @@ pub fn session_profile_result(
     }
 }
 
-
 pub fn session_json_path(config: &ProjectConfig) -> PathBuf {
     config.project_root.join(".qa").join("session.json")
 }
@@ -2530,7 +2551,6 @@ fn session_metadata_path(config: &ProjectConfig, record: &SessionRecord) -> Path
 pub fn session_token_path(config: &ProjectConfig) -> PathBuf {
     config.project_root.join(".qa").join("session.token")
 }
-
 
 #[derive(Debug, Clone)]
 struct PreparedSession {
@@ -2697,7 +2717,8 @@ fn prepare_live_session_with_latest_link(
     let logs_path = artifact_root.join("logs.txt");
     let token_path = session_token_path(config);
     if let Some(parent) = token_path.parent() {
-        fs::create_dir_all(parent).map_err(|error| locate(artifact_write_failure(parent, &error)))?;
+        fs::create_dir_all(parent)
+            .map_err(|error| locate(artifact_write_failure(parent, &error)))?;
     }
     // Random per-session token (32 lowercase hex chars) as promised by
     // docs/security-model.md; never derive it from the guessable session id.
@@ -2778,7 +2799,6 @@ fn prepare_live_session_with_latest_link(
         token,
     })
 }
-
 
 fn parse_viewport(value: &str) -> Option<Vec<i64>> {
     let normalized = value.to_ascii_lowercase();
@@ -3008,7 +3028,9 @@ pub fn load_debug_host_record(
 /// Whether a hot-reload debug host is running for this project (record present and pid alive).
 pub fn debug_host_available(config: &ProjectConfig) -> bool {
     load_debug_host_record(config)
-        .map(|record| godot_qa_process::process_identity_matches(record.pid, record.process_identity))
+        .map(|record| {
+            godot_qa_process::process_identity_matches(record.pid, record.process_identity)
+        })
         .unwrap_or(false)
 }
 
@@ -3018,6 +3040,10 @@ pub fn debug_host_available(config: &ProjectConfig) -> bool {
 fn spawn_debug_host(
     config: &ProjectConfig,
 ) -> Result<godot_qa_debug::host::DebugHostRecord, FailureDetail> {
+    let _project_lease = godot_qa_process::project_access::LaunchLease::acquire(
+        &config.project_root,
+        godot_qa_process::project_access::LaunchClass::SourceWriter,
+    )?;
     let record_path = debug_host_json_path(config);
     let _ = fs::remove_file(&record_path);
     if let Some(parent) = record_path.parent() {
@@ -3120,7 +3146,9 @@ fn stop_launched_session_process(
             kind: "android_cleanup_unavailable".to_string(),
             command: Some("session start".to_string()),
             path: Some(session_json_path(config).to_string_lossy().into_owned()),
-            message: Some("Android session cleanup requires the Android process adapter".to_string()),
+            message: Some(
+                "Android session cleanup requires the Android process adapter".to_string(),
+            ),
             expected: Some(json!("target-aware Android cleanup")),
             actual: Some(json!("unavailable")),
             ..FailureDetail::default()
@@ -3135,16 +3163,16 @@ fn stop_launched_session_process(
         PROCESS_STOP_WAIT_TIMEOUT_SECONDS,
         record.process_identity,
     )
-        .err()
-        .map(|mut failure| {
-            if failure.command.is_none() {
-                failure.command = Some("session start".to_string());
-            }
-            if failure.path.is_none() {
-                failure.path = Some(session_json_path(config).to_string_lossy().into_owned());
-            }
-            failure
-        })
+    .err()
+    .map(|mut failure| {
+        if failure.command.is_none() {
+            failure.command = Some("session start".to_string());
+        }
+        if failure.path.is_none() {
+            failure.path = Some(session_json_path(config).to_string_lossy().into_owned());
+        }
+        failure
+    })
 }
 
 fn pick_port() -> Result<u16, FailureDetail> {
@@ -3209,7 +3237,10 @@ fn update_latest_link(target: &Path, latest_path: &Path) -> Result<(), FailureDe
     godot_qa_process::directory_link::replace(target, latest_path)
         .map_err(|error| artifact_write_failure(latest_path, &error))?;
     #[cfg(not(any(unix, windows)))]
-    return Err(artifact_write_failure(latest_path, &std::io::Error::other("directory links unsupported")));
+    return Err(artifact_write_failure(
+        latest_path,
+        &std::io::Error::other("directory links unsupported"),
+    ));
 
     Ok(())
 }
@@ -3256,7 +3287,10 @@ mod granular_reload_reporting_tests {
             result.data.get("requested"),
             Some(&json!(["res://ui/theme.tres"]))
         );
-        assert_eq!(result.data.get("caveat"), Some(&json!(RESOURCE_RELOAD_CAVEAT)));
+        assert_eq!(
+            result.data.get("caveat"),
+            Some(&json!(RESOURCE_RELOAD_CAVEAT))
+        );
     }
 
     #[test]
@@ -3269,7 +3303,10 @@ mod granular_reload_reporting_tests {
         );
         assert!(result.ok);
         assert_eq!(result.data.get("status"), Some(&json!("applied")));
-        assert_eq!(result.data.get("applied"), Some(&json!(["res://player.gd"])));
+        assert_eq!(
+            result.data.get("applied"),
+            Some(&json!(["res://player.gd"]))
+        );
         assert!(result.data.get("caveat").is_none());
     }
 }

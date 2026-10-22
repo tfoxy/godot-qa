@@ -1,0 +1,7 @@
+name: asset_trials
+purpose: Regression gate for verified texture and sound bindings in the asset trial fixture.
+required_scenarios:
+  - asset_coin_pickup
+recommended_manual_checks:
+  - Inspect the sprite and SFX evidence in the scenario run artifacts.
+  - Review the bundle summary before approving any screenshot baseline changes.

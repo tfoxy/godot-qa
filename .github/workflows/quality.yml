@@ -1,6 +1,12 @@
 name: Native quality and packages
 on:
   workflow_call:
+    inputs:
+      asset_trial_acceptance:
+        description: Run real rendered/audio asset trial acceptance on Linux
+        type: boolean
+        required: false
+        default: false
 permissions:
   contents: read
 jobs:
@@ -27,7 +33,7 @@ jobs:
         run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy
       - name: Install Linux runtime dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y xvfb xauth libgl1 libasound2 libxcursor1 libxinerama1 libxrandr2 libxi6
+        run: sudo apt-get update && sudo apt-get install -y xvfb xauth libgl1 libasound2 libxcursor1 libxinerama1 libxrandr2 libxi6 pulseaudio pulseaudio-utils
       - name: Install pinned Godot with checksum verification
         shell: pwsh
         run: ./.github/scripts/install-godot.ps1
@@ -41,9 +47,21 @@ jobs:
       - name: Rust tests (Linux virtual display)
         if: runner.os == 'Linux'
         run: xvfb-run -a cargo test --workspace --locked --no-fail-fast
-      - name: Rust tests (Windows desktop)
+      - name: Rust tests (Windows native filesystem and desktop)
         if: runner.os == 'Windows'
         run: cargo test --workspace --locked --no-fail-fast
+      - name: Start isolated PulseAudio sink for asset trial acceptance
+        if: runner.os == 'Linux' && inputs.asset_trial_acceptance
+        run: |
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=godotqa_trial
+          pactl set-default-sink godotqa_trial
+          pactl info
+      - name: Real rendered and audio asset trial acceptance (opt-in)
+        if: runner.os == 'Linux' && inputs.asset_trial_acceptance
+        env:
+          GODOT_QA_ASSET_TRIAL_ACCEPTANCE: '1'
+        run: xvfb-run -a cargo test -p godot-qa-cli --locked --test asset_trial_cli real_asset_trial_lifecycle_acceptance -- --exact --nocapture
       - name: Formatting
         run: cargo fmt --all --check
       - name: Clippy

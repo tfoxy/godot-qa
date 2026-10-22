@@ -1,0 +1,30 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://ui/fixtures/asset_trial_gameplay.gd" id="1_hmn8o"]
+[ext_resource type="PackedScene" path="res://ui/fixtures/asset_coin.tscn" id="2_3pi1n"]
+[ext_resource type="Script" path="res://ui/fixtures/asset_coin.gd" id="3_oh3f3"]
+[ext_resource type="Script" path="res://ui/fixtures/asset_trial_pickup_signal.gd" id="4_01b75"]
+
+[node name="AssetTrialGameplay" type="Node2D" unique_id=1375823984]
+script = ExtResource("1_hmn8o")
+
+[node name="CoinPickup" type="Node2D" parent="." unique_id=1104715495 instance=ExtResource("2_3pi1n")]
+position = Vector2(430, 250)
+script = ExtResource("3_oh3f3")
+
+[node name="UnrelatedInstance" type="Node2D" parent="." unique_id=1981196047]
+modulate = Color(0.75, 0.5, 1, 1)
+position = Vector2(680, 240)
+
+[node name="Marker" type="Polygon2D" parent="UnrelatedInstance" unique_id=1693325084]
+color = Color(0.2, 0.4, 0.8, 1)
+polygon = PackedVector2Array(-28, -28, 28, -28, 28, 28, -28, 28)
+
+[node name="PickupTimer" type="Timer" parent="." unique_id=628672640]
+one_shot = true
+
+[node name="PickupSignal" type="Node" parent="." unique_id=415507402]
+script = ExtResource("4_01b75")
+
+[connection signal="timeout" from="PickupTimer" to="." method="_on_pickup_timer_timeout"]
+[connection signal="picked_up" from="PickupSignal" to="." method="_on_coin_picked_up"]

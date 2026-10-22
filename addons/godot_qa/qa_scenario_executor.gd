@@ -1,5 +1,6 @@
 extends RefCounted
 
+const QaAssetTrialCollector = preload("res://addons/godot_qa/qa_asset_trial_collector.gd")
 const QaArgs = preload("res://addons/godot_qa/qa_args.gd")
 const QaBridge = preload("res://addons/godot_qa/qa_bridge.gd")
 const QaProfiler = preload("res://addons/godot_qa/qa_profiler.gd")
@@ -69,6 +70,7 @@ const EXPANDED_ASSERTION_TYPES: Array[String] = [
 	"no_errors",
 ]
 
+var _asset_trial: RefCounted = null
 var _scenario: Dictionary = {}
 var _request_run: Dictionary = {}
 var _check: Dictionary = {}
@@ -195,6 +197,7 @@ func _run_scenario(request_path: String) -> Dictionary:
 			{"request_path": request_path},
 		)
 
+	_asset_trial = QaAssetTrialCollector.new(request.get("asset_trial", {}) if request.get("asset_trial", {}) is Dictionary else {})
 	_scenario = request.get("scenario", {})
 	_request_run = request.get("run", {})
 	_artifacts = request.get("artifacts", {})
@@ -1991,6 +1994,8 @@ func _capture_snapshot(snapshot_name: String) -> void:
 			"artifacts": ["scope"],
 		})
 		return
+	if _asset_trial != null:
+		_asset_trial.snapshot_begin(_runtime, snapshot_name)
 	var capture_result: Dictionary = await QaSnapshot.capture_snapshot_bundle(
 		snapshot_scope.get("root"),
 		_tree.get_root(),
@@ -1998,6 +2003,8 @@ func _capture_snapshot(snapshot_name: String) -> void:
 		snapshot_dir,
 		snapshot_scope.get("options", {}),
 	)
+	if _asset_trial != null:
+		await _asset_trial.snapshot(_runtime, snapshot_name, snapshot_dir.path_join("asset-trial-visual"))
 	if bool(capture_result.get("ok", false)):
 		_record_profile_timing("snapshot_capture", started_usec, failure_count, {
 			"kind": "snapshot",
@@ -2090,11 +2097,17 @@ func _run_audio_capture_step(params: Dictionary) -> void:
 	AudioServer.add_bus_effect(bus_index, record_effect, effect_index)
 	added_effect = true
 	record_effect.call("set_recording_active", true)
+	if _asset_trial != null:
+		_asset_trial.audio_start(_runtime, name, bus)
 	var capture_started_msec := Time.get_ticks_msec()
 	while float(Time.get_ticks_msec() - capture_started_msec) / 1000.0 < duration_seconds:
 		await _tree.process_frame
 		_sample_profile_frame()
+		if _asset_trial != null:
+			_asset_trial.audio_frame(_runtime)
 	record_effect.call("set_recording_active", false)
+	if _asset_trial != null:
+		_asset_trial.audio_end(_runtime)
 	var recording = record_effect.call("get_recording")
 	if added_effect:
 		AudioServer.remove_bus_effect(bus_index, effect_index)
@@ -2562,6 +2575,8 @@ func _result_payload() -> Dictionary:
 		"failures": _failures.duplicate(),
 		"artifacts": _artifacts.duplicate(),
 	}
+	if _asset_trial != null:
+		payload["asset_trial"] = _asset_trial.payload()
 	if not _node_inspections.is_empty():
 		payload["node_inspections"] = _node_inspections.duplicate(true)
 	if not _state_records.is_empty():

@@ -251,6 +251,8 @@ static func _parse_visual_rect(value: Variant) -> Dictionary:
 static func _canvas_item_visual_rect(item: CanvasItem) -> Dictionary:
 	if item is Control:
 		return {"ok": true, "rect": (item as Control).get_global_rect(), "rect_source": "control_global_rect"}
+	if item is Sprite2D:
+		return {"ok": true, "rect": item.get_global_transform_with_canvas() * (item as Sprite2D).get_rect(), "rect_source": "sprite2d_rect"}
 	if item is Line2D:
 		return _line2d_visual_rect(item as Line2D)
 	return {"ok": true, "rect": Rect2(item.get_global_transform_with_canvas().origin - Vector2(2, 2), Vector2(4, 4)), "rect_source": "canvas_item_origin"}

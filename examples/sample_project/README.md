@@ -41,6 +41,7 @@ Scenario names:
 - `state_matches_array_method_demo`
 - `audio_export_hook_demo`
 - `audio_capture_demo`
+- `asset_coin_pickup`
 - `physics_overlay_demo`
 
 Cold-isolation scenarios:
@@ -49,6 +50,12 @@ Cold-isolation scenarios:
 Audio scenarios:
 - `audio_export_hook_demo` calls `qa_export_audio_track` on `qa:audio_controller` and writes `audio/generated_dodgeball_loop.wav` plus `audio/generated_dodgeball_loop.analysis.json`.
 - `audio_capture_demo` starts deterministic playback on the `Master` bus and writes `audio/dodgeball_music.wav` plus `audio/dodgeball_music.analysis.json` when runtime bus capture is available. If Godot cannot record the bus in the current environment, the scenario reports an actionable `audio_capture_unavailable` or `audio_capture_failed` failure.
+
+Asset trial fixture:
+- `qa/asset-trials/coin.yaml` binds a generated PNG to `CoinSprite.texture` and a PCM16 WAV to `PickupSound.stream` in `res://ui/fixtures/asset_coin.tscn`.
+- `asset_coin_pickup` starts `res://ui/fixtures/asset_trial_gameplay.tscn`, which instances the edited coin scene alongside an unrelated sibling. The edited coin scene itself contains an unrelated scene instance with a saved position/modulate override and a saved `PickupSound.finished` connection. The sound player remains alive when the coin sprite is removed. The scenario captures visible sprite evidence, schedules the pickup before SFX capture, and asserts one collected coin.
+- `qa/fixtures/generate_asset_trial_media.py` deterministically writes the source PNGs and WAV. `qa/fixtures/generate_asset_trial_scenes.gd` builds both scenes through Godot APIs; run `python3 examples/sample_project/qa/fixtures/generate_asset_trial_media.py`, then `cargo xtask prepare-sample`, import the project, and run `godot --headless --path examples/sample_project --script res://qa/fixtures/generate_asset_trial_scenes.gd` to rebuild them.
+- Run `asset try` only on a disposable project copy. The sample's `.qa/artifacts/.gdignore` keeps evidence out of Godot's scanned resources.
 
 Live gate fixtures:
 - `hidden_overlay_inspection`: starts `res://ui/main_menu.tscn`, verifies the project-owned hidden overlay hook, inspects required anchors (`qa:main_menu`, `qa:start_button`, `qa:demo_actor`), and records artifacts under `.qa/artifacts/live-gates/hidden_overlay_inspection/`.
@@ -73,6 +80,7 @@ godot-qa scenario run sample_settings_layout --project examples/sample_project -
 godot-qa scenario run saved_joypad_input_demo --project examples/sample_project --json
 godot-qa scenario run audio_export_hook_demo --project examples/sample_project --json
 godot-qa scenario run audio_capture_demo --project examples/sample_project --json
+godot-qa scenario run asset_coin_pickup --project examples/sample_project --json
 godot-qa layout audit --project examples/sample_project --scene res://ui/settings_menu.tscn --json
 godot-qa layout audit --project examples/sample_project --scene res://ui/fixtures/bad_settings_menu.tscn --json || true
 godot-qa session start --project examples/sample_project --scene res://ui/settings_menu.tscn --json

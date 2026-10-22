@@ -9,10 +9,12 @@ authors.workspace = true
 godot-qa-core = { path = "../godot-qa-core" }
 godot-qa-process = { path = "../godot-qa-process" }
 godot-qa-runtime = { path = "../godot-qa-runtime" }
+godot-qa-scene = { path = "../godot-qa-scene" }
 getrandom.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 serde.workspace = true
-serde_json.workspace = true
+# Journal integrity requires lossless f64 parsing across save/read cycles.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 
 [dev-dependencies]
 godot-qa-test-support = { path = "../godot-qa-test-support" }

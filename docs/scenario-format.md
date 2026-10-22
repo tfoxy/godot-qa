@@ -1524,3 +1524,23 @@ Manifest behavior:
 - `methods` and `probes` are allowlisted read-only observation surfaces. Rejected method names, non-JSON-compatible return values, probe mismatches, unknown surface labels, and unsupported coordinate spaces fail with structured diagnostics.
 - Strict mode promotes optional-anchor warnings and manifest warnings to failures.
 - Hidden-overlay checks must use documented project-owned QA surfaces. A visually hidden overlay is not enough if configured durable anchors cannot be inspected, and projects without an overlay hook should warn or fail clearly instead of pretending hidden-overlay evidence exists.
+
+## Asset trial validation scenarios
+
+An asset-trial validation uses one ordinary scenario with deterministic
+`seed`, `fixed_fps`, and `locale` settings, plus existing gameplay assertions.
+Each selected texture snapshot or audio capture must have a `record_state` step
+immediately before and after it. The checkpoints use the same bounded,
+read-only state sources as all other `record_state` steps. Texture evidence must
+enable saved screenshots; trials reject `screenshot_match` assertions on the
+selected texture snapshots because candidate artwork is expected to differ.
+Audio evidence must capture the selected player's bus while the trial WAV is
+playing; short sounds that cannot be observed during the synchronous capture do
+not count as verified playback.
+
+The sample scenario `asset_coin_pickup` starts a gameplay scene that instances
+the separately edited coin scene. It captures a visible coin, schedules the
+pickup before a synchronous SFX capture, and checks that gameplay collected one
+coin. Its sound player remains alive after the pickup sprite is removed. See
+`examples/sample_project/qa/scenarios/examples/asset_coin_pickup.yaml` and the
+paired trial manifest at `examples/sample_project/qa/asset-trials/coin.yaml`.

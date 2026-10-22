@@ -227,6 +227,23 @@ pub(crate) fn assert_startup_presented(
             );
         }
     };
+    let _project_lease = match godot_qa_process::project_access::LaunchLease::acquire(
+        &config.project_root,
+        godot_qa_process::project_access::LaunchClass::RuntimePreview,
+    ) {
+        Ok(lease) => lease,
+        Err(problem) => {
+            let mut result = failure(
+                &problem.kind,
+                "project is reserved by an asset trial",
+                json!("compatible project lease"),
+                json!(problem.actual),
+                &out,
+            );
+            result.failures = vec![problem];
+            return result;
+        }
+    };
     let mut cmd = Command::new("gamescope");
     cmd.args([
         "--backend",
@@ -290,6 +307,19 @@ pub(crate) fn assert_startup_presented(
                 format!("could not start headless Gamescope: {error}"),
                 json!("installed runnable gamescope"),
                 json!(error.to_string()),
+                &out,
+            );
+        }
+    };
+    let _project_child = match godot_qa_process::project_access::register_child(child.id() as i64) {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            terminate_group(child.id() as i32, &mut child);
+            return failure(
+                "project_access_failed",
+                error.to_string(),
+                json!("persisted child identity"),
+                json!("receipt write failed"),
                 &out,
             );
         }

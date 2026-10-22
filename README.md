@@ -13,6 +13,7 @@ Use it for local regression checks, CI, or AI agents that need feedback from the
 - **Review visual evidence:** capture screenshots, compare approved baselines, audit layouts, and inspect failures alongside logs and artifact paths.
 - **Automate with confidence:** use stable `--json` results and nonzero failure exit codes from scripts, CI, the bundled AI skill, or the optional MCP server.
 - **Measure behavior:** collect runtime profiles, traces, audio measurements, and bounded soak-test evidence.
+- **Try replacement assets:** compare PNG textures and WAV sounds in a saved scene with `asset try`, inspect before/after runtime evidence, then explicitly `asset keep` or `asset discard`.
 
 This is alpha software. Screenshot baseline approval and judgments about appearance or playability remain human decisions.
 
@@ -47,6 +48,8 @@ godot-qa scenario run sample_main_menu_start --project examples/sample_project -
 ```
 
 The scenario opens the sample menu, simulates input, and checks the resulting UI. Read the command's JSON for pass/fail details and artifact paths; generated evidence lives under the selected project's `.qa/` directory. The [sample walkthrough](examples/sample_project/README.md) includes layout, live-session, audio, and intentionally failing fixtures.
+
+The [asset trial workflow](docs/workflows.md#verify-a-texture-and-sound-asset-trial) includes a coin texture and pickup sound example. Trials temporarily modify the saved scene, require real rendered/audio evidence, and preserve recovery records. Keep requires passing technical checks; visual approval remains yours.
 
 A scenario expresses the interaction and expected behavior directly:
 

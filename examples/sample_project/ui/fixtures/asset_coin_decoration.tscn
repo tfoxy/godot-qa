@@ -1,0 +1,7 @@
+[gd_scene format=3]
+
+[node name="Decoration" type="Node2D" unique_id=945827976]
+
+[node name="Marker" type="Polygon2D" parent="." unique_id=264442964]
+color = Color(0.2, 0.7, 0.95, 1)
+polygon = PackedVector2Array(-5, -5, 5, -5, 0, 5)

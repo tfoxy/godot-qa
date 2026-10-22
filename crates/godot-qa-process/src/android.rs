@@ -545,6 +545,10 @@ pub fn export_debug_apk(
     apk_path: &Path,
     logs_path: &Path,
 ) -> Result<AndroidCommandOutput, FailureDetail> {
+    let _project_lease = crate::project_access::LaunchLease::acquire(
+        project_root,
+        crate::project_access::LaunchClass::ImportOrEditor,
+    )?;
     if apk_path.extension().and_then(|value| value.to_str()) != Some("apk") {
         return Err(failure(
             "android_export_failed",
@@ -1310,6 +1314,14 @@ fn run_command_bytes(
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
             Err(error) => return Err(error),
+        }
+    };
+    let _project_child = match crate::project_access::register_child(child.id() as i64) {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
         }
     };
     if let Some(input) = input {

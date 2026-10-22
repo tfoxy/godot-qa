@@ -114,6 +114,10 @@ scenario sweep
 scenario profile
 scenario init
 scenario record
+asset try
+asset status
+asset keep
+asset discard
 review list-templates
 review init
 live-gate list
@@ -3460,3 +3464,64 @@ packaged-scene reload, and one-shot scenario execution. It excludes release/AAB 
 Android `check`/`scenario bundle`/`scenario sweep`/`scenario profile` execution,
 hot reload/watch, warm pools, headless mode, fastest or fixed pacing, and
 host-controlled viewport resizing.
+
+## Verified asset trials
+
+Asset trials test selected source media in an existing saved scene, leave the
+temporary binding change available for review, and then keep or discard it. A
+trial manifest uses `godot-qa.asset-trial.v1`, names one edited scene, exactly
+one validation scenario or scenario file, and one or more direct native
+resource bindings. Version 1 supports PNG textures on `Sprite2D.texture` or
+`TextureRect.texture`, and PCM16 mono/stereo WAV streams on
+`AudioStreamPlayer.stream` or `AudioStreamPlayer2D.stream`.
+
+```text
+godot-qa asset try <manifest> --project <project> --json
+godot-qa asset status [<trial-id>] --project <project> --json
+godot-qa asset keep <trial-id> --project <project> --json
+godot-qa asset discard <trial-id> --project <project> --json
+```
+
+The JSON/YAML manifest requires `format: godot-qa.asset-trial.v1`, `scene`,
+`validation` with exactly one of `scenario` or `scenario_file`, and a nonempty
+`bindings` list. Each binding declares a unique `id`, candidate `source`, new
+`destination`, scene-relative `edit_path`, runtime `runtime_target`, `property`,
+and `evidence`. Evidence names exactly one `snapshot` or `audio` capture and
+its adjacent `state_before` / `state_after` checkpoints. Relative paths resolve
+against the selected project, including the manifest path. A runtime target
+identifies the verified instance even when other instances share the edited
+scene. Inherited edited scenes and targets inside nested instances are rejected.
+
+PNG sources are limited to 4096×4096 pixels and require lossless imports. WAV
+sources must be PCM16 mono/stereo with positive duration at most 30 seconds.
+Both formats have a 32 MiB source limit. A new `try` after discard uses fresh
+content hashes even if the candidate source filename stays the same.
+
+`try` validates the manifest and source media, captures baseline evidence,
+imports media into absent project-local destinations, applies temporary scene
+bindings, and runs one ordinary validation scenario in a fresh Godot process.
+It leaves the applied scene available for inspection. `status` reports a named
+trial, or lists journals and the active reservation when no ID is given.
+`keep` accepts a passing trial;
+`discard` restores the original scene and removes only files owned by that
+trial. Discard also recovers interrupted trials. A failed validation cannot be
+kept, and neither action changes screenshot baselines.
+
+Trial state and original scene backups live under the selected project's
+`.qa/asset-trials/<trial-id>/` and must be retained while the trial is active.
+Trial evidence lives under the configured artifact root in
+`asset-trials/<trial-id>/before` and `after`; these directories are retained for
+audit independently of ordinary artifact pruning. Media destinations must be
+new paths with existing parent directories. Discard retains changed or possibly
+referenced media with an explicit warning; those paths cannot be reused until
+the user resolves them or chooses new destinations. The sample manifest and validation scenario are
+`examples/sample_project/qa/asset-trials/coin.yaml` and
+`examples/sample_project/qa/scenarios/examples/asset_coin_pickup.yaml`.
+
+JSON reports `state`, `phase`, `technical_status`, `review_status`, retained
+artifact paths, and recovery guidance separately. Pixel differences are review
+evidence; gameplay and binding failures block keep. Keep rechecks dependencies,
+source and imported media, execution configuration, and retained evidence.
+During idle review, ordinary runtime previews are allowed. Import, source
+writes, hot reload, watch, and addon installation are blocked; keep and discard
+also refuse running previews. Close external editors before starting a trial.

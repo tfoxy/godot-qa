@@ -3,6 +3,7 @@
 pub mod android;
 pub mod apk_cache;
 pub mod directory_link;
+pub mod project_access;
 #[cfg(windows)]
 mod windows;
 
@@ -693,6 +694,10 @@ pub fn launch_godot_import_with_args(
     project_root: &Path,
     logs_path: &Path,
 ) -> Result<GodotRunResult, FailureDetail> {
+    let _project_lease = project_access::LaunchLease::acquire(
+        project_root,
+        project_access::LaunchClass::ImportOrEditor,
+    )?;
     let display = build_project_display_launch_metadata(project_root, true, launch_prefix);
     let mut args = vec![
         "--headless".to_string(),
@@ -766,6 +771,10 @@ pub fn launch_godot_check_with_timeout_and_fixed_fps(
     timeout: Option<Duration>,
     fixed_fps: Option<i64>,
 ) -> Result<GodotRunResult, FailureDetail> {
+    let _project_lease = project_access::LaunchLease::acquire(
+        project_root,
+        project_access::LaunchClass::ImportOrEditor,
+    )?;
     let display = build_project_display_launch_metadata(project_root, true, launch_prefix);
     let mut args = vec![
         "--headless".to_string(),
@@ -791,6 +800,13 @@ pub fn launch_godot_check_with_timeout_and_fixed_fps(
 pub fn launch_godot_one_shot(
     options: GodotOneShotLaunch<'_>,
 ) -> Result<GodotRunResult, FailureDetail> {
+    let mut launch_args = options.default_godot_args.to_vec();
+    launch_args.extend_from_slice(options.extra_godot_args);
+    let class = project_access::class_with_engine_args(
+        project_access::LaunchClass::RuntimePreview,
+        &launch_args,
+    );
+    let _project_lease = project_access::LaunchLease::acquire(options.project_root, class)?;
     let mut args = Vec::new();
     let display = append_project_display_driver_args(
         &mut args,
@@ -835,6 +851,59 @@ pub fn launch_godot_one_shot(
         options.timeout,
         result_path.as_deref(),
     )
+}
+
+/// Plain-runtime asset writer/probe. Only an in-process trial coordinator may
+/// launch this helper; it adds no runtime bridge filesystem permissions.
+pub fn launch_godot_asset_trial_runner(
+    options: GodotOneShotLaunch<'_>,
+) -> Result<GodotRunResult, FailureDetail> {
+    let _project_lease = project_access::LaunchLease::acquire(
+        options.project_root,
+        project_access::LaunchClass::CoordinatorChild,
+    )?;
+    if options
+        .default_godot_args
+        .iter()
+        .chain(options.extra_godot_args)
+        .any(|arg| matches!(arg.as_str(), "--editor" | "-e" | "--import"))
+    {
+        return Err(FailureDetail {
+            kind: "asset_trial_engine_args_invalid".into(),
+            message: Some("asset trial helpers must run without editor/import mode".into()),
+            ..FailureDetail::default()
+        });
+    }
+    let mut args = Vec::new();
+    let display = append_project_display_driver_args(
+        &mut args,
+        options.project_root,
+        options.launch_prefix,
+        options.windowed_launch_prefix,
+        options.headless,
+    );
+    append_media_axis_args(&mut args, options.headless, options.audio, options.viewport);
+    args.extend([
+        "--log-file".into(),
+        godot_log_path(options.logs_path)
+            .to_string_lossy()
+            .into_owned(),
+    ]);
+    append_fixed_fps_args(&mut args, options.fixed_fps);
+    args.extend(options.default_godot_args.iter().cloned());
+    args.extend(options.extra_godot_args.iter().cloned());
+    args.extend([
+        "--path".into(),
+        options.project_root.to_string_lossy().into_owned(),
+        "--script".into(),
+        "res://addons/godot_qa/qa_asset_trial_runner.gd".into(),
+        "--".into(),
+        "--qa".into(),
+        "--request".into(),
+        options.request_path.to_string_lossy().into_owned(),
+    ]);
+    let command = effective_godot_command(&display.effective_command_prefix, options.binary, &args);
+    run_godot_command_with_timeout(&command, options.logs_path, display, options.timeout)
 }
 
 fn append_fixed_fps_args(args: &mut Vec<String>, fixed_fps: Option<i64>) {
@@ -916,6 +985,10 @@ pub fn launch_godot_patch_runner(
     request_path: &Path,
     logs_path: &Path,
 ) -> Result<GodotRunResult, FailureDetail> {
+    let _project_lease = project_access::LaunchLease::acquire(
+        project_root,
+        project_access::LaunchClass::SourceWriter,
+    )?;
     let display = build_project_display_launch_metadata(project_root, true, launch_prefix);
     let mut args = vec![
         "--headless".to_string(),
@@ -955,6 +1028,15 @@ pub fn launch_godot_session(
     extra_project_args: &[String],
     remote_debug: Option<&str>,
 ) -> Result<GodotSessionLaunch, FailureDetail> {
+    let class = if remote_debug.is_some() {
+        project_access::LaunchClass::SourceWriter
+    } else {
+        project_access::class_with_engine_args(
+            project_access::LaunchClass::RuntimePreview,
+            default_godot_args,
+        )
+    };
+    let _project_lease = project_access::LaunchLease::acquire(project_root, class)?;
     let mut args = Vec::new();
     let display = append_project_display_driver_args(
         &mut args,
@@ -1037,7 +1119,7 @@ pub fn launch_godot_session(
     }
     configure_background_command(&mut child_command);
     child_command.stdin(Stdio::null());
-    let child = child_command.spawn().map_err(|error| FailureDetail {
+    let mut child = child_command.spawn().map_err(|error| FailureDetail {
         kind: "godot_launch_failed".to_string(),
         command: Some(formatted_command),
         path: command.first().cloned(),
@@ -1046,6 +1128,18 @@ pub fn launch_godot_session(
         actual: Some(json!("OSError")),
         ..FailureDetail::default()
     })?;
+    let _project_child = match project_access::register_child(child.id() as i64) {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(FailureDetail {
+                kind: "project_access_failed".into(),
+                message: Some(error.to_string()),
+                ..FailureDetail::default()
+            });
+        }
+    };
     Ok(GodotSessionLaunch {
         command,
         pid: child.id() as i64,
@@ -1519,6 +1613,14 @@ fn run_owned_child_output(
         }
     };
     let pid = child.id() as i64;
+    let _project_child = match project_access::register_child(pid) {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+    };
     let process_group = current_run_process_group(pid);
     if !cfg!(windows) && timeout.is_none() && completion_path.is_none() {
         let output = child.wait_with_output()?;

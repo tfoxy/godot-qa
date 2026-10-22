@@ -7,3 +7,4 @@ publish = false
 [dependencies]
 serde_json.workspace = true
 godot-qa-core = { path = "../crates/godot-qa-core" }
+godot-qa-process = { path = "../crates/godot-qa-process" }

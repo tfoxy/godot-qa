@@ -1,0 +1,22 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://ui/fixtures/asset_coin.gd" id="1_idrdc"]
+[ext_resource type="Texture2D" path="res://assets/asset_trial/coin_original.png" id="2_cav82"]
+[ext_resource type="PackedScene" path="res://ui/fixtures/asset_coin_decoration.tscn" id="3_mycbc"]
+
+[node name="AssetCoin" type="Node2D" unique_id=1104715495]
+script = ExtResource("1_idrdc")
+
+[node name="CoinSprite" type="Sprite2D" parent="." unique_id=1886409977]
+position = Vector2(0, -8)
+texture = ExtResource("2_cav82")
+metadata/qa_id = "asset_coin_sprite"
+
+[node name="PickupSound" type="AudioStreamPlayer" parent="." unique_id=2103565032]
+metadata/qa_id = "asset_coin_sfx"
+
+[node name="UnrelatedDecoration" type="Node2D" parent="." unique_id=945827976 instance=ExtResource("3_mycbc")]
+modulate = Color(0.4, 0.8, 1, 1)
+position = Vector2(36, 0)
+
+[connection signal="finished" from="PickupSound" to="." method="qa_on_sound_finished"]

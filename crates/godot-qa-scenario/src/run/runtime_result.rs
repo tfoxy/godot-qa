@@ -24,8 +24,13 @@ fn layout_audit_failures(
             mode,
         )];
     };
-    let (failures, _artifacts) =
-        load_layout_failures(command, audit_artifacts, viewport, Some(snapshot_name), mode);
+    let (failures, _artifacts) = load_layout_failures(
+        command,
+        audit_artifacts,
+        viewport,
+        Some(snapshot_name),
+        mode,
+    );
     failures
 }
 
@@ -418,6 +423,9 @@ fn validate_runtime_command_result(
 ) -> CommandResult {
     let artifacts_map = artifacts.as_object().cloned().unwrap_or_default();
     let runtime_result_object = runtime_result.as_object().cloned().unwrap_or_default();
+    if let Some(trial) = runtime_result_object.get("asset_trial") {
+        base_data.insert("asset_trial".to_string(), trial.clone());
+    }
     if let Some(soak) = runtime_result_object.get("soak") {
         base_data.insert("soak".to_string(), soak.clone());
     }
@@ -1003,7 +1011,6 @@ fn validate_runtime_command_result(
     }
 }
 
-
 fn profile_result_from_runtime(
     command: &str,
     scenario: &Value,
@@ -1190,7 +1197,6 @@ fn write_profile_artifact(path: &Path, value: &Value) -> io::Result<()> {
         serde_json::to_string_pretty(value).unwrap_or_else(|_| "{}".to_string()),
     )
 }
-
 
 fn runtime_failure_to_detail(command: &str, value: &Map<String, Value>) -> FailureDetail {
     let mut detail = runtime_failure_extra_fields(value);

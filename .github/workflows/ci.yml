@@ -4,6 +4,12 @@ on:
     branches: ['**']
   pull_request:
   workflow_dispatch:
+    inputs:
+      asset_trial_acceptance:
+        description: Run rendered and audio asset-trial lifecycle acceptance
+        type: boolean
+        required: false
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -26,3 +32,5 @@ jobs:
         run: cargo xtask check-commits "$BASE_COMMIT" "$HEAD_COMMIT"
   quality:
     uses: ./.github/workflows/quality.yml
+    with:
+      asset_trial_acceptance: ${{ github.event_name == 'workflow_dispatch' && inputs.asset_trial_acceptance }}

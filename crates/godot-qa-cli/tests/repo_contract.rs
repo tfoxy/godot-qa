@@ -87,6 +87,43 @@ fn android_one_shot_scenario_contract_is_documented() {
 }
 
 #[test]
+fn asset_trial_contract_has_manifest_runtime_and_sample_fixtures() {
+    let cli = read("docs/cli-spec.md");
+    let scenario = read("docs/scenario-format.md");
+    let protocol = read("docs/runtime-bridge-protocol.md");
+    let artifacts = read("docs/artifact-format.md");
+    let decisions = read("docs/implementation-decisions.md");
+    let workflows = read("docs/workflows.md");
+    let sample_readme = read("examples/sample_project/README.md");
+
+    assert!(cli.contains("godot-qa asset try <manifest>"));
+    assert!(cli.contains("godot-qa asset keep <trial-id>"));
+    assert!(cli.contains("godot-qa asset discard <trial-id>"));
+    assert!(scenario.contains("immediately before and after it"));
+    assert!(protocol.contains("asset_trial_v1"));
+    assert!(artifacts.contains(".qa/asset-trials/<trial-id>/"));
+    assert!(decisions.contains("Decision 018: Asset trials"));
+    assert!(workflows.contains("asset try"));
+    assert!(sample_readme.contains("asset_coin_pickup"));
+    for path in [
+        "examples/sample_project/qa/asset-trials/coin.yaml",
+        "examples/sample_project/qa/scenarios/examples/asset_coin_pickup.yaml",
+        "examples/sample_project/qa/gates/asset_trials.yaml",
+        "examples/sample_project/ui/fixtures/asset_coin.tscn",
+        "examples/sample_project/ui/fixtures/asset_coin_decoration.tscn",
+        "examples/sample_project/ui/fixtures/asset_trial_gameplay.tscn",
+        "examples/sample_project/assets/asset_trial/coin_trial.png",
+        "examples/sample_project/assets/asset_trial/pickup_trial.wav",
+        "examples/sample_project/.qa/artifacts/.gdignore",
+    ] {
+        assert!(
+            repo_root().join(path).is_file(),
+            "missing asset trial fixture: {path}"
+        );
+    }
+}
+
+#[test]
 fn android_live_edit_contract_is_documented() {
     let readme = read("docs/workflows.md");
     let cli = read("docs/cli-spec.md");

@@ -12,6 +12,7 @@ pub mod artifact_query;
 pub mod artifact_summary;
 pub mod artifacts;
 pub mod assertions;
+pub mod asset_trial;
 pub mod audio;
 pub mod bundle;
 pub mod bundle_multi;

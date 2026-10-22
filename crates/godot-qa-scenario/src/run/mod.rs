@@ -205,7 +205,8 @@ pub fn run_scenario_once(
         );
     }
 
-    let use_runtime_request = !screenshot_assertions.is_empty();
+    let use_runtime_request =
+        !screenshot_assertions.is_empty() || scenario.get("_asset_trial").is_some();
     let requires_windowed_media_evidence =
         scenario_requires_windowed_media_evidence(scenario, !screenshot_assertions.is_empty());
     let selected_headless = selected_headless_for_scenario(

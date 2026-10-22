@@ -1014,3 +1014,31 @@ tree. Each entry directory holds:
 The newest four keys are retained; older entries are evicted on the next store.
 This tree is derived data: it is safe to delete at any time (the next start simply
 re-exports), and it never contains the session token.
+
+## Verified asset trial records and evidence
+
+An asset trial keeps its durable journal, immutable candidate copies, original
+scene backup, and publication scratch files under the selected project's
+`.qa/asset-trials/<trial-id>/`. The backup remains the recovery source while the
+trial is active. Journals, backups, and evidence remain available after a trial
+is kept or discarded; automatic artifact retention never removes them.
+Journal integrity is checked before recovery. Missing backups or corrupt records
+refuse automatic restoration; do not edit journals to bypass a conflict.
+Scene and media publication record intent before changing paths, and captured
+bytes remain in hidden storage when a competing edit prevents safe recovery.
+
+Before and candidate evidence is written under the configured artifact root at
+`asset-trials/<trial-id>/before/` and `after/`. These roots are pinned against
+ordinary retention pruning. Trial evidence captures the ordinary scenario
+result plus the selected snapshot or WAV, read-only state checkpoints, and
+runtime binding metadata. PNG metadata records the actual runtime node, slot,
+resource identity and imported pixel fingerprint. Audio metadata records the
+actual node and stream, bus, playback overlap, audio driver and imported stream
+fingerprint. Sprite visibility is sampled over the runtime sprite's transformed
+node bounds, so transparent pixels in the center of a texture do not hide
+visible pixels elsewhere. Audio metadata also records whether the stream was
+paused; playback overlap requires that the player was active and unpaused on the
+captured bus. Missing pixels, an unavailable real audio driver, or playback that
+does not overlap the capture is a verification failure rather than inferred
+success. Evidence directories must be outside Godot's scanned resource tree or
+already protected by a project-owned `.gdignore`.

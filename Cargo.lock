@@ -330,6 +330,7 @@ dependencies = [
  "godot-qa-core",
  "godot-qa-process",
  "godot-qa-runtime",
+ "godot-qa-scene",
  "godot-qa-test-support",
  "image",
  "serde",
@@ -857,6 +858,7 @@ name = "xtask"
 version = "0.0.0"
 dependencies = [
  "godot-qa-core",
+ "godot-qa-process",
  "serde_json",
 ]
 

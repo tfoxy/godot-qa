@@ -2329,3 +2329,19 @@ path rewritten to the device root), pre-creates the `run/snapshots`,
 `.../run/result.json` file, which the CLI pulls, rewrites to host paths, and
 materializes claimed evidence from. `.../run/progress.jsonl` is pulled best-effort
 and rewritten path-only.
+
+## Offline asset-trial evidence collection
+
+Asset trials use an offline QA runner that loads the source scene without
+entering the scene tree or invoking `_ready`, applies only the manifest's native
+texture/stream slots, and saves a candidate scene through Godot's scene APIs.
+The trial runner is not a bridge command and does not add filesystem writes to
+the live protocol. The ordinary validation scenario still runs through the
+existing scenario runner. A private trial request selects existing snapshot,
+audio-capture, and `record_state` steps; a runtime result advertises
+`asset_trial_v1` only when the copied addon includes the scene writer, media
+import probe, and scenario evidence collector. Collection reports facts from
+Godot about the resolved node and resource, decoded PNG pixels or imported WAV
+stream, visible pixels, playback overlap, render backend, and audio driver. It
+does not supply expected pass/fail values or create a general-purpose resource
+serialization interface.

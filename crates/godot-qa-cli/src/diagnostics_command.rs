@@ -43,6 +43,22 @@ pub(crate) fn editor_diagnostics_result(cli: &Cli, args: &EditorDiagnosticsArgs)
         };
     }
 
+    let _project_lease = match godot_qa_process::project_access::LaunchLease::acquire(
+        &config.project_root,
+        godot_qa_process::project_access::LaunchClass::ImportOrEditor,
+    ) {
+        Ok(lease) => lease,
+        Err(failure) => {
+            return CommandResult {
+                ok: false,
+                command: command.into(),
+                message: "project is reserved by an asset trial".into(),
+                data: Map::new(),
+                failures: vec![failure],
+                exit_code: 1,
+            };
+        }
+    };
     let artifacts = prepare_editor_diagnostics_artifacts(&config, command);
     let project_godot_snapshot = read_project_godot_snapshot(&config.project_root);
     let started = std::time::Instant::now();

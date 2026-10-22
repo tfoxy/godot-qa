@@ -332,7 +332,8 @@ fn scenario_contains_audio_capture(scenario: &Value) -> bool {
 fn value_contains_audio_capture(value: &Value) -> bool {
     match value {
         Value::Object(object) => {
-            object.contains_key("audio_capture") || object.values().any(value_contains_audio_capture)
+            object.contains_key("audio_capture")
+                || object.values().any(value_contains_audio_capture)
         }
         Value::Array(values) => values.iter().any(value_contains_audio_capture),
         _ => false,
@@ -706,6 +707,9 @@ fn write_runtime_request(
             ),
         }
     });
+    if let Some(trial) = scenario.get("_asset_trial") {
+        request["asset_trial"] = trial.clone();
+    }
     if let Some(time_control) = scenario.get("time_control") {
         if let Some(object) = request.as_object_mut() {
             object.insert("time_control".to_string(), time_control.clone());
