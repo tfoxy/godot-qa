@@ -1393,6 +1393,10 @@ the bundle with `multi_viewport forced this scenario to run cold in a --warm
 --warm-strict bundle`; the checked-in `sample_settings_layout` in
 `examples/sample_project` declares it for exactly that reason.
 
+Each viewport executes the complete runtime scenario, including its final
+`assert` entries and deterministic setup. CLI-side assertions such as
+`layout_audit` remain CLI-side checks; they are not sent to the runtime addon.
+
 The matrix is reserved for genuine multi-viewport fan-out (`viewports.len() > 1`). A scenario with **zero or one** `viewports` entry runs the normal single-run path — a single-viewport `layout_audit` produces the ordinary single-run envelope with layout failures attached inline, not a `runs[]` matrix envelope, and the lone viewport just sets the window resolution. This means a single-viewport `layout_audit` is warm-eligible (windowed-warm) rather than forced cold.
 
 `viewports` must be a list of two-integer arrays `[width, height]`. Malformed entries are rejected as `scenario_validation_failed` instead of being silently coerced.

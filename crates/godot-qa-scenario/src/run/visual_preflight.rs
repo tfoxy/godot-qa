@@ -171,18 +171,12 @@ fn run_viewport_matrix(
     for viewport in viewports {
         let viewport_token = viewport_token(viewport);
         let variant_scenario = variant_scenario(scenario, viewport);
-        let mut artifact_scenario = json!({
-            "name": viewport_token,
-            "scene": scenario.get("scene").cloned().unwrap_or(Value::Null),
-            "viewport": variant_scenario.get("viewport").cloned().unwrap_or(Value::Null),
-            "steps": scenario.get("steps").cloned().unwrap_or_else(|| json!([])),
-            "godot_args": json!(merged_launch_args(&config.godot_args, &scenario_godot_args(&variant_scenario))),
-            "project_args": json!(merged_launch_args(&config.godot_project_args, &scenario_project_args(&variant_scenario))),
-        });
+        // This request is executed directly, so retain the complete runtime
+        // payload, including final assertions and deterministic setup.
+        let mut artifact_scenario =
+            scenario_with_effective_launch_args(config, &variant_scenario);
         if let Some(object) = artifact_scenario.as_object_mut() {
-            if let Some(snapshots) = variant_scenario.get("snapshots") {
-                object.insert("snapshots".to_string(), snapshots.clone());
-            }
+            object.insert("name".to_string(), json!(viewport_token));
         }
         let variant_artifacts = match artifacts::prepare_run_artifacts(
             &variant_root,

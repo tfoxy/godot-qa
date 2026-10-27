@@ -1098,6 +1098,53 @@
     }
 
     #[test]
+    fn viewport_matrix_executed_requests_retain_final_assertions_and_setup() {
+        let root = temp_dir("viewport-matrix-runtime-contract");
+        let mut config = test_config(&root);
+        config.godot_args = vec!["--verbose".to_string()];
+        config.godot_project_args = vec!["--fixture=matrix".to_string()];
+        let artifacts = test_run_artifacts(&root);
+        let assertions = json!([
+            {"state_matches": {"target": "qa:probe", "path": "tick", "operator": "equals", "expected": 0}},
+            {"no_errors": true}
+        ]);
+        let setup = json!({"fixed_fps": 60, "seed": 7, "test_mode": true});
+        let steps = json!([{"wait_frames": 2}]);
+        let scenario = json!({
+            "name": "matrix_runtime_contract", "scene": "res://main.tscn",
+            "viewports": [[320, 200], [640, 480]],
+            "determinism": setup, "steps": steps, "assert": assertions,
+            "godot_args": ["--single-threaded-scene"],
+            "project_args": ["--case=final-assertions"]
+        });
+        let result = super::run_viewport_matrix(
+            "scenario run", "scenario run failed", &config, &scenario,
+            &root.join("qa/scenarios/matrix_runtime_contract.yaml"), &artifacts,
+            &[vec![320, 200], vec![640, 480]], None,
+            "godot-qa scenario run matrix_runtime_contract", Some(true), Some(false),
+        );
+        // The deliberately missing engine must fail; inspect the actual
+        // serialized requests prepared for both runtime invocations.
+        assert!(!result.ok);
+        let runs = result.data["runs"].as_array().unwrap();
+        assert_eq!(runs.len(), 2);
+        for run in runs {
+            let path = run["artifacts"]["request_path"].as_str().unwrap();
+            let request: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+            let runtime = &request["scenario"];
+            assert_eq!(runtime["assert"], assertions);
+            assert_eq!(runtime["steps"], steps);
+            assert_eq!(runtime["determinism"], setup);
+            assert_eq!(runtime["godot_args"], json!(["--verbose", "--single-threaded-scene"]));
+            assert_eq!(runtime["project_args"], json!(["--fixture=matrix", "--case=final-assertions"]));
+            assert!(runtime.get("viewports").is_none());
+            assert_eq!(runtime["viewport"]["width"], run["viewport"][0]);
+            assert_eq!(runtime["viewport"]["height"], run["viewport"][1]);
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn run_viewport_matrix_with_no_viewports_fails_loudly() {
         // Defense in depth: an empty viewport list would otherwise vacuously pass
         // (`runs.iter().all(..)` over zero runs is true). The guard fails instead.
