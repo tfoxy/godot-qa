@@ -90,9 +90,22 @@ fn write_editor_bridge_latest(project_root: &Path) {
 }
 "#,
     );
+    let path = project_root.join(".qa/artifacts/editor-diagnostics/latest.json");
+    let mut artifact: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    artifact["project_root"] = serde_json::json!(project_root);
+    fs::write(path, serde_json::to_vec(&artifact).unwrap()).unwrap();
 }
 
 fn run_diagnostics(project_root: &Path, godot_bin: &Path, strict: bool) -> (ExitStatus, Value) {
+    run_diagnostics_source(project_root, godot_bin, strict, None)
+}
+
+fn run_diagnostics_source(
+    project_root: &Path,
+    godot_bin: &Path,
+    strict: bool,
+    source: Option<&str>,
+) -> (ExitStatus, Value) {
     let mut command = Command::new(env!("CARGO_BIN_EXE_godot-qa"));
     command
         .arg("--json")
@@ -104,6 +117,9 @@ fn run_diagnostics(project_root: &Path, godot_bin: &Path, strict: bool) -> (Exit
         .arg("editor");
     if strict {
         command.arg("--strict-warnings");
+    }
+    if let Some(source) = source {
+        command.arg("--source").arg(source);
     }
     let output = command.output().unwrap();
     let body = serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
@@ -232,5 +248,155 @@ fn diagnostics_editor_strict_warnings_fail() {
         "[application]\nconfig/name=\"Diagnostics Fixture\"\n"
     );
 
+    fs::remove_dir_all(project_root).unwrap();
+}
+
+#[test]
+fn diagnostics_editor_source_reads_old_evidence_without_godot_or_import() {
+    let project_root = make_project_root("diagnostics-editor-only");
+    write_editor_bridge_latest(&project_root);
+    let nonexistent_godot = project_root.join("must-not-launch-godot");
+    let (status, body) =
+        run_diagnostics_source(&project_root, &nonexistent_godot, false, Some("editor"));
+    assert!(status.success(), "body: {body:#}");
+    assert_eq!(body["data"]["source"], "editor");
+    assert_eq!(body["data"]["warning_count"], 2);
+    assert_eq!(body["data"]["sources"][0]["included_in_verdict"], false);
+    assert_eq!(body["data"]["sources"][1]["included_in_verdict"], true);
+    assert_eq!(
+        body["data"]["sources"][1]["project_root"],
+        serde_json::json!(project_root)
+    );
+    assert_eq!(body["data"]["sources"][1]["run_id"], "editor-fixture");
+    assert_eq!(
+        body["data"]["sources"][1]["captured_at"],
+        "2026-05-19T00:00:00Z"
+    );
+    assert!(!Path::new(body["data"]["artifacts"]["logs"].as_str().unwrap()).exists());
+    let (strict_status, strict_body) =
+        run_diagnostics_source(&project_root, &nonexistent_godot, true, Some("editor"));
+    assert!(!strict_status.success(), "body: {strict_body:#}");
+    assert_eq!(
+        strict_body["failures"][0]["type"],
+        "editor_diagnostics_warnings_present"
+    );
+    fs::remove_dir_all(project_root).unwrap();
+}
+
+#[test]
+fn diagnostics_import_source_excludes_saved_editor_errors() {
+    let project_root = make_project_root("diagnostics-import-only");
+    let fake_godot = fake_godot_with_warning(&project_root);
+    write_editor_bridge_latest(&project_root);
+    let path = project_root.join(".qa/artifacts/editor-diagnostics/latest.json");
+    let mut artifact: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    artifact["diagnostics"][0]["severity"] = serde_json::json!("error");
+    fs::write(&path, serde_json::to_vec(&artifact).unwrap()).unwrap();
+    let (status, body) = run_diagnostics_source(&project_root, &fake_godot, false, Some("import"));
+    assert!(status.success(), "body: {body:#}");
+    assert_eq!(body["data"]["warning_count"], 2);
+    assert_eq!(body["data"]["error_count"], 0);
+    assert_eq!(body["data"]["editor_bridge"]["included_in_verdict"], false);
+    assert!(
+        body["data"]["source_warnings"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(body["data"]["sources"][0]["included_in_verdict"], true);
+    assert!(body["data"]["sources"][0]["captured_at"].as_u64().is_some());
+    fs::remove_dir_all(project_root).unwrap();
+}
+
+#[test]
+fn diagnostics_invalid_editor_evidence_is_excluded_or_fails_editor_only() {
+    let project_root = make_project_root("diagnostics-invalid-evidence");
+    let foreign_project = make_project_root("diagnostics-foreign-evidence");
+    let fake_godot = fake_godot_with_warning(&project_root);
+    let path = project_root.join(".qa/artifacts/editor-diagnostics/latest.json");
+    for problem in [
+        "missing",
+        "json",
+        "root",
+        "foreign",
+        "missing_project",
+        "missing_run",
+        "entries",
+    ] {
+        write_editor_bridge_latest(&project_root);
+        let mut artifact: Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        match problem {
+            "missing" => fs::remove_file(&path).unwrap(),
+            "json" => fs::write(&path, "{").unwrap(),
+            "root" => fs::write(&path, "[]").unwrap(),
+            _ => {
+                match problem {
+                    "foreign" => artifact["project_root"] = serde_json::json!(foreign_project),
+                    "missing_project" => {
+                        artifact.as_object_mut().unwrap().remove("project_root");
+                    }
+                    "missing_run" => {
+                        artifact.as_object_mut().unwrap().remove("run_id");
+                    }
+                    "entries" => {
+                        artifact["diagnostics"][0]["severity"] = serde_json::json!("bogus")
+                    }
+                    _ => unreachable!(),
+                }
+                fs::write(&path, serde_json::to_vec(&artifact).unwrap()).unwrap();
+            }
+        }
+        let (status, body) =
+            run_diagnostics_source(&project_root, &fake_godot, false, Some("combined"));
+        assert!(status.success(), "{problem}: {body:#}");
+        assert_eq!(body["data"]["warning_count"], 2, "{problem}");
+        assert_eq!(
+            body["data"]["editor_bridge"]["included_in_verdict"], false,
+            "{problem}"
+        );
+        assert!(
+            !body["data"]["source_warnings"]
+                .as_array()
+                .unwrap()
+                .is_empty(),
+            "{problem}"
+        );
+        let (status, body) = run_diagnostics_source(
+            &project_root,
+            &project_root.join("missing-godot"),
+            false,
+            Some("editor"),
+        );
+        assert!(!status.success(), "{problem}: {body:#}");
+        assert_eq!(
+            body["failures"][0]["type"], "editor_diagnostics_evidence_unavailable",
+            "{problem}"
+        );
+    }
+    fs::remove_dir_all(project_root).unwrap();
+    fs::remove_dir_all(foreign_project).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn diagnostics_editor_ownership_accepts_canonical_project_alias() {
+    let project_root = make_project_root("diagnostics-canonical-evidence");
+    write_editor_bridge_latest(&project_root);
+    let alias = project_root.with_extension("symlink");
+    std::os::unix::fs::symlink(&project_root, &alias).unwrap();
+    let path = project_root.join(".qa/artifacts/editor-diagnostics/latest.json");
+    let mut artifact: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    artifact["project_root"] = serde_json::json!(alias);
+    fs::write(path, serde_json::to_vec(&artifact).unwrap()).unwrap();
+    let (status, body) = run_diagnostics_source(
+        &project_root,
+        &project_root.join("missing-godot"),
+        false,
+        Some("editor"),
+    );
+    assert!(status.success(), "body: {body:#}");
+    assert_eq!(body["data"]["editor_bridge"]["included_in_verdict"], true);
+    fs::remove_file(alias).unwrap();
     fs::remove_dir_all(project_root).unwrap();
 }

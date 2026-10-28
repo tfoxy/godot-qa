@@ -190,6 +190,15 @@ pub(crate) enum DiagnosticsCommands {
 pub(crate) struct EditorDiagnosticsArgs {
     #[arg(long = "strict-warnings", action = ArgAction::SetTrue)]
     pub(crate) strict_warnings: bool,
+    #[arg(long, value_enum, default_value_t = EditorDiagnosticsSource::Combined)]
+    pub(crate) source: EditorDiagnosticsSource,
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EditorDiagnosticsSource {
+    Import,
+    Editor,
+    Combined,
 }
 
 #[derive(Debug, Args)]

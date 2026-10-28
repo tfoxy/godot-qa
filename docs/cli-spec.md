@@ -198,11 +198,15 @@ logs
 
 ## Editor Diagnostics
 
-`diagnostics editor` reads the Godot QA editor bridge artifact when present, launches Godot through the normal process/artifact layer with an editor/import-compatible `--headless --import --log-file` pass, then normalizes and merges editor, import, or GDScript diagnostics into JSON. This command is distinct from live `errors`: `errors` reads the structured QA runtime-error buffer from an active session, while `diagnostics editor` is for editor/import/GDScript analyzer diagnostics.
+`diagnostics editor --source combined|import|editor` defaults to `combined`: it reads valid project-owned Godot QA editor evidence when present, launches the usual `--headless --import --log-file` pass, and normalizes the combined diagnostics. `--source import` excludes saved editor evidence. `--source editor` reads saved evidence without requiring Godot or launching an import. This command is distinct from live `errors`, which reads the active runtime-error buffer.
+
+`data.source`, `data.sources`, and `data.editor_bridge` identify source, canonical project, run ID, capture time, and `included_in_verdict`. Import capture times use Unix seconds with an explicit format; editor capture times retain their recorded string. Missing, invalid, unowned, or foreign editor evidence is excluded with advisory `source_warnings` in combined mode; editor-only mode instead fails with `editor_diagnostics_evidence_unavailable`. Historical project-owned evidence remains eligible in combined mode regardless of age; choose `--source import` for a current-import-only verdict. Source advisories do not become diagnostic warnings under `--strict-warnings`.
 
 ```bash
 godot-qa diagnostics editor --project <project> --json
 godot-qa diagnostics editor --project <project> --strict-warnings --json
+godot-qa diagnostics editor --project <project> --source import --json
+godot-qa diagnostics editor --project <project> --source editor --json
 ```
 
 For warnings that only appear in the Godot Editor Debugger panel after pressing Run, enable the `Godot QA` plugin, run the project from the editor, then run `godot-qa diagnostics editor --project <project> --json`. The plugin writes `.qa/artifacts/editor-diagnostics/latest.json` and timestamped `.qa/artifacts/editor-diagnostics/<run-id>/diagnostics.json` files. If that bridge artifact is missing, `diagnostics editor` still returns log-only results with an advisory note.

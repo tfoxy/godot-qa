@@ -8,7 +8,16 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) fn editor_diagnostics_result(cli: &Cli, args: &EditorDiagnosticsArgs) -> CommandResult {
-    let resolved_binary = godot_qa_process::resolve_godot_binary(cli.godot_bin.as_deref());
+    let include_import = args.source != EditorDiagnosticsSource::Editor;
+    let include_editor = args.source != EditorDiagnosticsSource::Import;
+    let source = match args.source {
+        EditorDiagnosticsSource::Import => "import",
+        EditorDiagnosticsSource::Editor => "editor",
+        EditorDiagnosticsSource::Combined => "combined",
+    };
+    let resolved_binary = include_import
+        .then(|| godot_qa_process::resolve_godot_binary(cli.godot_bin.as_deref()))
+        .flatten();
     let config = load_project_config(
         cli.project.as_deref().map(Path::new),
         cli.godot_bin.as_deref(),
@@ -21,7 +30,7 @@ pub(crate) fn editor_diagnostics_result(cli: &Cli, args: &EditorDiagnosticsArgs)
     if let Some(failure) = config.project_config_failure_for_command(command) {
         failures.push(failure);
     }
-    if config.godot_binary.is_none() {
+    if include_import && config.godot_binary.is_none() {
         failures.push(missing_godot_failure(command));
     }
     if !config.project_root.exists() {
@@ -43,36 +52,52 @@ pub(crate) fn editor_diagnostics_result(cli: &Cli, args: &EditorDiagnosticsArgs)
         };
     }
 
-    let _project_lease = match godot_qa_process::project_access::LaunchLease::acquire(
-        &config.project_root,
-        godot_qa_process::project_access::LaunchClass::ImportOrEditor,
-    ) {
-        Ok(lease) => lease,
-        Err(failure) => {
-            return CommandResult {
-                ok: false,
-                command: command.into(),
-                message: "project is reserved by an asset trial".into(),
-                data: Map::new(),
-                failures: vec![failure],
-                exit_code: 1,
-            };
-        }
-    };
-    let artifacts = prepare_editor_diagnostics_artifacts(&config, command);
-    let project_godot_snapshot = read_project_godot_snapshot(&config.project_root);
+    let artifacts = prepare_editor_diagnostics_artifacts(&config, command, source);
     let started = std::time::Instant::now();
-    let completed = godot_qa_process::launch_godot_import_with_args(
-        config.godot_binary.as_deref().unwrap_or_default(),
-        &config.godot_launch_prefix,
-        &config.godot_args,
-        &config.project_root,
-        &artifacts.logs_path,
-    );
-    let restore_failure =
-        restore_project_godot_snapshot(command, &config.project_root, project_godot_snapshot);
+    let captured_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs());
+    let run_id = artifacts
+        .root_dir
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned());
+    let (completed, restore_failure) = if include_import {
+        let _project_lease = match godot_qa_process::project_access::LaunchLease::acquire(
+            &config.project_root,
+            godot_qa_process::project_access::LaunchClass::ImportOrEditor,
+        ) {
+            Ok(lease) => lease,
+            Err(failure) => {
+                return CommandResult {
+                    ok: false,
+                    command: command.into(),
+                    message: "project is reserved by an asset trial".into(),
+                    data: Map::new(),
+                    failures: vec![failure],
+                    exit_code: 1,
+                };
+            }
+        };
+        let project_godot_snapshot = read_project_godot_snapshot(&config.project_root);
+        let completed = godot_qa_process::launch_godot_import_with_args(
+            config.godot_binary.as_deref().unwrap_or_default(),
+            &config.godot_launch_prefix,
+            &config.godot_args,
+            &config.project_root,
+            &artifacts.logs_path,
+        );
+        let restore_failure =
+            restore_project_godot_snapshot(command, &config.project_root, project_godot_snapshot);
+        (Some(completed), restore_failure)
+    } else {
+        (None, None)
+    };
 
-    let bridge_artifact = read_editor_bridge_artifact(&artifacts.editor_bridge_path);
+    let bridge_artifact = if include_editor {
+        read_editor_bridge_artifact(&artifacts.editor_bridge_path, &config.project_root)
+    } else {
+        EditorBridgeArtifact::unselected(&artifacts.editor_bridge_path)
+    };
     let mut notes = Vec::new();
     if let Some(note) = bridge_artifact.note.clone() {
         notes.push(note);
@@ -80,7 +105,7 @@ pub(crate) fn editor_diagnostics_result(cli: &Cli, args: &EditorDiagnosticsArgs)
     let mut capture_methods = Vec::new();
     let mut seen = BTreeSet::new();
     let mut diagnostics = Vec::new();
-    if bridge_artifact.available {
+    if bridge_artifact.included_in_verdict {
         if let Some(capture_method) = bridge_artifact.capture_method.clone() {
             capture_methods.push(capture_method);
         }
@@ -90,21 +115,23 @@ pub(crate) fn editor_diagnostics_result(cli: &Cli, args: &EditorDiagnosticsArgs)
             bridge_artifact.diagnostics.clone(),
         );
     }
-    capture_methods.push("godot --headless --import --log-file".to_string());
-    push_unique_diagnostics(
-        &mut diagnostics,
-        &mut seen,
-        collect_editor_diagnostics(&[
-            DiagnosticLogSource {
-                name: "logs",
-                path: artifacts.logs_path.clone(),
-            },
-            DiagnosticLogSource {
-                name: "raw_godot_log",
-                path: artifacts.raw_godot_log_path.clone(),
-            },
-        ]),
-    );
+    if include_import {
+        capture_methods.push("godot --headless --import --log-file".to_string());
+        push_unique_diagnostics(
+            &mut diagnostics,
+            &mut seen,
+            collect_editor_diagnostics(&[
+                DiagnosticLogSource {
+                    name: "logs",
+                    path: artifacts.logs_path.clone(),
+                },
+                DiagnosticLogSource {
+                    name: "raw_godot_log",
+                    path: artifacts.raw_godot_log_path.clone(),
+                },
+            ]),
+        );
+    }
     diagnostics.sort_by(|left, right| {
         left.script
             .cmp(&right.script)
@@ -122,10 +149,15 @@ pub(crate) fn editor_diagnostics_result(cli: &Cli, args: &EditorDiagnosticsArgs)
         .filter(|diagnostic| diagnostic.severity == "error")
         .count();
 
+    let diagnostic_evidence_path = if include_import {
+        &artifacts.logs_path
+    } else {
+        &artifacts.editor_bridge_path
+    };
     let mut result_failures = Vec::new();
     match completed {
-        Ok(run) if run.returncode == 0 => {}
-        Ok(run) => result_failures.push(FailureDetail {
+        Some(Ok(run)) if run.returncode == 0 => {}
+        Some(Ok(run)) => result_failures.push(FailureDetail {
             kind: "godot_editor_diagnostics_failed".to_string(),
             command: Some(godot_qa_process::format_command(&run.command)),
             path: Some(artifacts.logs_path.to_string_lossy().into_owned()),
@@ -134,7 +166,20 @@ pub(crate) fn editor_diagnostics_result(cli: &Cli, args: &EditorDiagnosticsArgs)
             artifacts: value_as_object_map(artifacts.to_json()),
             ..FailureDetail::default()
         }),
-        Err(failure) => result_failures.push(failure),
+        Some(Err(failure)) => result_failures.push(failure),
+        None => {}
+    }
+    if args.source == EditorDiagnosticsSource::Editor && !bridge_artifact.included_in_verdict {
+        result_failures.push(FailureDetail {
+            kind: "editor_diagnostics_evidence_unavailable".into(),
+            command: Some(command.into()),
+            path: Some(artifacts.editor_bridge_path.to_string_lossy().into_owned()),
+            message: bridge_artifact.note.clone(),
+            expected: Some(json!("valid editor bridge diagnostics belonging to the selected project; enable the Godot QA editor plugin and run this project from the editor")),
+            actual: Some(bridge_artifact.to_json()),
+            artifacts: value_as_object_map(artifacts.to_json()),
+            ..FailureDetail::default()
+        });
     }
     if let Some(failure) = restore_failure {
         result_failures.push(failure);
@@ -143,7 +188,7 @@ pub(crate) fn editor_diagnostics_result(cli: &Cli, args: &EditorDiagnosticsArgs)
         result_failures.push(FailureDetail {
             kind: "editor_diagnostics_errors_present".to_string(),
             command: Some(command.to_string()),
-            path: Some(artifacts.logs_path.to_string_lossy().into_owned()),
+            path: Some(diagnostic_evidence_path.to_string_lossy().into_owned()),
             message: Some("Godot editor diagnostics reported errors".to_string()),
             expected: Some(json!("no editor diagnostics with severity=error")),
             actual: Some(json!(error_count)),
@@ -155,7 +200,7 @@ pub(crate) fn editor_diagnostics_result(cli: &Cli, args: &EditorDiagnosticsArgs)
         result_failures.push(FailureDetail {
             kind: "editor_diagnostics_warnings_present".to_string(),
             command: Some(command.to_string()),
-            path: Some(artifacts.logs_path.to_string_lossy().into_owned()),
+            path: Some(diagnostic_evidence_path.to_string_lossy().into_owned()),
             message: Some("Godot editor diagnostics reported warnings in strict mode".to_string()),
             expected: Some(json!("no editor diagnostics with severity=warning")),
             actual: Some(json!(warning_count)),
@@ -166,6 +211,20 @@ pub(crate) fn editor_diagnostics_result(cli: &Cli, args: &EditorDiagnosticsArgs)
 
     let diagnostics_json: Vec<Value> = diagnostics.iter().map(EditorDiagnostic::to_json).collect();
     let mut data = Map::from_iter([
+        ("source".to_string(), json!(source)),
+        (
+            "sources".to_string(),
+            json!([
+                {
+                    "source": "import", "project_root": config.project_root,
+                    "run_id": if include_import { run_id } else { None },
+                    "captured_at": if include_import { captured_at.ok() } else { None },
+                    "captured_at_format": "unix_seconds",
+                    "included_in_verdict": include_import,
+                },
+                bridge_artifact.to_json(),
+            ]),
+        ),
         ("project_root".to_string(), json!(config.project_root)),
         ("artifacts".to_string(), artifacts.to_json()),
         (
@@ -185,11 +244,12 @@ pub(crate) fn editor_diagnostics_result(cli: &Cli, args: &EditorDiagnosticsArgs)
         ),
         ("capture_methods".to_string(), json!(capture_methods)),
         ("editor_bridge".to_string(), bridge_artifact.to_json()),
+        ("source_warnings".to_string(), json!(notes)),
         ("notes".to_string(), json!(notes)),
     ]);
     data.insert(
         "note".to_string(),
-        json!("captures the Godot QA editor bridge artifact when present, then merges diagnostics Godot emits through process output or log files"),
+        json!("diagnostics include only the selected sources; editor evidence retains its original run and capture time and is not proof of current import state"),
     );
     let exit_code = if result_failures.is_empty() { 0 } else { 1 };
     let result = CommandResult {
@@ -270,6 +330,7 @@ impl EditorDiagnosticsArtifacts {
 pub(crate) fn prepare_editor_diagnostics_artifacts(
     config: &ProjectConfig,
     command: &str,
+    source: &str,
 ) -> EditorDiagnosticsArtifacts {
     let root_dir = config
         .artifacts_dir
@@ -293,7 +354,8 @@ pub(crate) fn prepare_editor_diagnostics_artifacts(
             "tool": "godot-qa",
             "project_root": config.project_root,
             "command": command,
-            "capture_method": "godot --headless --import --log-file",
+            "source": source,
+            "capture_method": if source == "editor" { "saved editor bridge artifact" } else { "godot --headless --import --log-file" },
         }))
         .unwrap_or_else(|_| "{}".to_string()),
     ) {
@@ -322,6 +384,8 @@ struct DiagnosticLogSource {
 struct EditorBridgeArtifact {
     path: PathBuf,
     available: bool,
+    included_in_verdict: bool,
+    project_root: Option<String>,
     capture_method: Option<String>,
     diagnostic_count: Option<u64>,
     warning_count: Option<u64>,
@@ -333,10 +397,30 @@ struct EditorBridgeArtifact {
 }
 
 impl EditorBridgeArtifact {
+    fn unselected(path: &Path) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            available: path.exists(),
+            included_in_verdict: false,
+            project_root: None,
+            capture_method: None,
+            diagnostic_count: None,
+            warning_count: None,
+            error_count: None,
+            run_id: None,
+            captured_at: None,
+            diagnostics: Vec::new(),
+            note: None,
+        }
+    }
+
     fn to_json(&self) -> Value {
         json!({
             "path": self.path,
             "available": self.available,
+            "source": "editor",
+            "project_root": self.project_root,
+            "included_in_verdict": self.included_in_verdict,
             "capture_method": self.capture_method,
             "run_id": self.run_id,
             "captured_at": self.captured_at,
@@ -399,19 +483,8 @@ fn push_unique_diagnostics(
     }
 }
 
-fn read_editor_bridge_artifact(path: &Path) -> EditorBridgeArtifact {
-    let mut artifact = EditorBridgeArtifact {
-        path: path.to_path_buf(),
-        available: path.exists(),
-        capture_method: None,
-        diagnostic_count: None,
-        warning_count: None,
-        error_count: None,
-        run_id: None,
-        captured_at: None,
-        diagnostics: Vec::new(),
-        note: None,
-    };
+fn read_editor_bridge_artifact(path: &Path, project_root: &Path) -> EditorBridgeArtifact {
+    let mut artifact = EditorBridgeArtifact::unselected(path);
     if !artifact.available {
         artifact.note = Some(format!(
             "No editor-run diagnostics bridge artifact found at {}; enable the Godot QA plugin, run the project from the Godot Editor, then rerun this command",
@@ -458,16 +531,68 @@ fn read_editor_bridge_artifact(path: &Path) -> EditorBridgeArtifact {
         .get("captured_at")
         .and_then(Value::as_str)
         .map(str::to_string);
+    artifact.project_root = optional_string(object.get("project_root"));
+    let owned = artifact
+        .project_root
+        .as_deref()
+        .filter(|root| Path::new(root).is_absolute())
+        .and_then(|root| std::fs::canonicalize(root).ok())
+        .zip(std::fs::canonicalize(project_root).ok())
+        .is_some_and(|(recorded, selected)| recorded == selected);
+    if !owned {
+        artifact.note = Some(format!(
+            "Editor diagnostics bridge artifact project_root {:?} is missing, invalid, or does not belong to selected project {}; run the selected project from the Godot Editor to capture matching evidence",
+            artifact.project_root,
+            project_root.display()
+        ));
+        return artifact;
+    }
+    if artifact.run_id.as_deref().is_none_or(str::is_empty)
+        || artifact.captured_at.as_deref().is_none_or(str::is_empty)
+    {
+        artifact.note = Some("Editor diagnostics bridge artifact requires nonempty run_id and captured_at provenance".to_string());
+        return artifact;
+    }
     let Some(entries) = object.get("diagnostics").and_then(Value::as_array) else {
         artifact.note = Some(
             "Editor diagnostics bridge artifact does not contain a diagnostics array".to_string(),
         );
         return artifact;
     };
-    artifact.diagnostics = entries
-        .iter()
-        .filter_map(|entry| editor_diagnostic_from_json(entry, "editor_bridge"))
-        .collect();
+    let mut diagnostics = Vec::with_capacity(entries.len());
+    for (index, entry) in entries.iter().enumerate() {
+        if !matches!(
+            entry.get("severity").and_then(Value::as_str),
+            Some("warning" | "error")
+        ) {
+            artifact.note = Some(format!(
+                "Editor diagnostics bridge artifact diagnostics[{index}] requires severity=warning or error"
+            ));
+            return artifact;
+        }
+        let Some(diagnostic) = editor_diagnostic_from_json(entry, "editor_bridge") else {
+            artifact.note = Some(format!(
+                "Editor diagnostics bridge artifact diagnostics[{index}] requires a message or code"
+            ));
+            return artifact;
+        };
+        diagnostics.push(diagnostic);
+    }
+    artifact.diagnostic_count = Some(diagnostics.len() as u64);
+    artifact.warning_count = Some(
+        diagnostics
+            .iter()
+            .filter(|entry| entry.severity == "warning")
+            .count() as u64,
+    );
+    artifact.error_count = Some(
+        diagnostics
+            .iter()
+            .filter(|entry| entry.severity == "error")
+            .count() as u64,
+    );
+    artifact.diagnostics = diagnostics;
+    artifact.included_in_verdict = true;
     artifact
 }
 
