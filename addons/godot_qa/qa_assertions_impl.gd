@@ -2110,7 +2110,7 @@ func _assert_visible_pixels(params: Dictionary) -> Dictionary:
 	if ratio_passes and count_passes:
 		var payload: Dictionary = probe.duplicate(true)
 		payload["threshold"] = threshold
-		return _ok(payload)
+		return _visual_required_artifact_result(payload)
 	var fail_payload: Dictionary = probe.duplicate(true)
 	fail_payload["threshold"] = threshold
 	fail_payload["reason"] = "visible_pixel_count_below_threshold" if not count_passes else "visible_pixel_ratio_below_threshold"
@@ -2141,7 +2141,7 @@ func _assert_not_occluded(params: Dictionary) -> Dictionary:
 		var pass_payload: Dictionary = probe.duplicate(true)
 		pass_payload["threshold"] = threshold
 		pass_payload["occluder"] = occluder
-		return _ok(pass_payload)
+		return _visual_required_artifact_result(pass_payload)
 	var fail_payload: Dictionary = probe.duplicate(true)
 	fail_payload["threshold"] = threshold
 	fail_payload["reason"] = "target_visible_pixel_count_below_threshold" if not count_passes else "target_has_no_or_low_visible_contribution"
@@ -2470,9 +2470,14 @@ func _assert_render_order(params: Dictionary, expect_above: bool) -> Dictionary:
 			var capture := await _capture_visual_image(screenshot_path)
 			if bool(capture.get("ok", false)):
 				var image: Image = capture.get("image")
-				_write_rect_overlay(image, rect_a_screenshot.intersection(rect_b_screenshot) if overlaps else rect_a_screenshot, overlay_path)
+				var overlay_error := _write_rect_overlay(image, rect_a_screenshot.intersection(rect_b_screenshot) if overlaps else rect_a_screenshot, overlay_path)
 				payload["screenshot"] = screenshot_path
 				payload["artifacts"] = {"screenshot": screenshot_path, "overlay": overlay_path}
+				var artifact_failures: Array = capture.get("artifact_failures", []).duplicate(true)
+				if overlay_error != OK:
+					artifact_failures.append(_visual_artifact_write_failure(overlay_path, overlay_error))
+				if not artifact_failures.is_empty():
+					payload["capture_warning"] = {"type": "screenshot_write_failed", "message": "optional render-order diagnostic artifacts could not be written", "artifact_failures": artifact_failures}
 			else:
 				payload["capture_warning"] = _visual_capture_warning(capture, visual_dir, screenshot_path)
 		else:
@@ -2616,17 +2621,20 @@ func _visual_probe(target: String, params: Dictionary, command_name: String) -> 
 	if not bool(before_capture.get("ok", false)):
 		return _visual_capture_error(target, resolution, visual_dir, before_capture, params, command_name)
 	if not _safe_set_visual_visible(node, false):
-		return _target_freed_visual_probe_error(target, resolution, params, command_name, {"original": before_path})
+		return _target_freed_visual_probe_error(target, resolution, params, command_name, {"original": before_path}, before_capture.get("artifact_failures", []))
 	var hidden_capture := await _capture_visual_image(hidden_path)
+	var artifact_failures: Array = before_capture.get("artifact_failures", []).duplicate(true)
+	artifact_failures.append_array(hidden_capture.get("artifact_failures", []))
+	hidden_capture["artifact_failures"] = artifact_failures
 	if not _safe_restore_visual_visible(node, visibility_state):
-		return _target_freed_visual_probe_error(target, resolution, params, command_name, {"original": before_path, "target_hidden": hidden_path})
+		return _target_freed_visual_probe_error(target, resolution, params, command_name, {"original": before_path, "target_hidden": hidden_path}, artifact_failures)
 	await _runtime.process_frames(1)
 	if not bool(hidden_capture.get("ok", false)):
 		return _visual_capture_error(target, resolution, visual_dir, hidden_capture, params, command_name)
 	var before_img: Image = before_capture.get("image")
 	var hidden_img: Image = hidden_capture.get("image")
 	if before_img.get_width() != hidden_img.get_width() or before_img.get_height() != hidden_img.get_height():
-		return _error("screenshot_capture_failed", "visual assertions require matching real viewport screenshot image evidence", {"command": command_name, "target": target, "snapshot": _visual_snapshot(params), "resolved": resolution.get("resolved", ""), "resolved_path": resolution.get("resolved", ""), "visual_dir": visual_dir, "display_server": DisplayServer.get_name(), "headless": OS.has_feature("headless"), "attempted_screenshot_path": hidden_path, "capture_details": {"original_size": [before_img.get_width(), before_img.get_height()], "hidden_size": [hidden_img.get_width(), hidden_img.get_height()]}, "actual": {"original_size": [before_img.get_width(), before_img.get_height()], "hidden_size": [hidden_img.get_width(), hidden_img.get_height()]}, "expected": "matching real rendered viewport pixel screenshots", "remediation": _visual_capture_remediation(), "artifacts": {"original": before_path, "target_hidden": hidden_path}})
+		return _error("screenshot_capture_failed", "visual assertions require matching real viewport screenshot image evidence", {"command": command_name, "target": target, "snapshot": _visual_snapshot(params), "resolved": resolution.get("resolved", ""), "resolved_path": resolution.get("resolved", ""), "visual_dir": visual_dir, "display_server": DisplayServer.get_name(), "headless": OS.has_feature("headless"), "attempted_screenshot_path": hidden_path, "capture_details": {"original_size": [before_img.get_width(), before_img.get_height()], "hidden_size": [hidden_img.get_width(), hidden_img.get_height()]}, "actual": {"original_size": [before_img.get_width(), before_img.get_height()], "hidden_size": [hidden_img.get_width(), hidden_img.get_height()]}, "expected": "matching real rendered viewport pixel screenshots", "remediation": _visual_capture_remediation(), "artifacts": {"original": before_path, "target_hidden": hidden_path}, "artifact_failures": artifact_failures})
 	# Target rects come from get_global_rect()/qa_visual_rect() in the 2D canvas
 	# coordinate space, but screenshots are captured at the OS window resolution.
 	# When content scaling maps canvas != window, canvas coords index the wrong
@@ -2635,12 +2643,13 @@ func _visual_probe(target: String, params: Dictionary, command_name: String) -> 
 	var image_size := Vector2(before_img.get_width(), before_img.get_height())
 	var geometry_error := _screenshot_geometry_mismatch_error(canvas_to_screenshot, image_size, command_name, target, params, resolution, before_path, hidden_path)
 	if not geometry_error.is_empty():
+		geometry_error["error"]["data"]["artifact_failures"] = artifact_failures
 		return geometry_error
 	var rect_screenshot: Rect2 = canvas_to_screenshot * rect
-	var metrics := _count_changed_pixels(before_img, hidden_img, rect_screenshot)
 	var mask_path := "%s/%s_mask.png" % [visual_dir, safe_name]
 	var overlay_path := "%s/%s_overlay.png" % [visual_dir, safe_name]
-	_write_visual_diagnostics(before_img, hidden_img, rect_screenshot, mask_path, overlay_path)
+	var metrics := _write_visual_diagnostics(before_img, hidden_img, rect_screenshot, mask_path, overlay_path)
+	artifact_failures.append_array(metrics.get("artifact_failures", []))
 	return {
 		"ok": true,
 		"command": command_name,
@@ -2660,21 +2669,22 @@ func _visual_probe(target: String, params: Dictionary, command_name: String) -> 
 		"remediation": rect_result.get("remediation", ""),
 		"screenshot": before_path,
 		"artifacts": {"original": before_path, "target_hidden": hidden_path, "mask": mask_path, "overlay": overlay_path},
+		"artifact_failures": artifact_failures,
 	}
 
 
-func _count_changed_pixels(before: Image, hidden: Image, rect: Rect2) -> Dictionary:
-	var x0 := maxi(0, int(floor(rect.position.x)))
-	var y0 := maxi(0, int(floor(rect.position.y)))
-	var x1 := mini(before.get_width(), int(ceil(rect.end.x)))
-	var y1 := mini(before.get_height(), int(ceil(rect.end.y)))
-	var total := maxi((x1 - x0) * (y1 - y0), 1)
-	var changed := 0
-	for y in range(y0, y1):
-		for x in range(x0, x1):
-			if _pixels_differ(before.get_pixel(x, y), hidden.get_pixel(x, y)):
-				changed += 1
-	return {"changed": changed, "ratio": float(changed) / float(total), "mode": "pixel_delta"}
+func _visual_artifact_write_failure(path: String, error_code: int) -> Dictionary:
+	return {"type": "screenshot_write_failed", "message": "visual diagnostic PNG could not be written", "attempted_screenshot_path": path, "expected": "writable visual diagnostic PNG path", "actual": error_code, "screenshot_error": error_code}
+
+
+func _visual_required_artifact_result(payload: Dictionary) -> Dictionary:
+	var failures: Array = payload.get("artifact_failures", [])
+	if failures.is_empty():
+		return _ok(payload)
+	var failure: Dictionary = failures[0]
+	payload["attempted_screenshot_path"] = failure.get("attempted_screenshot_path", "")
+	payload["screenshot_error"] = failure.get("screenshot_error", ERR_CANT_CREATE)
+	return _error("screenshot_write_failed", "required visual diagnostic PNG could not be written", payload)
 
 
 func _visual_rect_for_node(node: Node, command_name: String, target: String, params: Dictionary, resolution: Dictionary) -> Dictionary:
@@ -2802,21 +2812,27 @@ func _safe_restore_visual_visible(node: Node, visibility_state: Dictionary) -> b
 
 
 func _capture_visual_image(path: String) -> Dictionary:
-	var capture_result: Dictionary = await QaSnapshot.capture_screenshot(_root_window, path, false)
-	if not bool(capture_result.get("ok", false)):
-		return capture_result
-	if not FileAccess.file_exists(path):
-		return _visual_image_capture_failure(path, "visual screenshot artifact was not written", "missing_screenshot_file", null, capture_result)
-	var image := Image.load_from_file(path)
+	# Keep the exact captured pixels for analysis instead of decoding the PNG
+	# that was just written. Preserve capture_screenshot's settling and strictness.
+	await _root_window.get_tree().process_frame
+	await _root_window.get_tree().process_frame
+	RenderingServer.force_draw(false)
+	var image: Image = QaSnapshot._capture_viewport_image(_root_window)
+	var capture_result := {"artifacts": {"screenshot": path}}
 	if image == null or image.get_width() <= 0 or image.get_height() <= 0:
-		return _visual_image_capture_failure(path, "visual screenshot artifact could not be loaded", "non_loadable_screenshot_image", null, capture_result)
+		return _visual_image_capture_failure(path, "visual screenshot viewport pixels were unavailable", "headless_screenshot_unsupported" if DisplayServer.get_name() == "headless" else "non_loadable_screenshot_image", null, capture_result)
+	var screenshot_error: int = QaSnapshot._save_captured_viewport_screenshot(_root_window, image, path, false)
+	var artifact_failures: Array = []
+	if screenshot_error != OK:
+		artifact_failures.append(_visual_artifact_write_failure(path, screenshot_error))
+	capture_result["artifact_failures"] = artifact_failures
 	if image.get_format() != Image.FORMAT_RGBA8:
 		image.convert(Image.FORMAT_RGBA8)
 	if OS.has_feature("headless") or DisplayServer.get_name() == "headless":
 		return _visual_image_capture_failure(path, "visual assertions cannot use headless diagnostic screenshot output", "headless_screenshot_unsupported", image, capture_result)
 	if _visual_image_is_low_information(image):
 		return _visual_image_capture_failure(path, "visual screenshot did not contain real rendered viewport pixels", "blank_or_fallback_screenshot_image", image, capture_result)
-	return {"ok": true, "image": image, "artifacts": capture_result.get("artifacts", {})}
+	return {"ok": true, "image": image, "artifacts": capture_result.get("artifacts", {}), "artifact_failures": artifact_failures}
 
 
 func _visual_image_capture_failure(path: String, message: String, reason: String, image: Image, capture_result: Dictionary) -> Dictionary:
@@ -2843,6 +2859,7 @@ func _visual_image_capture_failure(path: String, message: String, reason: String
 			},
 		],
 		"artifacts": capture_result.get("artifacts", {"screenshot": path}),
+		"artifact_failures": capture_result.get("artifact_failures", []),
 	}
 
 
@@ -2875,6 +2892,7 @@ func _visual_capture_error(target: String, resolution: Dictionary, visual_dir: S
 			"expected": "real rendered viewport pixels from the active Godot display backend",
 			"remediation": _visual_capture_remediation(),
 			"artifacts": artifacts,
+			"artifact_failures": capture.get("artifact_failures", []),
 		},
 	)
 
@@ -2956,7 +2974,7 @@ func _visual_probe_failure_payload(
 	}
 
 
-func _target_freed_visual_probe_error(target: String, resolution: Dictionary, params: Dictionary, command_name: String, artifacts: Dictionary) -> Dictionary:
+func _target_freed_visual_probe_error(target: String, resolution: Dictionary, params: Dictionary, command_name: String, artifacts: Dictionary, artifact_failures: Array = []) -> Dictionary:
 	return _error(
 		"target_freed_during_visual_probe",
 		"visual assertion target was freed while screenshot evidence was being captured",
@@ -2966,6 +2984,7 @@ func _target_freed_visual_probe_error(target: String, resolution: Dictionary, pa
 			"snapshot": _visual_snapshot(params),
 			"resolved": resolution.get("resolved", ""),
 			"artifacts": artifacts,
+			"artifact_failures": artifact_failures,
 		},
 	)
 
@@ -2979,7 +2998,7 @@ func _pixels_differ(a: Color, b: Color) -> bool:
 	)
 
 
-func _write_visual_diagnostics(before: Image, hidden: Image, rect: Rect2, mask_path: String, overlay_path: String) -> void:
+func _write_visual_diagnostics(before: Image, hidden: Image, rect: Rect2, mask_path: String, overlay_path: String) -> Dictionary:
 	var width := before.get_width()
 	var height := before.get_height()
 	var mask := Image.create(width, height, false, Image.FORMAT_RGBA8)
@@ -2989,17 +3008,26 @@ func _write_visual_diagnostics(before: Image, hidden: Image, rect: Rect2, mask_p
 	var y0 := maxi(0, int(floor(rect.position.y)))
 	var x1 := mini(width, int(ceil(rect.end.x)))
 	var y1 := mini(height, int(ceil(rect.end.y)))
+	var total := maxi((x1 - x0) * (y1 - y0), 1)
+	var changed := 0
 	for y in range(y0, y1):
 		for x in range(x0, x1):
 			if _pixels_differ(before.get_pixel(x, y), hidden.get_pixel(x, y)):
+				changed += 1
 				mask.set_pixel(x, y, Color(1.0, 1.0, 1.0, 1.0))
 				var base := overlay.get_pixel(x, y)
 				overlay.set_pixel(x, y, base.lerp(Color(1.0, 0.0, 0.0, 1.0), 0.55))
-	mask.save_png(mask_path)
-	overlay.save_png(overlay_path)
+	var failures: Array = []
+	var mask_error := mask.save_png(mask_path)
+	if mask_error != OK:
+		failures.append(_visual_artifact_write_failure(mask_path, mask_error))
+	var overlay_error := overlay.save_png(overlay_path)
+	if overlay_error != OK:
+		failures.append(_visual_artifact_write_failure(overlay_path, overlay_error))
+	return {"changed": changed, "ratio": float(changed) / float(total), "mode": "pixel_delta", "artifact_failures": failures}
 
 
-func _write_rect_overlay(source: Image, rect: Rect2, overlay_path: String) -> void:
+func _write_rect_overlay(source: Image, rect: Rect2, overlay_path: String) -> int:
 	var width := source.get_width()
 	var height := source.get_height()
 	var overlay := Image.create(width, height, false, Image.FORMAT_RGBA8)
@@ -3015,7 +3043,7 @@ func _write_rect_overlay(source: Image, rect: Rect2, overlay_path: String) -> vo
 			else:
 				var base := overlay.get_pixel(x, y)
 				overlay.set_pixel(x, y, base.lerp(Color(1.0, 0.0, 0.0, 1.0), 0.25))
-	overlay.save_png(overlay_path)
+	return overlay.save_png(overlay_path)
 
 
 func _canvas_order_evidence(target: CanvasItem, other: CanvasItem) -> Dictionary:
