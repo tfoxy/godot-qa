@@ -204,8 +204,7 @@ fn warm_windowed_scenario(
                 slot.consecutive_start_failures = 0;
             }
             Err(detail) => {
-                slot.consecutive_start_failures =
-                    slot.consecutive_start_failures.saturating_add(1);
+                slot.consecutive_start_failures = slot.consecutive_start_failures.saturating_add(1);
                 drop(slot);
                 pool.record_start_failure(WINDOWED_LANE_LABEL, attempt, &detail);
                 return cold_fallback_result(
@@ -424,7 +423,9 @@ fn warm_session_start_failed_result(command: &str, cause: &FailureDetail) -> Com
                  or rerun without --warm-strict to fall back to a cold bundle"
                     .to_string(),
             ),
-            expected: Some(json!("warm session starts and hosts every warm-eligible scenario")),
+            expected: Some(json!(
+                "warm session starts and hosts every warm-eligible scenario"
+            )),
             actual: Some(json!("session_start_failed")),
             // The underlying startup failure, verbatim: without it a strict bundle
             // reports only that "the session could not start" and the operator has
@@ -614,9 +615,10 @@ fn warm_dispatch_scenario(
     };
     let scenario_for_artifacts =
         scenario_with_effective_launch_args(config, &scenario_for_artifacts);
-    let artifacts = match artifacts::prepare_run_artifacts(
+    let artifacts = match artifacts::prepare_run_artifacts_with_assertion_source(
         &config.artifacts_dir,
         &scenario_for_artifacts,
+        scenario,
         &config.project_root,
         scenario_path,
         command_line,
@@ -825,7 +827,10 @@ fn warm_finalize_scenario(
     let window = log_slice.window();
     if let Some(warm) = base_data.get_mut("warm").and_then(Value::as_object_mut) {
         warm.insert(WARM_SESSION_ID_KEY.to_string(), json!(session_id));
-        warm.insert(WARM_LOG_SLICE_KEY.to_string(), log_slice.to_json(&session_id));
+        warm.insert(
+            WARM_LOG_SLICE_KEY.to_string(),
+            log_slice.to_json(&session_id),
+        );
     }
     // Synthesize a successful process result so the shared finalizer reads the
     // engine's result.json exactly as it does for cold.
@@ -884,11 +889,21 @@ fn warm_base_data(
     let mut base_data = Map::from_iter([
         (
             "scenario".to_string(),
-            json!(scenario.get("name").and_then(Value::as_str).unwrap_or_default()),
+            json!(
+                scenario
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+            ),
         ),
         (
             "scene".to_string(),
-            json!(scenario.get("scene").and_then(Value::as_str).unwrap_or_default()),
+            json!(
+                scenario
+                    .get("scene")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+            ),
         ),
         (
             "scenario_path".to_string(),

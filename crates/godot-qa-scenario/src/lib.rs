@@ -11,6 +11,7 @@
 pub mod artifact_query;
 pub mod artifact_summary;
 pub mod artifacts;
+pub mod assertion_proof;
 pub mod assertions;
 pub mod asset_trial;
 pub mod audio;

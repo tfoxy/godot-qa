@@ -17,6 +17,8 @@ pub struct RunArtifacts {
     pub snapshots_dir: PathBuf,
     pub temporal_dir: PathBuf,
     pub audio_dir: PathBuf,
+    /// Expected runtime assertions, captured before CLI-only assertions are removed.
+    pub assertion_manifest: Value,
 }
 
 impl RunArtifacts {
@@ -77,6 +79,35 @@ pub fn prepare_run_artifacts(
     run_id: Option<&str>,
     started_at: Option<&str>,
 ) -> io::Result<RunArtifacts> {
+    prepare_run_artifacts_with_assertion_source(
+        artifacts_root,
+        scenario,
+        scenario,
+        project_root,
+        scenario_path,
+        command,
+        godot_binary,
+        godot_launch_prefix,
+        godot_windowed_launch_prefix,
+        run_id,
+        started_at,
+    )
+}
+
+/// Prepare a transformed runtime scenario while retaining original assertion locations.
+pub fn prepare_run_artifacts_with_assertion_source(
+    artifacts_root: &Path,
+    scenario: &Value,
+    assertion_source: &Value,
+    project_root: &Path,
+    scenario_path: &Path,
+    command: &str,
+    godot_binary: Option<&str>,
+    godot_launch_prefix: &[String],
+    godot_windowed_launch_prefix: &[String],
+    run_id: Option<&str>,
+    started_at: Option<&str>,
+) -> io::Result<RunArtifacts> {
     let scenario_name = scenario
         .get("name")
         .and_then(Value::as_str)
@@ -104,6 +135,7 @@ pub fn prepare_run_artifacts(
         snapshots_dir: root_dir.join("snapshots"),
         temporal_dir: root_dir.join("temporal"),
         audio_dir: root_dir.join("audio"),
+        assertion_manifest: crate::assertion_proof::manifest(assertion_source),
     };
     fs::create_dir_all(&artifacts.snapshots_dir)?;
     fs::create_dir_all(&artifacts.temporal_dir)?;
@@ -126,6 +158,7 @@ pub fn prepare_run_artifacts(
             "run_nonce": run_nonce,
             "command": command,
             "scenario_path": scenario_path,
+            "assertion_manifest": artifacts.assertion_manifest,
     });
     if let Some(time_control) = scenario.get("time_control") {
         if let Some(meta) = meta.as_object_mut() {
@@ -160,6 +193,7 @@ pub fn prepare_run_artifacts(
         &json!({
             "scenario": scenario,
             "artifacts": artifacts.to_json(),
+            "assertion_proof": artifacts.assertion_manifest,
             "run": run
         }),
     )?;

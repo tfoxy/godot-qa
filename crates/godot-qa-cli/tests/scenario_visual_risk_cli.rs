@@ -40,6 +40,7 @@ fn write_fake_godot(path: &Path, screenshot_path: &Path) {
         path,
         &[
             ("request_prefix", "--qa-run-request="),
+            ("scenario_proof", "passed"),
             ("write:result.json", &result),
         ],
     );
@@ -213,6 +214,41 @@ fn scenario_visual_risk_cli_strict_mode_exits_one_with_rule_id_failure() {
             .as_str()
             .unwrap()
             .contains("--visual-risk-strict")
+    );
+
+    fs::remove_dir_all(project_root).unwrap();
+}
+
+#[test]
+fn scenario_run_rejects_old_addon_success_without_execution_proof() {
+    let project_root = setup_visual_risk_project("scenario-missing-execution-proof");
+    // An older addon can report success without returning an identity or execution
+    // ledger. Deliberately omit the fixture's proof emulation for this result.
+    godot_qa_test_support::fixture(
+        &project_root.join(format!("fake-godot{}", env::consts::EXE_SUFFIX)),
+        &[
+            ("request_prefix", "--qa-run-request="),
+            (
+                "write:result.json",
+                r#"{"ok":true,"command":"scenario run","data":{"runtime":"old-addon"},"failures":[]}"#,
+            ),
+        ],
+    );
+
+    let (status, body) = run_visual_risk_scenario(&project_root, &[]);
+
+    assert!(!status.success(), "body: {body:#}");
+    assert_eq!(body["ok"], false);
+    let failure = body["failures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|failure| failure["type"] == "assertion_proof_missing")
+        .unwrap_or_else(|| panic!("missing proof failure: {body:#}"));
+    let message = failure["message"].as_str().unwrap();
+    assert!(
+        message.contains("update") && message.contains("addon"),
+        "{message}"
     );
 
     fs::remove_dir_all(project_root).unwrap();

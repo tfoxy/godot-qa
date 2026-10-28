@@ -510,6 +510,8 @@ Heatmap artifacts are image evidence, not runtime overlays. Walkable samples are
 
 `meta.json.command` records a shell-ready `godot-qa scenario run ...` invocation for that artifact set, including non-default CLI overrides such as `--project`, `--godot-bin`, and `--artifact-dir`. `meta.json.godot_args` records effective Godot engine arguments passed before Godot's `--` separator, including config defaults followed by scenario-specific args. `meta.json.project_args` records effective project/game arguments passed after the separator, including config defaults followed by scenario-specific args, with secret-looking values redacted for persisted metadata. `meta.json.time_control` records the requested acceleration configuration when present; it is request metadata, not proof that the runtime applied or restored Engine settings.
 
+`meta.json.assertion_manifest` retains the expected runtime assertions from the original normalized scenario, before CLI-only assertions are removed. It contains `schema_version: 1`, `entries`, and `cli_assertions_excluded`. Original JSON-pointer `source_id` values remain stable when filtering changes the corresponding `runtime_path`; for example, `/steps/2/assert/1` can execute at `/steps/2/assert/0`. Final assertions use `/assert/<index>`. Repeated equal assertions have distinct source IDs. Every viewport variant keeps these original locations while using its own run nonce.
+
 ```json
 {
   "tool": "godot-qa",
@@ -531,6 +533,8 @@ The redaction contract preserves argument count, order, and enough shape to debu
 ## `request.json`
 
 `request.json.run.godot_args` and `request.json.run.project_args` mirror the effective run-level launch metadata, with the same persisted redaction applied to `run.project_args`. `request.json.scenario.godot_args` and `request.json.scenario.project_args` preserve the normalized effective scenario payload sent to the Godot runner, including raw config and scenario project arg values required for execution. `request.json.run.time_control` and `request.json.scenario.time_control` preserve requested acceleration settings when present, and the internal runtime request may also include `time_control_warnings` computed by the CLI. Consumers that persist, summarize, or publish request metadata should use the redacted run-level fields for display and treat raw scenario-level `project_args` as sensitive runtime input.
+
+New scenario requests include top-level `assertion_proof`, matching the retained assertion manifest. This marker requires the addon to verify that every runtime assertion matches its requested source entry before loading the scene. The internal stripped runtime request carries the same manifest. The new addon continues accepting older requests without this marker; new CLI executions require proof and fail with `assertion_proof_missing` and addon-update guidance when an older addon omits it.
 
 ## `result.json`
 
@@ -672,6 +676,25 @@ Filtered snapshot state is recorded inside each JSON artifact that supports filt
 Missing and malformed runtime payloads are CLI-owned artifact failures, not runtime assertion failures. If `result.json` is absent, `scenario run` fails with `scenario_result_missing`, includes the prepared result and log paths in `data.artifacts` and `failure.artifacts`, and sets `data.runtime_result.status` to `missing`. If `result.json` cannot be parsed or fails the structural contract below, `scenario run` fails with `scenario_result_invalid` and sets `data.runtime_result.status` to `invalid`. Runtime assertion failures use `data.runtime_result.status: "failed"` with the runtime failure count, while clean runtime payloads use `status: "passed"` even if the separate process summary later causes a strict `godot_run_failed` outcome. A wrapper-only pass-with-warning still leaves the non-zero process status visible under `data.process.warnings` and does not create a top-level failure contradiction.
 
 ## Scenario and bundle artifacts
+
+Scenario runtime results include `assertion_coverage`; finalized command results expose it under `data.assertion_coverage`. Schema 1 carries `run_id`, `nonce`, `expected`, `started`, `finished`, `passed`, `failed`, `complete`, `cli_assertions_excluded`, and ordered `entries`. Each entry contains original `source_id`, filtered `runtime_path`, `operation`, diagnostic `assertion`, lossless `assertion_identity`, and `status` (`not_started`, `running`, `passed`, or `failed`). For example:
+
+```json
+{
+  "source_id": "/steps/2/assert/1",
+  "runtime_path": "/steps/2/assert/0",
+  "operation": "exists",
+  "assertion": {"exists": "qa:menu"},
+  "assertion_identity": ["object", {"exists": ["string", "qa:menu"]}],
+  "status": "passed"
+}
+```
+
+The `json_f64_le_v1` identity uses typed nodes: `["null"]`, `["bool", value]`, `["string", value]`, `["number", binary64_hex]`, `["array", items]`, and `["object", fields]`. Numeric identities contain 16 lowercase hexadecimal characters encoding little-endian binary64; signed zero is normalized. This avoids precision loss from Godot's JSON number formatting and prevents user arrays or dictionaries from colliding with internal tags. The diagnostic `assertion` echo can have rounded numbers and is not the binding. Integers that cannot round-trip exactly through binary64 and values whose precision changes during Godot JSON parsing are rejected before scene execution. Android reverses controlled path mappings in proof data without treating assertion strings as artifact claims.
+
+The CLI validates the nonce, original definitions, source IDs, states, and derived counts. A failed assertion counts as finished, so `complete: true` can accompany a failed scenario. Missing, inconsistent, or unfinished proof produces `assertion_proof_missing`, `assertion_proof_invalid`, or `assertion_proof_incomplete`; existing runtime failures remain first. CLI-owned `layout_audit`, `screenshot_match`, and `saved_snapshot_pixels` assertions contribute to `cli_assertions_excluded` and are not claimed as runtime execution proof. An empty runtime set can be complete. `data.completion.assertions_completed` means complete verified coverage; `assertions_passed` is null until proof is complete, then reflects whether any runtime assertions failed. Process exit cleanliness remains separate.
+
+Assertion progress events retain their flattened `index` and add `run_id`, `nonce`, and original `source_id`. If final coverage is unavailable, the CLI may reconstruct bounded diagnostic evidence from matching progress records as `source: "partial_progress"`, `verified: false`, `complete: false`. Stale, partial, or truncated progress cannot substitute for final proof or make a crashed run pass. These rules apply to cold, warm, profiled, and Android scenario execution; historical saved results remain inspectable without implying verified execution coverage.
 
 `scenario sweep` writes ONE aggregate identity with per-seed children under `.qa/artifacts/<scenario>/sweep-<run-id>/`. Each seed's child run is an untouched `scenario run` artifact tree rooted at `seed-<s>/` (repeated seeds share the seed directory with distinct run ids), and the aggregate `sweep.json` at the sweep root records the scenario, the expanded seed sequence, `per_seed[]` entries (`seed`, `ok`, `failed_asserts`, `failure_kinds`, `duration_ms`, `artifact_dir`, `state_records`), and a `summary` (`total`, `passed`, `failed`, `pass_rate`). `state_records` carries the child run's `record_state` evidence map (null when the seed recorded none), so win-rate/balance metrics across a seed range are a single read of `sweep.json` — aggregation stays agent-side, out of the tool.
 

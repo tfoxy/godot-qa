@@ -47,10 +47,20 @@ fn main() {
             return;
         };
         let parent = Path::new(request).parent().unwrap();
+        let request_json = if get("scenario_proof") == "passed" {
+            fs::read_to_string(request).unwrap()
+        } else {
+            String::new()
+        };
         for (key, value) in &values {
             if let Some(relative) = key.strip_prefix("write:") {
                 let output = parent.join(relative);
                 fs::create_dir_all(output.parent().unwrap()).unwrap();
+                let value = if get("scenario_proof") == "passed" && relative == "result.json" {
+                    with_scenario_proof(value, &request_json)
+                } else {
+                    value.clone()
+                };
                 fs::write(output, value).unwrap();
             }
         }
@@ -67,6 +77,11 @@ fn main() {
                 {
                     let output = parent.join(relative);
                     fs::create_dir_all(output.parent().unwrap()).unwrap();
+                    let value = if get("scenario_proof") == "passed" && relative == "result.json" {
+                        with_scenario_proof(value, &request_json)
+                    } else {
+                        value.clone()
+                    };
                     fs::write(output, value).unwrap();
                 }
             }
@@ -125,4 +140,159 @@ fn main() {
         thread::sleep(Duration::from_millis(milliseconds));
     }
     std::process::exit(get("exit").parse().unwrap_or(0));
+}
+
+// This helper is compiled directly with rustc so subprocess fixtures stay portable
+// and dependency-free. Slice JSON values without interpreting arbitrary strings.
+fn json_value_end(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut index = start;
+    let mut depth = 0usize;
+    let mut quoted = false;
+    let mut escaped = false;
+    while let Some(&byte) = bytes.get(index) {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                quoted = false;
+                if depth == 0 {
+                    return Some(index + 1);
+                }
+            }
+        } else {
+            match byte {
+                b'"' => quoted = true,
+                b'{' | b'[' => depth += 1,
+                b'}' | b']' if depth > 0 => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(index + 1);
+                    }
+                }
+                b',' | b'}' | b']' if depth == 0 => return Some(index),
+                _ => {}
+            }
+        }
+        index += 1;
+    }
+    (!quoted && depth == 0).then_some(index)
+}
+
+fn json_fields(text: &str) -> Option<Vec<(&str, &str)>> {
+    let text = text.trim();
+    if !text.starts_with('{') || !text.ends_with('}') {
+        return None;
+    }
+    let bytes = text.as_bytes();
+    let mut index = 1usize;
+    let mut fields = Vec::new();
+    loop {
+        while bytes
+            .get(index)
+            .is_some_and(|b| b.is_ascii_whitespace() || *b == b',')
+        {
+            index += 1;
+        }
+        if bytes.get(index) == Some(&b'}') {
+            return Some(fields);
+        }
+        if bytes.get(index) != Some(&b'"') {
+            return None;
+        }
+        let key_end = json_value_end(bytes, index)?;
+        let key = text.get(index + 1..key_end - 1)?;
+        index = key_end;
+        while bytes.get(index).is_some_and(u8::is_ascii_whitespace) {
+            index += 1;
+        }
+        if bytes.get(index) != Some(&b':') {
+            return None;
+        }
+        index += 1;
+        while bytes.get(index).is_some_and(u8::is_ascii_whitespace) {
+            index += 1;
+        }
+        let end = json_value_end(bytes, index)?;
+        fields.push((key, text.get(index..end)?.trim()));
+        index = end;
+    }
+}
+
+fn json_field<'a>(text: &'a str, key: &str) -> Option<&'a str> {
+    json_fields(text)?
+        .into_iter()
+        .find(|(name, _)| *name == key)
+        .map(|(_, value)| value)
+}
+
+fn with_scenario_proof(result: &str, request: &str) -> String {
+    let Some(fields) = json_fields(result) else {
+        return result.to_owned();
+    };
+    let Some(run) = json_field(request, "run") else {
+        return result.to_owned();
+    };
+    let Some(id) = json_field(run, "id") else {
+        return result.to_owned();
+    };
+    let Some(nonce) = json_field(run, "nonce") else {
+        return result.to_owned();
+    };
+    let Some(manifest) = json_field(request, "assertion_proof") else {
+        return result.to_owned();
+    };
+    let Some(entries) = json_field(manifest, "entries") else {
+        return result.to_owned();
+    };
+    let Some(excluded) = json_field(manifest, "cli_assertions_excluded") else {
+        return result.to_owned();
+    };
+    let mut index = 1usize;
+    let mut completed = Vec::new();
+    while index < entries.len() {
+        while entries
+            .as_bytes()
+            .get(index)
+            .is_some_and(|b| b.is_ascii_whitespace() || *b == b',')
+        {
+            index += 1;
+        }
+        if entries.as_bytes().get(index) == Some(&b']') {
+            break;
+        }
+        let Some(end) = json_value_end(entries.as_bytes(), index) else {
+            return result.to_owned();
+        };
+        let entry = entries[index..end].trim();
+        if json_fields(entry).is_none() {
+            return result.to_owned();
+        }
+        completed.push(format!(
+            "{},\"status\":\"passed\"}}",
+            &entry[..entry.len() - 1]
+        ));
+        index = end;
+    }
+    let count = completed.len();
+    let mut additions = Vec::new();
+    if !fields.iter().any(|(key, _)| *key == "run_identity") {
+        additions.push(format!(
+            "\"run_identity\":{{\"run_id\":{id},\"nonce\":{nonce}}}"
+        ));
+    }
+    if !fields.iter().any(|(key, _)| *key == "assertion_coverage") {
+        additions.push(format!("\"assertion_coverage\":{{\"schema_version\":1,\"run_id\":{id},\"nonce\":{nonce},\"expected\":{count},\"started\":{count},\"finished\":{count},\"passed\":{count},\"failed\":0,\"complete\":true,\"cli_assertions_excluded\":{excluded},\"entries\":[{}]}}", completed.join(",")));
+    }
+    if additions.is_empty() {
+        return result.to_owned();
+    }
+    let result = result.trim();
+    format!(
+        "{}{}{} }}",
+        &result[..result.len() - 1],
+        if fields.is_empty() { "" } else { "," },
+        additions.join(",")
+    )
 }

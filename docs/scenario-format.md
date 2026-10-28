@@ -64,6 +64,8 @@ Snapshot capture settles the runtime before the final draw, then copies viewport
 
 ## Review Template Guidance
 
+New CLI executions require addon-produced runtime assertion coverage. Original assertion JSON-pointer IDs survive CLI-only filtering and viewport expansion, and each run/variant has its own nonce-bound ledger. Coverage proves which runtime assertions started and finished; it does not prove execution of CLI-only screenshot/layout assertions. Missing old-addon proof, changed definitions, and unfinished assertions are actionable failures. `completion.assertions_completed` reflects verified runtime completeness, while process exit health remains separate. See [the proof contract](runtime-bridge-protocol.md#one-shot-scenario-assertion-proof).
+
 `review init` emits normal scenario files or normal live-session script files. Generated scenario review files use the same top-level shape as hand-authored scenarios: `name`, `scene`, optional `project_args`, `snapshots`, `steps`, `assert`, and a review metadata block. Generated live-script files use `name`, `steps`, and a review metadata block. The `review` block records the template ID, generated command type, run command, selected targets and timing parameters, warnings, and notes for humans; it is metadata only and is not an assertion surface.
 
 Generated scenario files are run with:

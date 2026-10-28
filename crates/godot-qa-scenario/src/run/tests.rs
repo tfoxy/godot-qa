@@ -13,9 +13,8 @@ mod tests {
         scenario_requires_windowed_media_evidence, scenario_run_timeout_failure,
         scenario_timeout_duration, scenario_with_effective_launch_args,
         selected_audio_for_scenario, selected_headless_for_scenario, slow_scenario_summary_json,
-        snapshot_artifacts_for,
-        time_control_warnings, validate_runtime_command_result, validate_runtime_failures,
-        variant_scenario, write_runtime_request,
+        snapshot_artifacts_for, time_control_warnings, validate_runtime_command_result,
+        validate_runtime_failures, variant_scenario, write_runtime_request,
     };
     use crate::artifacts;
     use crate::artifacts::write_json;
@@ -35,7 +34,10 @@ mod tests {
     fn assert_path_eq(actual: &str, expected: &Path) {
         let actual = Path::new(actual);
         if actual.exists() && expected.exists() {
-            assert_eq!(fs::canonicalize(actual).unwrap(), fs::canonicalize(expected).unwrap());
+            assert_eq!(
+                fs::canonicalize(actual).unwrap(),
+                fs::canonicalize(expected).unwrap()
+            );
         } else {
             assert_eq!(actual, expected);
         }
@@ -147,7 +149,7 @@ mod tests {
             repo_addon_dir: root.join("addons/godot_qa"),
             addon_identity_cache: Default::default(),
             godot_launch_prefix: Vec::new(),
-        godot_windowed_launch_prefix: Vec::new(),
+            godot_windowed_launch_prefix: Vec::new(),
             godot_args: Vec::new(),
             godot_project_args: Vec::new(),
             godot_launch_mode: godot_qa_core::config::GodotLaunchMode::Auto,
@@ -211,6 +213,7 @@ mod tests {
             snapshots_dir: root.join("snapshots"),
             temporal_dir: root.join("temporal"),
             audio_dir: root.join("audio"),
+            assertion_manifest: crate::assertion_proof::manifest(&json!({})),
         }
     }
 
@@ -260,7 +263,8 @@ mod tests {
         let result_path = root.join("result.json");
         let logs_path = root.join("logs.txt");
         write(&logs_path, "[godot-qa output capture truncated]\n");
-        let artifacts = json!({"run_root": root, "result_path": result_path, "logs_path": logs_path});
+        let artifacts =
+            json!({"run_root": root, "result_path": result_path, "logs_path": logs_path});
         let mut base_data = serde_json::Map::from_iter([("artifacts".into(), artifacts.clone())]);
         let mut process = test_process_result(&root, 0);
         process.output_truncation = Some(godot_qa_process::OutputTruncation {
@@ -271,13 +275,22 @@ mod tests {
             raw_stderr_path: root.join("logs.stderr.txt").to_string_lossy().into_owned(),
         });
         let result = validate_runtime_command_result(
-            "scenario run", &json!({}), &mut base_data, &result_path, &artifacts,
-            &process, &json!({"ok": true, "failures": []}), &logs_path,
+            "scenario run",
+            &json!({}),
+            &mut base_data,
+            &result_path,
+            &artifacts,
+            &process,
+            &json!({"ok": true, "failures": []}),
+            &logs_path,
             &["capture truncated".into()],
         );
         assert!(!result.ok);
         assert_eq!(result.failures[0].kind, "output_capture_truncated");
-        assert_eq!(result.data["process"]["output_truncation"]["stdout_total_bytes"], 9 * 1024 * 1024);
+        assert_eq!(
+            result.data["process"]["output_truncation"]["stdout_total_bytes"],
+            9 * 1024 * 1024
+        );
         let _ = fs::remove_dir_all(root);
     }
 
@@ -383,10 +396,8 @@ mod tests {
                  run-1\n"
             ),
         );
-        let base_data = serde_json::Map::from_iter([(
-            "artifacts".to_string(),
-            artifacts.to_json(),
-        )]);
+        let base_data =
+            serde_json::Map::from_iter([("artifacts".to_string(), artifacts.to_json())]);
 
         let result = super::finalize_runtime_run(
             "scenario run",
@@ -426,12 +437,18 @@ mod tests {
     #[test]
     fn completed_assertion_failure_precedes_process_completion_timeout() {
         let root = temp_dir("result-then-teardown-timeout");
-        let artifacts = test_run_artifacts(&root);
-        write(&artifacts.request_path, &json!({"run":{"id":"run-1","nonce":"current","started_at":"0Z"}}).to_string());
+        let mut artifacts = test_run_artifacts(&root);
+        artifacts.assertion_manifest =
+            crate::assertion_proof::manifest(&json!({"assert":[{"no_errors":true}]}));
+        write(
+            &artifacts.request_path,
+            &json!({"run":{"id":"run-1","nonce":"current","started_at":"0Z"}}).to_string(),
+        );
         write(&artifacts.result_path, &json!({
             "ok": false,
             "run_identity": {"run_id":"run-1","nonce":"current","started_at":"0Z"},
             "snapshots": [],
+            "assertion_coverage": {"schema_version":1,"run_id":"run-1","nonce":"current","expected":1,"started":1,"finished":1,"passed":0,"failed":1,"complete":true,"cli_assertions_excluded":0,"entries":[{"source_id":"/assert/0","runtime_path":"/assert/0","operation":"no_errors","assertion":{"no_errors":true},"assertion_identity":crate::assertion_proof::definition_identity(&json!({"no_errors":true})),"status":"failed"}]},
             "failures": [{"type":"gameplay_assertion_failed","message":"first failure"}]
         }).to_string());
         let scenario = json!({"name":"teardown_timeout","scene":"res://main.tscn"});
@@ -439,9 +456,17 @@ mod tests {
         process.timed_out = true;
         process.timeout_ms = Some(3000);
         let result = super::finalize_runtime_run(
-            "scenario run", "scenario run failed", &test_config(&root),
-            &root.join("scenario.json"), &scenario, &artifacts, false, true,
-            RuntimeExecutionOptions::default(), serde_json::Map::new(), &process,
+            "scenario run",
+            "scenario run failed",
+            &test_config(&root),
+            &root.join("scenario.json"),
+            &scenario,
+            &artifacts,
+            false,
+            true,
+            RuntimeExecutionOptions::default(),
+            serde_json::Map::new(),
+            &process,
         );
         assert!(!result.ok);
         assert_eq!(result.failures[0].kind, "gameplay_assertion_failed");
@@ -456,15 +481,30 @@ mod tests {
     fn stale_result_during_timeout_cannot_claim_completed_assertions() {
         let root = temp_dir("stale-result-timeout");
         let artifacts = test_run_artifacts(&root);
-        write(&artifacts.request_path, &json!({"run":{"id":"run-1","nonce":"current","started_at":"0Z"}}).to_string());
-        write(&artifacts.result_path, &json!({"ok":true,"failures":[],"run_identity":{"run_id":"run-1","nonce":"previous"}}).to_string());
+        write(
+            &artifacts.request_path,
+            &json!({"run":{"id":"run-1","nonce":"current","started_at":"0Z"}}).to_string(),
+        );
+        write(
+            &artifacts.result_path,
+            &json!({"ok":true,"failures":[],"run_identity":{"run_id":"run-1","nonce":"previous"}})
+                .to_string(),
+        );
         let mut process = test_process_result(&root, -1);
         process.timed_out = true;
         process.timeout_ms = Some(3000);
         let result = super::finalize_runtime_run(
-            "scenario run", "scenario run failed", &test_config(&root),
-            &root.join("scenario.json"), &json!({"name":"stale"}), &artifacts,
-            false, true, RuntimeExecutionOptions::default(), serde_json::Map::new(), &process,
+            "scenario run",
+            "scenario run failed",
+            &test_config(&root),
+            &root.join("scenario.json"),
+            &json!({"name":"stale"}),
+            &artifacts,
+            false,
+            true,
+            RuntimeExecutionOptions::default(),
+            serde_json::Map::new(),
+            &process,
         );
         assert!(!result.ok);
         assert_eq!(result.failures[0].kind, "scenario_run_timeout");
@@ -479,7 +519,6 @@ mod tests {
         assert!(result.data.get("logs").is_some());
         assert!(result.data.get("outcome").is_some());
     }
-
 
     include!("tests_profile.rs");
     include!("tests_visual.rs");

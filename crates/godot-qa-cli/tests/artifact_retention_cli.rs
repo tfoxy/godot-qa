@@ -31,6 +31,7 @@ fn write_fake_godot(path: &Path) {
         path,
         &[
             ("request_prefix", "--qa-run-request="),
+            ("scenario_proof", "passed"),
             (
                 "write:result.json",
                 r#"{"ok":true,"command":"scenario run","message":"scenario run completed","data":{"runtime":"fake"},"failures":[]}"#,

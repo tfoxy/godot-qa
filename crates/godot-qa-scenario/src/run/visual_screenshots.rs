@@ -731,6 +731,7 @@ fn write_runtime_request(
     let warnings = time_control_warnings("runtime request", scenario, options);
     let mut request = json!({
         "scenario": scenario,
+        "assertion_proof": artifacts.assertion_manifest,
         "artifacts": artifacts.to_json(),
         "run": {
             "id": artifacts.run_id,

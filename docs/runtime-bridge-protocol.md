@@ -14,6 +14,20 @@ The bridge protocol is the JSON contract between the CLI and the running Godot p
 
 ## Request envelope
 
+### One-shot scenario assertion proof
+
+New CLI scenario requests include `assertion_proof` schema version 1. The expected manifest is derived from the original normalized scenario before CLI-only assertions are removed or viewport variants are generated. Each runtime entry carries `source_id` (for example `/assert/2` or `/steps/5/assert/1`), filtered `runtime_path`, `operation`, human-readable `assertion`, and lossless `assertion_identity`. `cli_assertions_excluded` counts assertions finalized outside the addon. Before scene load the addon requires a one-to-one match with all received runtime assertions.
+
+The identity encoding is `json_f64_le_v1`: null is `["null"]`, booleans `["bool", value]`, strings `["string", value]`, numbers `["number", "<16 lowercase hex digits of little-endian binary64>"]`, arrays `["array", typed_items]`, and objects `["object", typed_field_map]`. Signed zero is normalized. Original integer literals that cannot round-trip exactly through binary64 use `["unrepresentable_integer", "<decimal>"]` and fail addon preflight with a precision diagnostic. Numeric binding never relies on Godot's lossy JSON number formatting. If Godot's JSON parser itself underflows or changes an original value, preflight fails actionably rather than executing a changed assertion. Android path conversion/restoration applies to string leaves; proof definitions are not artifact-download paths.
+
+Final `assertion_coverage` includes schema version, run ID, nonce, expected/started/finished/passed/failed counts, completeness, excluded CLI count, and entries with identity, assertion definition, and `status: not_started|running|passed|failed`. Failed assertions count as finished. Assertion start/finish progress retains flattened indices and adds source ID, run ID, and nonce. The CLI validates entries, lossless definitions, identities, counts, and transitions against its independently retained manifest; echoed totals alone are insufficient.
+
+Missing proof produces `assertion_proof_missing` with addon-update guidance; malformed binding produces `assertion_proof_invalid`; unfinished execution produces `assertion_proof_incomplete`. Original failures remain primary. Partial or truncated progress is diagnostic evidence and cannot replace a valid terminal result. Empty runtime assertion sets are complete, with CLI exclusions explicit. New addons accept older requests without the marker; new CLIs require proof from matched addons across cold, warm, profile, Android, and viewport variants.
+
+For example, one final `exists` assertion has source/runtime path `/assert/0`, operation `exists`, assertion `{"exists":"qa:start_button"}`, and identity `["object",{"exists":["string","qa:start_button"]}]`. A passing terminal entry adds `status: "passed"` and coverage counts of one expected, started, finished, and passed, with zero failed.
+
+### Live request envelope
+
 ```json
 {
   "protocol_version": "0.1",

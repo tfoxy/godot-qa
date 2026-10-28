@@ -2,6 +2,7 @@ extends RefCounted
 
 const QaAssetTrialCollector = preload("res://addons/godot_qa/qa_asset_trial_collector.gd")
 const QaArgs = preload("res://addons/godot_qa/qa_args.gd")
+const QaAssertionProof = preload("res://addons/godot_qa/qa_assertion_proof.gd")
 const QaBridge = preload("res://addons/godot_qa/qa_bridge.gd")
 const QaProfiler = preload("res://addons/godot_qa/qa_profiler.gd")
 const QaSoak = preload("res://addons/godot_qa/qa_soak.gd")
@@ -71,6 +72,8 @@ const EXPANDED_ASSERTION_TYPES: Array[String] = [
 ]
 
 var _asset_trial: RefCounted = null
+var _assertion_proof: RefCounted = null
+var _active_assertion_source_id := ""
 var _scenario: Dictionary = {}
 var _request_run: Dictionary = {}
 var _check: Dictionary = {}
@@ -214,6 +217,11 @@ func _run_scenario(request_path: String) -> Dictionary:
 		"run_id": str(_request_run.get("id", "")),
 		"nonce": str(_request_run.get("nonce", "")),
 	})
+	_assertion_proof = QaAssertionProof.new()
+	var proof_error: Dictionary = _assertion_proof.initialize(request)
+	if not proof_error.is_empty():
+		_failures.append(_failure("assertion_proof_invalid", "assertion proof does not match runtime request", proof_error))
+		return await _finalize_scenario_outcome()
 
 	# Start counting before scene load so the budget matches the old wall-clock
 	# semantics (the process timeout also covered scene boot).
@@ -295,13 +303,15 @@ func _run_scenario(request_path: String) -> Dictionary:
 			_failures.append(_failure("soak_budget_failed", "soak did not complete within budgets", {"target": str(_scenario.get("name", "")), "expected": "all windows complete within budgets", "actual": soak_result, "artifact": soak_dir.path_join("soak.json")}))
 
 	var asserts_timing_started := Time.get_ticks_usec()
+	var final_assertion_index := 0
 	for assertion in _scenario.get("assert", []):
 		if _frame_budget_exceeded():
 			_append_frame_budget_failure("assert", _profile_next_assertion_index)
 			_mark_timing("asserts_ms", asserts_timing_started)
 			return await _finalize_scenario_outcome()
-		await _run_assertion(assertion, _profile_next_assertion_index)
+		await _run_assertion(assertion, _profile_next_assertion_index, "/assert/%d" % final_assertion_index)
 		_profile_next_assertion_index += 1
+		final_assertion_index += 1
 	_mark_timing("asserts_ms", asserts_timing_started)
 
 	# Catch a budget that trips during the last step/assertion: a blown budget
@@ -976,8 +986,8 @@ func _run_step(step: Variant, step_index := -1) -> void:
 			_record_profile_timing("step", started_usec, failure_count, timing_extra)
 			_write_scenario_heartbeat("finish", "step", step_index, step_kind, heartbeat_command, heartbeat_context, heartbeat_started_at, started_usec, failure_count)
 			return
-		for assertion in assertions:
-			await _run_assertion(assertion, _profile_next_assertion_index)
+		for assertion_index in range(assertions.size()):
+			await _run_assertion(assertions[assertion_index], _profile_next_assertion_index, "/steps/%d/assert/%d" % [step_index, assertion_index])
 			_profile_next_assertion_index += 1
 		timing_extra["assertion_count"] = assertions.size()
 		_record_profile_timing("step", started_usec, failure_count, timing_extra)
@@ -1346,9 +1356,10 @@ func _run_drive_policy(params: Variant, step_index: int) -> Dictionary:
 	return {"ok": true, "ticks": ticks, "frames": elapsed_frames, "stop_reason": stop_reason}
 
 
-func _run_assertion(assertion: Variant, assertion_index := -1) -> void:
+func _run_assertion(assertion: Variant, assertion_index := -1, runtime_path := "") -> void:
 	var started_usec := _progress_now_usec()
 	var failure_count := _failures.size()
+	_active_assertion_source_id = _assertion_proof.begin(runtime_path) if _assertion_proof != null else ""
 	var timing_extra := {
 		"index": assertion_index,
 		"kind": "assert",
@@ -1373,6 +1384,7 @@ func _run_assertion(assertion: Variant, assertion_index := -1) -> void:
 			},
 		))
 		_record_profile_timing("assertion", started_usec, failure_count, timing_extra)
+		_assertion_proof.finish(runtime_path, _failures.size() == failure_count)
 		_write_scenario_heartbeat("finish", "assertion", assertion_index, "assert", heartbeat_command, heartbeat_context, heartbeat_started_at, started_usec, failure_count)
 		return
 
@@ -1398,6 +1410,7 @@ func _run_assertion(assertion: Variant, assertion_index := -1) -> void:
 		if not bool(runtime_result.get("ok", false)):
 			_failures.append(_runtime_error_to_failure(runtime_result.get("error", {})))
 		_record_profile_timing("assertion", started_usec, failure_count, timing_extra)
+		_assertion_proof.finish(runtime_path, _failures.size() == failure_count)
 		_write_scenario_heartbeat("finish", "assertion", assertion_index, "assert", str(runtime_command.get("command", "")), heartbeat_context, heartbeat_started_at, started_usec, failure_count)
 		return
 
@@ -1411,6 +1424,7 @@ func _run_assertion(assertion: Variant, assertion_index := -1) -> void:
 		},
 	))
 	_record_profile_timing("assertion", started_usec, failure_count, timing_extra)
+	_assertion_proof.finish(runtime_path, _failures.size() == failure_count)
 	_write_scenario_heartbeat("finish", "assertion", assertion_index, "assert", heartbeat_command, heartbeat_context, heartbeat_started_at, started_usec, failure_count)
 
 
@@ -2577,6 +2591,8 @@ func _result_payload() -> Dictionary:
 	}
 	if _asset_trial != null:
 		payload["asset_trial"] = _asset_trial.payload()
+	if _assertion_proof != null and _assertion_proof.enabled:
+		payload["assertion_coverage"] = _assertion_proof.payload()
 	if not _node_inspections.is_empty():
 		payload["node_inspections"] = _node_inspections.duplicate(true)
 	if not _state_records.is_empty():
@@ -2735,6 +2751,8 @@ func _write_check_progress_event(event: String, check: Dictionary, artifacts: Di
 func _write_scenario_heartbeat(event: String, operation: String, index: int, kind: String, command: String, context: Dictionary, started_at: String, started_usec: int, failure_count: int) -> void:
 	var elapsed_ms := float(max(Time.get_ticks_usec() - started_usec, 0)) / 1000.0
 	var payload := {
+		"run_id": str(_request_run.get("id", "")),
+		"nonce": str(_request_run.get("nonce", "")),
 		"event": event,
 		"operation": operation,
 		"index": index,
@@ -2745,6 +2763,8 @@ func _write_scenario_heartbeat(event: String, operation: String, index: int, kin
 		"failure_count_delta": max(_failures.size() - failure_count, 0),
 		"artifacts": _scenario_progress_artifacts(),
 	}
+	if operation == "assertion" and _active_assertion_source_id != "":
+		payload["source_id"] = _active_assertion_source_id
 	if command != "":
 		payload["command"] = command
 	for key in context.keys():

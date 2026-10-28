@@ -46,6 +46,7 @@
             snapshots_dir: run_root.join("snapshots"),
             temporal_dir: run_root.join("temporal"),
             audio_dir: run_root.join("audio"),
+            assertion_manifest: crate::assertion_proof::manifest(&json!({})),
         }
     }
 

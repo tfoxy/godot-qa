@@ -151,9 +151,10 @@ pub fn run_scenario_once(
     let scenario_for_artifacts =
         scenario_with_effective_launch_args(config, &scenario_for_artifacts);
     let artifact_started = Instant::now();
-    let artifacts = match artifacts::prepare_run_artifacts(
+    let artifacts = match artifacts::prepare_run_artifacts_with_assertion_source(
         &config.artifacts_dir,
         &scenario_for_artifacts,
+        scenario,
         &config.project_root,
         scenario_path,
         command_line,
@@ -315,9 +316,10 @@ pub fn run_scenario_profile_once(
     let scenario_for_artifacts =
         scenario_with_effective_launch_args(config, &scenario_for_artifacts);
     let artifact_started = Instant::now();
-    let artifacts = match artifacts::prepare_run_artifacts(
+    let artifacts = match artifacts::prepare_run_artifacts_with_assertion_source(
         &config.artifacts_dir,
         &scenario_for_artifacts,
+        scenario,
         &config.project_root,
         scenario_path,
         command_line,
@@ -1263,9 +1265,9 @@ fn execute_runtime_run(
     options: RuntimeExecutionOptions,
 ) -> CommandResult {
     let preparation_started = Instant::now();
+    let installed_addon_identity = addon_provenance(config, artifacts);
     let scenario_godot_args = scenario_godot_args(scenario);
     let scenario_project_args = scenario_project_args(scenario);
-    let installed_addon_identity = addon_provenance(config, artifacts);
     let godot_args = merged_launch_args(&config.godot_args, &scenario_godot_args);
     let project_args = merged_launch_args(&config.godot_project_args, &scenario_project_args);
     // Frame pacing (the scenario's `determinism.fixed_fps` / project timestep) is applied
@@ -1570,11 +1572,33 @@ fn finalize_runtime_run(
             "result_identity_verified".to_string(),
             json!(completed_result.is_some()),
         );
-        let assertions_passed = completed_result
+        let proof = completed_result.as_ref().map(|raw| {
+            crate::assertion_proof::validate(
+                &artifacts.assertion_manifest,
+                base_data.get("run_identity").unwrap_or(&Value::Null),
+                raw,
+            )
+        });
+        let assertions_completed = proof.as_ref().is_some_and(Result::is_ok);
+        let assertions_passed = proof
             .as_ref()
-            .and_then(|value| value.get("ok"))
-            .and_then(Value::as_bool);
-        let assertions_completed = assertions_passed.is_some();
+            .and_then(|proof| proof.as_ref().ok())
+            .map(|coverage| coverage["failed"] == 0);
+        if let Some(raw) = completed_result
+            .as_ref()
+            .and_then(|raw| raw.get("assertion_coverage"))
+        {
+            base_data.insert("assertion_coverage".to_string(), raw.clone());
+        } else {
+            base_data.insert(
+                "assertion_coverage".to_string(),
+                crate::assertion_proof::partial_progress(
+                    &artifacts.assertion_manifest,
+                    base_data.get("run_identity").unwrap_or(&Value::Null),
+                    &artifacts.progress_path,
+                ),
+            );
+        }
         base_data.insert(
             "completion".to_string(),
             json!({
@@ -1646,6 +1670,11 @@ fn finalize_runtime_run(
             .and_then(|value| value.get("failures"))
             .and_then(|value| serde_json::from_value::<Vec<FailureDetail>>(value.clone()).ok())
             .unwrap_or_default();
+        if let Some(Err(mut failure)) = proof {
+            failure.command = Some(command.to_string());
+            failure.path = Some(artifacts.result_path.to_string_lossy().into_owned());
+            failures.push(failure_with_artifacts(failure, &artifacts_map));
+        }
         failures.push(failure.clone());
         base_data.insert(
             "outcome".to_string(),
@@ -1687,6 +1716,14 @@ fn finalize_runtime_run(
         Ok(result) => result,
         Err(failure) => {
             let reason = failure.kind.clone();
+            base_data.insert(
+                "assertion_coverage".to_string(),
+                crate::assertion_proof::partial_progress(
+                    &artifacts.assertion_manifest,
+                    base_data.get("run_identity").unwrap_or(&Value::Null),
+                    &artifacts.progress_path,
+                ),
+            );
             base_data.insert("process".to_string(), process_summary_json(process_result));
             base_data.insert(
                 "runtime_result".to_string(),
@@ -1769,14 +1806,31 @@ fn finalize_runtime_run(
             exit_code: 1,
         });
     }
+    let proof = crate::assertion_proof::validate(
+        &artifacts.assertion_manifest,
+        base_data.get("run_identity").unwrap_or(&Value::Null),
+        &raw_runtime_result,
+    );
+    if let Some(coverage) = raw_runtime_result.get("assertion_coverage") {
+        base_data.insert("assertion_coverage".to_string(), coverage.clone());
+    } else {
+        base_data.insert(
+            "assertion_coverage".to_string(),
+            crate::assertion_proof::partial_progress(
+                &artifacts.assertion_manifest,
+                base_data.get("run_identity").unwrap_or(&Value::Null),
+                &artifacts.progress_path,
+            ),
+        );
+    }
     if let Some(completion) = base_data.get_mut("completion") {
-        let passed = raw_runtime_result.get("ok").and_then(Value::as_bool);
-        completion["assertions_completed"] = json!(passed.is_some());
-        completion["assertions_passed"] = json!(passed);
+        completion["assertions_completed"] = json!(proof.is_ok());
+        completion["assertions_passed"] =
+            json!(proof.as_ref().ok().map(|coverage| coverage["failed"] == 0));
         completion["result_identity_verified"] = json!(result_identity_verified);
     }
 
-    let runtime_result = validate_runtime_command_result(
+    let mut runtime_result = validate_runtime_command_result(
         command,
         scenario,
         &mut base_data,
@@ -1787,6 +1841,18 @@ fn finalize_runtime_run(
         &artifacts.logs_path,
         &config.log_ignore_patterns,
     );
+    if let Err(mut failure) = proof {
+        failure.command = Some(command.to_string());
+        failure.path = Some(artifacts.result_path.to_string_lossy().into_owned());
+        runtime_result.failures.push(failure_with_artifacts(
+            failure,
+            &artifacts.to_json().as_object().cloned().unwrap_or_default(),
+        ));
+        runtime_result.ok = false;
+        runtime_result.exit_code = 1;
+        runtime_result.message = result_message.to_string();
+        refresh_outcome_summary(&mut runtime_result);
+    }
     let runtime_result = if options.profile && runtime_result.ok {
         match profile_result_from_runtime(
             command,
@@ -1840,6 +1906,7 @@ fn finalize_runtime_run(
     persist_finalized(result)
 }
 
+include!("addon_provenance.rs");
 include!("visual_preflight.rs");
 include!("visual_screenshots.rs");
 include!("process.rs");
@@ -1848,4 +1915,3 @@ include!("audio.rs");
 include!("warm.rs");
 include!("android.rs");
 include!("tests.rs");
-include!("addon_provenance.rs");

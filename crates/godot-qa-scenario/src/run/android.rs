@@ -64,13 +64,22 @@ fn validate_android_scenario_options<'a>(
     options: &ScenarioRunAndroidOptions<'a>,
 ) -> Result<&'a str, FailureDetail> {
     if options.headless {
-        return Err(android_scenario_option_unsupported("--headless", json!(true)));
+        return Err(android_scenario_option_unsupported(
+            "--headless",
+            json!(true),
+        ));
     }
     if options.windowed {
-        return Err(android_scenario_option_unsupported("--windowed", json!(true)));
+        return Err(android_scenario_option_unsupported(
+            "--windowed",
+            json!(true),
+        ));
     }
     if options.no_audio {
-        return Err(android_scenario_option_unsupported("--no-audio", json!(true)));
+        return Err(android_scenario_option_unsupported(
+            "--no-audio",
+            json!(true),
+        ));
     }
     if options.visual_risk {
         return Err(android_scenario_option_unsupported(
@@ -84,7 +93,11 @@ fn validate_android_scenario_options<'a>(
             json!(true),
         ));
     }
-    match options.preset.map(str::trim).filter(|value| !value.is_empty()) {
+    match options
+        .preset
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         Some(preset) => Ok(preset),
         None => Err(FailureDetail {
             kind: "android_preset_required".to_string(),
@@ -120,7 +133,9 @@ pub fn desktop_rejects_android_scenario_flags(
         kind: "invalid_params".to_string(),
         command: Some("scenario run".to_string()),
         message: Some(format!("`{offending}` requires --target android")),
-        expected: Some(json!("--target android when using Android deployment flags")),
+        expected: Some(json!(
+            "--target android when using Android deployment flags"
+        )),
         actual: Some(json!(offending)),
         ..FailureDetail::default()
     })
@@ -234,9 +249,7 @@ fn android_session_active_failure(record: &godot_qa_runtime::SessionRecord) -> F
     FailureDetail {
         kind: "android_session_active".to_string(),
         command: Some("scenario run".to_string()),
-        message: Some(
-            "a live Android session is active; run `session stop` first".to_string(),
-        ),
+        message: Some("a live Android session is active; run `session stop` first".to_string()),
         expected: Some(json!("no active Android live session")),
         actual: Some(record.to_json_value()),
         ..FailureDetail::default()
@@ -342,11 +355,21 @@ fn android_base_data(
     let mut base_data = Map::from_iter([
         (
             "scenario".to_string(),
-            json!(scenario.get("name").and_then(Value::as_str).unwrap_or_default()),
+            json!(
+                scenario
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+            ),
         ),
         (
             "scene".to_string(),
-            json!(scenario.get("scene").and_then(Value::as_str).unwrap_or_default()),
+            json!(
+                scenario
+                    .get("scene")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+            ),
         ),
         (
             "scenario_path".to_string(),
@@ -518,11 +541,7 @@ fn collect_android_scenario_result(
         session_id,
         &device_result_path,
     )?;
-    let host_artifacts = artifacts
-        .to_json()
-        .as_object()
-        .cloned()
-        .unwrap_or_default();
+    let host_artifacts = artifacts.to_json().as_object().cloned().unwrap_or_default();
     let mut puller = android_scenario_puller(android, session_id);
     let result = rewrite_collected_result(&result_bytes, &host_artifacts, mapper, &mut puller)?;
 
@@ -548,7 +567,18 @@ fn rewrite_collected_result(
     let mut result = serde_json::from_slice::<Value>(result_bytes)
         .map_err(|error| android_result_invalid_failure("device result.json", &error))?;
     substitute_echoed_run_artifacts(&mut result, host_artifacts);
+    // Assertion definitions are data, not claims that each path-valued expected
+    // string is a generated artifact. Reverse request mapping without pulling them.
+    let mut proof = result
+        .as_object_mut()
+        .and_then(|object| object.remove("assertion_coverage"));
+    if let Some(proof) = proof.as_mut() {
+        mapper.rewrite_paths_only(proof)?;
+    }
     mapper.materialize_response(&mut result, puller)?;
+    if let Some(proof) = proof {
+        result["assertion_coverage"] = proof;
+    }
     Ok(result)
 }
 
@@ -654,15 +684,22 @@ fn android_roundtrip_failure_from_probe(
                 actual: Some(json!("transport_budget_exceeded")),
                 ..FailureDetail::default()
             };
-            failure.details.insert("device".to_string(), json!(android.device_serial));
-            failure.details.insert("package".to_string(), json!(android.package));
+            failure
+                .details
+                .insert("device".to_string(), json!(android.device_serial));
+            failure
+                .details
+                .insert("package".to_string(), json!(android.package));
             failure.details.insert(
                 "transport_budget_seconds".to_string(),
                 json!(android_transport_budget_seconds(scenario_timeout)),
             );
             failure.details.insert(
                 "logcat".to_string(),
-                json!(project_relative_path(&config.project_root, &android.logcat_log_path)),
+                json!(project_relative_path(
+                    &config.project_root,
+                    &android.logcat_log_path
+                )),
             );
             failure
         }
@@ -678,15 +715,25 @@ fn android_roundtrip_failure_from_probe(
                 actual: Some(json!("process_exited")),
                 ..FailureDetail::default()
             };
-            failure.details.insert("device".to_string(), json!(android.device_serial));
-            failure.details.insert("package".to_string(), json!(android.package));
+            failure
+                .details
+                .insert("device".to_string(), json!(android.device_serial));
+            failure
+                .details
+                .insert("package".to_string(), json!(android.package));
             failure.details.insert(
                 "logcat".to_string(),
-                json!(project_relative_path(&config.project_root, &android.logcat_log_path)),
+                json!(project_relative_path(
+                    &config.project_root,
+                    &android.logcat_log_path
+                )),
             );
             failure.details.insert(
                 "deployment_log".to_string(),
-                json!(project_relative_path(&config.project_root, &android.deployment_log_path)),
+                json!(project_relative_path(
+                    &config.project_root,
+                    &android.deployment_log_path
+                )),
             );
             failure
         }
@@ -704,8 +751,12 @@ fn android_roundtrip_failure_from_probe(
                     .or_else(|| Some(json!("unavailable"))),
                 ..FailureDetail::default()
             };
-            failure.details.insert("device".to_string(), json!(android.device_serial));
-            failure.details.insert("package".to_string(), json!(android.package));
+            failure
+                .details
+                .insert("device".to_string(), json!(android.device_serial));
+            failure
+                .details
+                .insert("package".to_string(), json!(android.package));
             failure
         }
     }
@@ -804,7 +855,11 @@ fn apply_android_cleanup_outcome(
     artifacts: &artifacts::RunArtifacts,
 ) {
     let complete = cleanup_failures.is_empty();
-    if let Some(android) = result.data.get_mut("android").and_then(Value::as_object_mut) {
+    if let Some(android) = result
+        .data
+        .get_mut("android")
+        .and_then(Value::as_object_mut)
+    {
         android.insert("cleanup_complete".to_string(), json!(complete));
     }
     if !complete {
@@ -848,9 +903,10 @@ pub fn run_scenario_once_android(
 
     let scenario_for_artifacts =
         scenario_with_effective_launch_args(config, &runtime_scenario_payload(scenario));
-    let artifacts = match artifacts::prepare_run_artifacts(
+    let artifacts = match artifacts::prepare_run_artifacts_with_assertion_source(
         &config.artifacts_dir,
         &scenario_for_artifacts,
+        scenario,
         &config.project_root,
         scenario_path,
         command_line,
@@ -894,11 +950,21 @@ pub fn run_scenario_once_android(
             let mut data = Map::from_iter([
                 (
                     "scenario".to_string(),
-                    json!(scenario.get("name").and_then(Value::as_str).unwrap_or_default()),
+                    json!(
+                        scenario
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                    ),
                 ),
                 (
                     "scene".to_string(),
-                    json!(scenario.get("scene").and_then(Value::as_str).unwrap_or_default()),
+                    json!(
+                        scenario
+                            .get("scene")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                    ),
                 ),
                 (
                     "scenario_path".to_string(),
@@ -916,7 +982,8 @@ pub fn run_scenario_once_android(
     };
 
     let audio_override = options.audio.then_some(true);
-    let audio = selected_audio_for_scenario(audio_override, scenario_requires_audio_evidence(scenario));
+    let audio =
+        selected_audio_for_scenario(audio_override, scenario_requires_audio_evidence(scenario));
     execute_android_scenario_on_session(
         config,
         &handle,
@@ -988,8 +1055,15 @@ fn run_android_scenario_core(
         );
     };
     let session_id = record.session_id.clone();
-    let base_data =
-        android_base_data(config, scenario_path, scenario, artifacts, audio, record, android);
+    let base_data = android_base_data(
+        config,
+        scenario_path,
+        scenario,
+        artifacts,
+        audio,
+        record,
+        android,
+    );
 
     let device_run_root = format!("{}/{ANDROID_RUN_SUBDIR}", android.device_artifact_root);
     let mapper = match AndroidArtifactMapper::new(&artifacts.root_dir, device_run_root.clone()) {

@@ -88,6 +88,7 @@ fn prepare_run_artifacts_creates_expected_layout_and_metadata() {
             "started_at": "2026-04-21T12:00:00Z",
             "command": "godot-qa scenario run example --json",
             "scenario_path": scenario_path,
+            "assertion_manifest": {"schema_version":1,"entries":[],"cli_assertions_excluded":0},
         })
     );
 
@@ -97,6 +98,7 @@ fn prepare_run_artifacts_creates_expected_layout_and_metadata() {
         request,
         json!({
             "scenario": scenario,
+            "assertion_proof": {"schema_version":1,"entries":[],"cli_assertions_excluded":0},
             "artifacts": {
                 "run_root": artifacts.root_dir,
                 "meta_path": artifacts.meta_path,

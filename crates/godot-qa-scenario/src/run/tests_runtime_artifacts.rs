@@ -47,6 +47,68 @@
     }
 
     #[test]
+    fn assertion_source_manifest_survives_runtime_filtering_request_rewrites_and_viewports() {
+        let root = temp_dir("assertion-source-manifest");
+        let original = json!({"name":"proof","scene":"res://main.tscn","steps":[{"assert":[{"layout_audit":"default"},{"exists":"qa:button"},{"exists":"qa:button"}]}],"assert":[{"screenshot_match":{"baseline":"main.png"}},{"no_errors":true}]});
+        let manifest = crate::assertion_proof::manifest(&original);
+        let mut nonces = Vec::new();
+        for viewport in [vec![640, 480], vec![1280, 720]] {
+            let runtime = variant_scenario(&original, &viewport);
+            let artifacts = artifacts::prepare_run_artifacts_with_assertion_source(
+                &root.join(super::viewport_token(&viewport)),
+                &runtime,
+                &original,
+                &root,
+                &root.join("scenario.json"),
+                "scenario run proof",
+                None,
+                &[],
+                &[],
+                Some("proof"),
+                Some("0Z"),
+            )
+            .unwrap();
+            assert_eq!(artifacts.assertion_manifest, manifest);
+            let request: Value =
+                serde_json::from_slice(&fs::read(&artifacts.request_path).unwrap()).unwrap();
+            nonces.push(request["run"]["nonce"].clone());
+            assert_eq!(
+                request["assertion_proof"]["entries"][0]["source_id"],
+                "/steps/0/assert/1"
+            );
+            assert_eq!(
+                request["assertion_proof"]["entries"][0]["runtime_path"],
+                "/steps/0/assert/0"
+            );
+            assert_eq!(
+                request["scenario"]["steps"][0]["assert"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                2
+            );
+            let rewrite = artifacts.root_dir.join("runtime-request.json");
+            write_runtime_request(
+                &rewrite,
+                &runtime,
+                &root,
+                &artifacts,
+                "scenario profile proof",
+                RuntimeExecutionOptions {
+                    profile: true,
+                    ..RuntimeExecutionOptions::default()
+                },
+            )
+            .unwrap();
+            let rewritten: Value = serde_json::from_slice(&fs::read(rewrite).unwrap()).unwrap();
+            assert_eq!(rewritten["assertion_proof"], manifest);
+            assert_eq!(rewritten["run"]["nonce"], request["run"]["nonce"]);
+        }
+        assert_ne!(nonces[0], nonces[1]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn scenario_process_outcome_strict_malformed_result_json_is_distinct() {
         let root = temp_dir("scenario-process-outcome-invalid-result");
         let result_path = root.join("result.json");
@@ -58,8 +120,7 @@
             "result_path": result_path,
             "logs_path": logs_path,
         });
-        let failure =
-            load_runtime_result("scenario run", &result_path, &artifacts, None).unwrap_err();
+        let failure = load_runtime_result("scenario run", &result_path, &artifacts, None).unwrap_err();
         let process_result = test_process_result(&root, 0);
         let mut data = serde_json::Map::new();
         data.insert(
@@ -545,8 +606,7 @@
     #[test]
     fn runtime_audio_absent_preserves_non_audio_output_shape() {
         let root = temp_dir("runtime-audio-absent-shape");
-        let result =
-            runtime_audio_result(&root, &json!({"ok": true, "snapshots": [], "failures": []}));
+        let result = runtime_audio_result(&root, &json!({"ok": true, "snapshots": [], "failures": []}));
 
         assert!(result.ok);
         assert!(result.data.get("audio_artifacts").is_none());
@@ -672,7 +732,10 @@
         assert!(!result.ok);
         assert_eq!(result.exit_code, 1);
         assert_eq!(result.failures[0].kind, "screenshot_low_information");
-        assert_path_eq(result.failures[0].path.as_deref().unwrap(), &screenshot_path);
+        assert_path_eq(
+            result.failures[0].path.as_deref().unwrap(),
+            &screenshot_path,
+        );
     }
 
     #[test]
@@ -1168,10 +1231,17 @@
             "project_args": ["--case=final-assertions"]
         });
         let result = super::run_viewport_matrix(
-            "scenario run", "scenario run failed", &config, &scenario,
-            &root.join("qa/scenarios/matrix_runtime_contract.yaml"), &artifacts,
-            &[vec![320, 200], vec![640, 480]], None,
-            "godot-qa scenario run matrix_runtime_contract", Some(true), Some(false),
+            "scenario run",
+            "scenario run failed",
+            &config,
+            &scenario,
+            &root.join("qa/scenarios/matrix_runtime_contract.yaml"),
+            &artifacts,
+            &[vec![320, 200], vec![640, 480]],
+            None,
+            "godot-qa scenario run matrix_runtime_contract",
+            Some(true),
+            Some(false),
         );
         // The deliberately missing engine must fail; inspect the actual
         // serialized requests prepared for both runtime invocations.
@@ -1185,8 +1255,14 @@
             assert_eq!(runtime["assert"], assertions);
             assert_eq!(runtime["steps"], steps);
             assert_eq!(runtime["determinism"], setup);
-            assert_eq!(runtime["godot_args"], json!(["--verbose", "--single-threaded-scene"]));
-            assert_eq!(runtime["project_args"], json!(["--fixture=matrix", "--case=final-assertions"]));
+            assert_eq!(
+                runtime["godot_args"],
+                json!(["--verbose", "--single-threaded-scene"])
+            );
+            assert_eq!(
+                runtime["project_args"],
+                json!(["--fixture=matrix", "--case=final-assertions"])
+            );
             assert!(runtime.get("viewports").is_none());
             assert_eq!(runtime["viewport"]["width"], run["viewport"][0]);
             assert_eq!(runtime["viewport"]["height"], run["viewport"][1]);

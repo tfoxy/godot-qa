@@ -173,14 +173,14 @@ fn run_viewport_matrix(
         let variant_scenario = variant_scenario(scenario, viewport);
         // This request is executed directly, so retain the complete runtime
         // payload, including final assertions and deterministic setup.
-        let mut artifact_scenario =
-            scenario_with_effective_launch_args(config, &variant_scenario);
+        let mut artifact_scenario = scenario_with_effective_launch_args(config, &variant_scenario);
         if let Some(object) = artifact_scenario.as_object_mut() {
             object.insert("name".to_string(), json!(viewport_token));
         }
-        let variant_artifacts = match artifacts::prepare_run_artifacts(
+        let variant_artifacts = match artifacts::prepare_run_artifacts_with_assertion_source(
             &variant_root,
             &artifact_scenario,
+            scenario,
             &config.project_root,
             scenario_path,
             command_line,
@@ -389,7 +389,6 @@ fn run_viewport_matrix(
     };
     persist_result(&aggregate_artifacts.result_path, result)
 }
-
 
 fn display_launch_metadata_json(display: &godot_qa_process::DisplayLaunchMetadata) -> Value {
     json!({

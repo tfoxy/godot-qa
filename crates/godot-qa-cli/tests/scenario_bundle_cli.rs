@@ -154,6 +154,7 @@ fn write_fake_godot(path: &Path) {
         path,
         &[
             ("request_prefix", "--qa-run-request="),
+            ("scenario_proof", "passed"),
             (
                 "write:result.json",
                 r#"{"ok":true,"command":"scenario run","message":"scenario run completed","data":{"runtime":"fake"},"failures":[]}"#,
@@ -1308,6 +1309,7 @@ fn write_timed_fake_godot(path: &Path) {
         path,
         &[
             ("request_prefix", "--qa-run-request="),
+            ("scenario_proof", "passed"),
             ("write:result.json", &result(100, 50, 10)),
             ("write_match:slow_child:result.json", &result(300, 250, 30)),
             (
@@ -1325,6 +1327,7 @@ fn write_provider_failure_fake_godot(path: &Path) {
         path,
         &[
             ("request_prefix", "--qa-run-request="),
+            ("scenario_proof", "passed"),
             (
                 "write:result.json",
                 r#"{"ok":false,"command":"scenario run","message":"scenario run failed","duration_ms":10,"data":{"runtime":"fake"},"failures":[{"type":"provider_not_registered","message":"surface provider is not registered","provider":"layout_probe","target":"res://Main.tscn"}]}"#,
@@ -1571,6 +1574,7 @@ fn write_selective_failure_fake_godot(path: &Path) {
         path,
         &[
             ("request_prefix", "--qa-run-request="),
+            ("scenario_proof", "passed"),
             (
                 "write:result.json",
                 r#"{"ok":true,"command":"scenario run","message":"scenario run completed","duration_ms":10,"data":{"runtime":"fake"},"failures":[]}"#,

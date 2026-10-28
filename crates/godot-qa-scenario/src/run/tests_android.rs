@@ -1,10 +1,10 @@
 #[cfg(test)]
 mod android_tests {
     use super::*;
-    use godot_qa_runtime::android_artifacts::AndroidArtifactMapper;
-    use godot_qa_runtime::{AndroidSessionMetadata, SessionRecord, SessionTarget};
     #[cfg(unix)]
     use godot_qa_runtime::PooledSessionHandle;
+    use godot_qa_runtime::android_artifacts::AndroidArtifactMapper;
+    use godot_qa_runtime::{AndroidSessionMetadata, SessionRecord, SessionTarget};
     #[cfg(unix)]
     use std::io::{BufRead, BufReader, Write as _};
     #[cfg(unix)]
@@ -68,7 +68,10 @@ mod android_tests {
         // --audio + a valid preset is accepted (device audio is real).
         let mut ok = options(Some("Android QA"));
         ok.audio = true;
-        assert_eq!(validate_android_scenario_options(&ok).unwrap(), "Android QA");
+        assert_eq!(
+            validate_android_scenario_options(&ok).unwrap(),
+            "Android QA"
+        );
     }
 
     #[test]
@@ -179,13 +182,7 @@ mod android_tests {
         let record = fake_record("sess-conflict", 0);
         let failure = android_session_active_failure(&record);
         assert_eq!(failure.kind, "android_session_active");
-        assert!(
-            failure
-                .message
-                .as_deref()
-                .unwrap()
-                .contains("session stop")
-        );
+        assert!(failure.message.as_deref().unwrap().contains("session stop"));
     }
 
     // --- Request rewrite ---------------------------------------------------
@@ -203,6 +200,7 @@ mod android_tests {
             snapshots_dir: root.join("snapshots"),
             temporal_dir: root.join("temporal"),
             audio_dir: root.join("audio"),
+            assertion_manifest: crate::assertion_proof::manifest(&json!({})),
         }
     }
 
@@ -237,7 +235,10 @@ mod android_tests {
             json!(format!("{device_root}/snapshots"))
         );
         assert!(device_request["run"].get("frame_budget").is_none());
-        assert_eq!(device_request["scenario"]["scene"], json!("res://main.tscn"));
+        assert_eq!(
+            device_request["scenario"]["scene"],
+            json!("res://main.tscn")
+        );
 
         // The re-persisted host copy keeps host paths but also lost frame_budget.
         let host_after: Value =
@@ -327,9 +328,11 @@ mod android_tests {
         let mut pulled: Vec<String> = Vec::new();
         let mut puller = |device_path: &str, temporary: &Path| -> Result<(), FailureDetail> {
             pulled.push(device_path.to_string());
-            fs::write(temporary, b"evidence").map_err(|error| android_artifact_io_failure(temporary, &error))
+            fs::write(temporary, b"evidence")
+                .map_err(|error| android_artifact_io_failure(temporary, &error))
         };
-        let result = rewrite_collected_result(&bytes, &host_artifacts, &mapper, &mut puller).unwrap();
+        let result =
+            rewrite_collected_result(&bytes, &host_artifacts, &mapper, &mut puller).unwrap();
 
         // Only real evidence is pulled: the failure screenshot and the snapshot
         // screenshot. Host-only run-level files (logs.txt) are never pulled.
@@ -368,6 +371,38 @@ mod android_tests {
         let _ = fs::remove_dir_all(&host_root);
     }
 
+    #[test]
+    fn collection_restores_assertion_definition_paths_without_claiming_artifacts() {
+        let host_root = unique_temp("proof-definition-paths");
+        let artifacts = run_artifacts(&host_root);
+        let mapper =
+            AndroidArtifactMapper::new(&host_root, "user://godot_qa/live/proof/run").unwrap();
+        let source = json!({"assert":[{"state_matches":{"target":"qa:state","path":"expected_path","equals":host_root.join("not-an-artifact.txt")}}]});
+        let manifest = crate::assertion_proof::manifest(&source);
+        let mut request = json!({"run":{"id":"r","nonce":"n"},"assertion_proof":manifest});
+        mapper.map_outgoing_params(&mut request).unwrap();
+        let device_result = crate::assertion_proof::passed_fixture(&request, json!({"ok":true}));
+        let mut puller = |_path: &str, _temporary: &Path| -> Result<(), FailureDetail> {
+            panic!("assertion definitions are data, not generated artifact paths")
+        };
+        let restored = rewrite_collected_result(
+            &serde_json::to_vec(&device_result).unwrap(),
+            &artifacts.to_json().as_object().cloned().unwrap(),
+            &mapper,
+            &mut puller,
+        )
+        .unwrap();
+        assert!(
+            crate::assertion_proof::validate(
+                &manifest,
+                &json!({"run_id":"r","nonce":"n"}),
+                &restored
+            )
+            .is_ok()
+        );
+        let _ = fs::remove_dir_all(host_root);
+    }
+
     // --- Full post-deploy loop --------------------------------------------
 
     fn fake_record(session_id: &str, port: u16) -> SessionRecord {
@@ -398,7 +433,7 @@ mod android_tests {
                 adb_path: "adb".to_string(),
                 device_artifact_root: format!("user://godot_qa/live/{session_id}"),
                 logcat_pid: None,
-            logcat_process_identity: None,
+                logcat_process_identity: None,
                 deployment_log_path: String::new(),
                 logcat_log_path: String::new(),
             }),
@@ -542,7 +577,12 @@ mod android_tests {
             ),
         );
 
-        let port = spawn_fake_bridge(device_result_file, result_device_path, write_result);
+        let port = spawn_fake_bridge(
+            device_result_file,
+            result_device_path,
+            write_result,
+            root.clone(),
+        );
 
         let mut record = fake_record(session_id, port);
         record.artifact_dir = root.join("session").to_string_lossy().into_owned();
@@ -592,6 +632,7 @@ mod android_tests {
         device_result_file: PathBuf,
         result_device_path: String,
         write_result: bool,
+        host_root: PathBuf,
     ) -> u16 {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -627,7 +668,23 @@ mod android_tests {
                         if let Some(parent) = device_result_file.parent() {
                             let _ = fs::create_dir_all(parent);
                         }
-                        let _ = fs::write(&device_result_file, &result_json);
+                        let scenario_root = host_root.join(".qa/artifacts/android_smoke");
+                        let run_dir = fs::read_dir(scenario_root)
+                            .unwrap()
+                            .next()
+                            .unwrap()
+                            .unwrap()
+                            .path();
+                        let run_request: Value = serde_json::from_slice(
+                            &fs::read(run_dir.join("request.json")).unwrap(),
+                        )
+                        .unwrap();
+                        let result = crate::assertion_proof::passed_fixture(
+                            &run_request,
+                            serde_json::from_str(&result_json).unwrap(),
+                        );
+                        let _ =
+                            fs::write(&device_result_file, serde_json::to_vec(&result).unwrap());
                     }
                     json!({
                         "protocol_version": "0.1",
@@ -656,9 +713,13 @@ mod android_tests {
     #[cfg(unix)]
     fn assert_cleanup_order(log: &str, session_id: &str) {
         let force_stop = log.find("am force-stop dev.qa.sample").expect("force-stop");
-        let forward_remove = log.find("forward --remove tcp:32400").expect("forward removal");
+        let forward_remove = log
+            .find("forward --remove tcp:32400")
+            .expect("forward removal");
         let private_rm = log
-            .find(&format!("run-as dev.qa.sample rm -rf files/godot_qa/live/{session_id}"))
+            .find(&format!(
+                "run-as dev.qa.sample rm -rf files/godot_qa/live/{session_id}"
+            ))
             .expect("private session rm");
         let bootstrap_rm = log
             .find("run-as dev.qa.sample rm -f files/godot_qa/android_live_bootstrap.json")
@@ -681,18 +742,36 @@ mod android_tests {
 
         let mut push = std::process::Command::new(&adb)
             .args([
-                "-s", "serial-1", "shell", "run-as", "dev.qa.sample", "sh", "-c",
+                "-s",
+                "serial-1",
+                "shell",
+                "run-as",
+                "dev.qa.sample",
+                "sh",
+                "-c",
                 "umask 077; cat > files/godot_qa/live/scenario-sess-1/run/request.json",
             ])
             .env("PATH", "")
             .stdin(std::process::Stdio::piped())
             .spawn()
             .unwrap();
-        push.stdin.take().unwrap().write_all(b"request body").unwrap();
+        push.stdin
+            .take()
+            .unwrap()
+            .write_all(b"request body")
+            .unwrap();
         assert!(push.wait().unwrap().success());
 
         let pulled = std::process::Command::new(&adb)
-            .args(["-s", "serial-1", "exec-out", "run-as", "dev.qa.sample", "cat", device_path])
+            .args([
+                "-s",
+                "serial-1",
+                "exec-out",
+                "run-as",
+                "dev.qa.sample",
+                "cat",
+                device_path,
+            ])
             .env("PATH", "")
             .output()
             .unwrap();
@@ -711,9 +790,15 @@ mod android_tests {
         assert!(result.ok, "verdict should pass: {:?}", result.failures);
         assert_eq!(result.command, "scenario run");
         assert_eq!(result.data["target"], json!("android"));
-        assert_eq!(result.data["android"]["session_id"], json!(harness.session_id));
+        assert_eq!(
+            result.data["android"]["session_id"],
+            json!(harness.session_id)
+        );
         assert_eq!(result.data["android"]["cleanup_complete"], json!(true));
-        assert_eq!(result.data["android"]["deployment_mode"], json!("debug_apk"));
+        assert_eq!(
+            result.data["android"]["deployment_mode"],
+            json!("debug_apk")
+        );
         assert_eq!(result.data["duration_ms"], json!(5));
         assert!(result.data.contains_key("process"));
         assert!(harness.artifacts.result_path.is_file());
@@ -721,9 +806,16 @@ mod android_tests {
         let log = harness.adb_log();
         assert_cleanup_order(&log, harness.session_id);
         // The request write (push) precedes the first result read (dispatch/collect).
-        let push = log.find("cat > files/godot_qa/live").expect("request push write");
-        let first_read = log.find("exec-out run-as dev.qa.sample cat").expect("result read");
-        assert!(push < first_read, "request push must precede dispatch:\n{log}");
+        let push = log
+            .find("cat > files/godot_qa/live")
+            .expect("request push write");
+        let first_read = log
+            .find("exec-out run-as dev.qa.sample cat")
+            .expect("result read");
+        assert!(
+            push < first_read,
+            "request push must precede dispatch:\n{log}"
+        );
 
         let _ = fs::remove_dir_all(&harness.root);
     }

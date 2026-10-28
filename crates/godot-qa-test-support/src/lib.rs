@@ -9,6 +9,8 @@ use std::sync::OnceLock;
 /// that request; `write_match:component:relative-output` overrides the default when
 /// the request's parent path contains that exact component.
 /// `remove_file` deletes a fixture before argument dispatch, tolerating absent files.
+/// `scenario_proof=passed` explicitly models a current addon finishing all requested
+/// runtime assertions; malformed results and supplied identity/proof fields are preserved.
 pub fn fixture(path: &Path, options: &[(&str, &str)]) -> PathBuf {
     static BINARY: OnceLock<PathBuf> = OnceLock::new();
     let source = BINARY.get_or_init(|| {
