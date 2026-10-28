@@ -59,8 +59,8 @@ Discover targets from runtime state rather than assuming the example locator exi
 |---|---|
 | Setup, checks, live input/scripts, reload, edits, session failures | [CLI workflows](references/cli-workflows.md) |
 | Write scenarios, set up fixtures, review recordings, simulate controllers | [Scenario authoring](references/scenario-authoring.md) |
-| Regression bundles, warm-strict failures, parallelism, selection, retries | [Bundle gates](references/bundle-gates.md) |
-| Screenshots, layout, visual audits, artifact queries and export | [Visual and artifact review](references/visual-and-artifacts.md) |
+| Regression bundles, assertion execution proof, warm-strict, parallelism, selection | [Bundle gates](references/bundle-gates.md) |
+| Screenshots, bounded frame bursts, layout, visual audits, image/audio evidence packets | [Visual and artifact review](references/visual-and-artifacts.md) |
 | Try, review, keep, discard, or recover PNG/WAV resource bindings | [Verified asset trials](references/asset-trials.md) |
 | Add efficient QA anchors, state/probe providers, fixture adapters | [Runtime instrumentation](references/runtime-instrumentation.md) |
 | Editor diagnostics, profiling, physics, traces, telemetry, audio | [Diagnostics and profiling](references/diagnostics-and-profiling.md) |

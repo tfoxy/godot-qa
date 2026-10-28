@@ -12,6 +12,8 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 
+mod audio;
+
 const SCHEMA: u64 = 1;
 const MAX_JSON_BYTES: u64 = 32 * 1024 * 1024;
 
@@ -62,11 +64,20 @@ pub(crate) fn artifact_export_result(args: &ArtifactExportArgs) -> CommandResult
     let selection_parent = selection_path.parent().unwrap_or_else(|| Path::new("."));
     let mut prepared = Vec::new();
     let mut seen_sources = HashSet::new();
+    let mut audio_budget = audio::PacketBudget::default();
     for source in sources {
-        match prepare_source(source, selection_parent, &mut seen_sources) {
+        match prepare_source(
+            source,
+            selection_parent,
+            &mut seen_sources,
+            &mut audio_budget,
+        ) {
             Ok(source) => prepared.push(source),
             Err((path, kind, message)) => return failed(&path, kind, &message),
         }
+    }
+    if let Err((path, kind, message)) = audio::validate_packet(&prepared, selection_path) {
+        return failed(&path, kind, &message);
     }
     if let Some(parent) = output.parent()
         && let Err(error) = fs::create_dir_all(if parent.as_os_str().is_empty() {
@@ -146,6 +157,7 @@ struct PreparedSource {
     revision: Value,
     environment: Value,
     images: Vec<PreparedImage>,
+    audio: Vec<audio::PreparedAudio>,
     metrics: Vec<PreparedMetric>,
 }
 
@@ -173,6 +185,7 @@ fn prepare_source(
     value: &Value,
     selection_parent: &Path,
     seen: &mut HashSet<String>,
+    audio_budget: &mut audio::PacketBudget,
 ) -> Result<PreparedSource, ExportError> {
     let id = required_slug(value, "id", selection_parent)?;
     if !seen.insert(id.clone()) {
@@ -461,6 +474,7 @@ fn prepare_source(
             });
         }
     }
+    let audio = audio::prepare_audio(value, &root, audio_budget)?;
     Ok(PreparedSource {
         id,
         root,
@@ -470,6 +484,7 @@ fn prepare_source(
         revision,
         environment,
         images,
+        audio,
         metrics,
     })
 }
@@ -619,6 +634,7 @@ fn write_source(output: &Path, source: PreparedSource) -> Result<(Value, bool), 
             "visual_review": image.review,
         }));
     }
+    let audio_entries = audio::write_audio(output, &source.id, source.audio)?;
     let mut metric_entries = Vec::new();
     for metric in source.metrics {
         let rel = format!("sources/{}/metrics/{}.json", source.id, metric.id);
@@ -649,6 +665,7 @@ fn write_source(output: &Path, source: PreparedSource) -> Result<(Value, bool), 
         "failure_count": failure_types.len(),
         "failures": failure_types,
         "images": image_entries,
+        "audio": audio_entries,
         "metrics": metric_entries,
     });
     Ok((entry, incomplete))
@@ -725,7 +742,7 @@ fn selected_review(
         return Err((
             path.to_path_buf(),
             "export_review_hash_mismatch",
-            "review sha256 must match the selected image bytes".to_owned(),
+            "review sha256 must match the selected artifact bytes".to_owned(),
         ));
     }
     selected.insert("sha256".to_owned(), json!(source_hash));
@@ -1004,6 +1021,17 @@ fn render_index(title: &str, manifest: &Value) -> String {
                         .and_then(Value::as_str)
                         .unwrap_or("unreviewed");
                     html.push_str(&format!("<figure><a href=\"{}\"><img src=\"{}\" alt=\"{}\"></a><figcaption>{} · visual review: {}</figcaption></figure>", escape_html(path), escape_html(path), escape_html(role), escape_html(role), escape_html(review)));
+                }
+            }
+            if let Some(items) = source.get("audio").and_then(Value::as_array) {
+                for item in items {
+                    let path = item.get("path").and_then(Value::as_str).unwrap_or("");
+                    let id = item.get("id").and_then(Value::as_str).unwrap_or("");
+                    let review = item
+                        .pointer("/audio_review/status")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unreviewed");
+                    html.push_str(&format!("<figure><audio controls preload=\"none\" src=\"{}\"></audio><figcaption>{} · audio review: {} · <a href=\"{}\" download>Original WAV</a></figcaption></figure>", escape_html(path), escape_html(id), escape_html(review), escape_html(path)));
                 }
             }
             html.push_str("</article>");

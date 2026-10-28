@@ -63,6 +63,183 @@ fn fixture(root: &Path, id: &str, ok: bool) -> Value {
     })
 }
 
+fn wav_fixture(root: &Path, id: &str, ok: bool) -> Value {
+    let mut source = fixture(root, id, ok);
+    let samples = [0_i16, 1200, -2400, 600, 0, -600, 2400, -1200];
+    let mut wav = Vec::new();
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36_u32 + samples.len() as u32 * 2).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16_u32.to_le_bytes());
+    wav.extend_from_slice(&1_u16.to_le_bytes());
+    wav.extend_from_slice(&1_u16.to_le_bytes());
+    wav.extend_from_slice(&8000_u32.to_le_bytes());
+    wav.extend_from_slice(&16000_u32.to_le_bytes());
+    wav.extend_from_slice(&2_u16.to_le_bytes());
+    wav.extend_from_slice(&16_u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&(samples.len() as u32 * 2).to_le_bytes());
+    for sample in samples {
+        wav.extend_from_slice(&sample.to_le_bytes());
+    }
+    fs::write(root.join(id).join("candidate.wav"), wav).unwrap();
+    source["audio"] = json!([{"id":"candidate","path":"candidate.wav","role":"original"}]);
+    source
+}
+
+#[test]
+fn exported_wavs_are_exact_portable_unreviewed_and_preserve_failed_results() {
+    let root = temp_root("wav-portable");
+    let source = wav_fixture(&root, "failed", false);
+    let selection = root.join("selection.json");
+    write_json(
+        &selection,
+        &json!({"schema_version":1,"title":"Audio <review>","sources":[source]}),
+    );
+    let out = root.join("export");
+    let (ok, body) = cli(&selection, &out);
+    assert!(ok, "{body}");
+    let manifest: Value =
+        serde_json::from_slice(&fs::read(out.join("evidence.json")).unwrap()).unwrap();
+    let source = &manifest["sources"][0];
+    assert_eq!(source["automatic_check_status"], "failed");
+    assert_eq!(source["failure_count"], 1);
+    let audio = &source["audio"][0];
+    assert_eq!(audio["source_sha256"], audio["export_sha256"]);
+    assert_eq!(audio["audio_review"]["status"], "unreviewed");
+    assert_eq!(audio["transformation"], "byte_exact_copy");
+    assert_eq!(audio["metadata"]["sample_rate"], 8000);
+    assert_eq!(audio["metadata"]["channels"], 1);
+    let path = audio["path"].as_str().unwrap();
+    assert!(!Path::new(path).is_absolute());
+    assert_eq!(
+        fs::read(out.join(path)).unwrap(),
+        fs::read(root.join("failed/candidate.wav")).unwrap()
+    );
+    let moved = root.join("moved");
+    fs::rename(&out, &moved).unwrap();
+    let html = fs::read_to_string(moved.join("index.html")).unwrap();
+    assert!(html.contains("<audio controls preload=\"none\""));
+    assert!(html.contains(path));
+    assert!(html.contains("Audio &lt;review&gt;"));
+    assert!(moved.join(path).is_file());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn invalid_wav_selections_fail_before_destination_creation() {
+    let root = temp_root("wav-invalid");
+    let original = wav_fixture(&root, "run", true);
+    for (label, change) in [
+        (
+            "role",
+            json!({"id":"audio","path":"candidate.wav","role":"captured"}),
+        ),
+        (
+            "traversal",
+            json!({"id":"audio","path":"../run/candidate.wav","role":"original"}),
+        ),
+        (
+            "extension",
+            json!({"id":"audio","path":"result.json","role":"original"}),
+        ),
+        (
+            "review",
+            json!({"id":"audio","path":"candidate.wav","role":"original","review":{"status":"reviewed","reviewer":"human","method":"listening","scale":"native","scope":"whole","reviewed_at":"2026-10-28","sha256":"incorrect"}}),
+        ),
+    ] {
+        let mut source = original.clone();
+        source["audio"] = json!([change]);
+        let selection = root.join(format!("{label}.json"));
+        write_json(
+            &selection,
+            &json!({"schema_version":1,"title":"Audio","sources":[source]}),
+        );
+        let out = root.join(format!("out-{label}"));
+        let (ok, body) = cli(&selection, &out);
+        assert!(!ok, "{label}: {body}");
+        assert!(!out.exists());
+    }
+    fs::write(root.join("run/candidate.wav"), b"not a WAV").unwrap();
+    let selection = root.join("malformed.json");
+    write_json(
+        &selection,
+        &json!({"schema_version":1,"title":"Audio","sources":[original]}),
+    );
+    let (ok, body) = cli(&selection, &root.join("out-malformed"));
+    assert!(!ok, "{body}");
+    assert_eq!(body["failures"][0]["type"], "export_audio_invalid");
+    assert!(!root.join("out-malformed").exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn wav_packet_limits_apply_across_sources() {
+    let root = temp_root("wav-count");
+    let mut first = wav_fixture(&root, "first", true);
+    let second = wav_fixture(&root, "second", true);
+    first["audio"] = Value::Array(
+        (0..64)
+            .map(|i| json!({"id":format!("audio{i}"),"path":"candidate.wav","role":"original"}))
+            .collect(),
+    );
+    let selection = root.join("selection.json");
+    write_json(
+        &selection,
+        &json!({"schema_version":1,"title":"Audio","sources":[first,second]}),
+    );
+    let out = root.join("export");
+    let (ok, body) = cli(&selection, &out);
+    assert!(!ok, "{body}");
+    assert_eq!(body["failures"][0]["type"], "export_audio_resource_limit");
+    assert!(!out.exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn oversized_wav_is_rejected_before_export() {
+    let root = temp_root("wav-oversize");
+    let source = wav_fixture(&root, "run", true);
+    fs::OpenOptions::new()
+        .write(true)
+        .open(root.join("run/candidate.wav"))
+        .unwrap()
+        .set_len(64 * 1024 * 1024 + 1)
+        .unwrap();
+    let selection = root.join("selection.json");
+    write_json(
+        &selection,
+        &json!({"schema_version":1,"title":"Audio","sources":[source]}),
+    );
+    let out = root.join("export");
+    let (ok, body) = cli(&selection, &out);
+    assert!(!ok, "{body}");
+    assert_eq!(body["failures"][0]["type"], "export_audio_resource_limit");
+    assert!(!out.exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn wav_selection_rejects_symlink_escape() {
+    let root = temp_root("wav-symlink");
+    let mut source = wav_fixture(&root, "run", true);
+    fs::copy(root.join("run/candidate.wav"), root.join("outside.wav")).unwrap();
+    std::os::unix::fs::symlink(root.join("outside.wav"), root.join("run/escape.wav")).unwrap();
+    source["audio"][0]["path"] = json!("escape.wav");
+    let selection = root.join("selection.json");
+    write_json(
+        &selection,
+        &json!({"schema_version":1,"title":"Audio","sources":[source]}),
+    );
+    let out = root.join("export");
+    let (ok, body) = cli(&selection, &out);
+    assert!(!ok, "{body}");
+    assert_eq!(body["failures"][0]["type"], "export_path_rejected");
+    assert!(!out.exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn exported_images_are_exact_portable_and_json_is_sanitized() {
     let root = temp_root("portable");

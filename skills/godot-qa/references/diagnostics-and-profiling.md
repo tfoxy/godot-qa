@@ -4,9 +4,18 @@ Choose the smallest evidence capture that answers the question. Bound durations/
 
 ## Editor and runtime errors
 
-Use `errors` for the structured runtime error buffer and `logs` for captured engine output. `diagnostics editor` combines a new headless import with the last editor-run bridge artifact. For editor-only warnings, enable the Godot QA plugin, press Run in the editor after the relevant edits, then read the artifact. Check its project, run ID, and capture time: an old editor error can remain in the merged result after a clean import. Preserve that provenance when reporting historical and current evidence.
+Use `errors` for the structured runtime error buffer and `logs` for captured engine output. Choose diagnostic sources explicitly when current import and saved editor evidence answer different questions:
 
-When a result contradicts observed behavior, inspect its raw logs as well as counters. Current scenario log counters can miss `SCRIPT ERROR:`/`SCRIPT WARNING:` lines; manifest-backed checks can also miss raw errors despite a successful child result. A clean counter alone does not resolve that contradiction.
+```bash
+godot-qa diagnostics editor --source import --project <project> --json
+godot-qa diagnostics editor --source editor --project <project> --json
+```
+
+`import` launches a fresh headless import and excludes saved editor diagnostics. `editor` reads the saved bridge artifact without launching Godot; enable the Godot QA plugin and run the selected project from the editor after relevant edits to refresh it. The default `combined` merges both, so a historical editor error can still fail a clean current import. Inspect `data.sources` for project, run, capture time, and `included_in_verdict`. Foreign, malformed, or unowned editor evidence is excluded with an advisory in combined mode and fails editor-only mode. No age cutoff makes an old capture current; preserve its provenance when reporting it. `--strict-warnings` applies to diagnostic warnings, not source-availability advisories.
+
+## CLI/addon content identity
+
+`doctor` compares the installed addon's scripts and root `plugin.cfg` with the content manifest compiled into the CLI. Its identity status is `match`, `mismatch`, or `unknown`; mismatch/unknown warn by default. If a project gate requires the CLI's exact addon content, run `doctor --strict-addon-identity --project <project> --json` to make either status fail. This is independent of `--strict-addon-version`: equal version strings can conceal different builds. Inspect project pins or intentional addon modifications before replacing files. A match describes installed files; it does not attest which revision an already-running Godot session loaded. Restart that session after changing its addon.
 
 ## Profiles and soaks
 

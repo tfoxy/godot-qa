@@ -13,7 +13,17 @@ godot-qa screenshot compare --project <project> --actual .qa/artifacts/manual/cu
 
 For an existing approved baseline, `screenshot compare --live --baseline <path>` captures and compares the active windowed session. To compare saved scenario evidence, use its returned screenshot path with `--actual`. Pass `--project <project> --json` in either case. Read the result and inspect actual, baseline, and diff images; baseline approval remains an explicit human action.
 
-Capture guards `--require-visible`, `--require-hidden`, and `--require-state` can ensure the intended UI state before saving. Use `--setup-script <path>` only for reviewed setup steps. For transitions, use `screenshot sequence --frames N --every N --out <dir>` or `--seconds N --fps N`, then `screenshot contact-sheet <dir> --columns 5 --thumb-width 320 --out <png>`. Contact sheets consume the sequence manifest and its ordered frames, not an arbitrary image folder. Run captures sequentially on a session. Captures add runtime work; use bounded samples and inspect recorded frame/time evidence before interpreting a sequence as unperturbed animation timing.
+Capture guards `--require-visible`, `--require-hidden`, and `--require-state` can ensure the intended UI state before saving. Use `--setup-script <path>` only for reviewed setup steps. For transitions, use `screenshot sequence --frames N --every N --out <dir>` or `--seconds N --fps N`, then `screenshot contact-sheet <dir> --columns 5 --thumb-width 320 --out <png>`. Contact sheets consume the sequence manifest and its ordered frames, not an arbitrary image folder.
+
+When per-image bridge calls or PNG encoding interfere with a transition, opt into a rendered burst:
+
+```bash
+godot-qa screenshot sequence --capture-mode burst --frames 12 --every 2 --out .qa/artifacts/manual/burst --project <project> --json
+```
+
+Serial remains the default. Burst retains RGBA frames from actual post-draw events, then encodes them after sampling. Burst-only `--max-bytes` and `--max-seconds` bound retained RGBA bytes and capture time; defaults are 512 MiB and three seconds, with hard limits of 1 GiB, ten seconds, and 96 retained frames. Choose limits for the viewport size and requested schedule. `--frames` is the frame-window endpoint: the example samples ordinals 0, 2, …, 12 (seven images), not twelve images. Frame schedules follow draw ordinals; time schedules use monotonic deadlines. Inspect observed engine frames, draw ordinals, timing, effective limits, and completeness instead of assuming requested FPS was achieved.
+
+The burst owns the serialized bridge while rendering continues. Arrange inputs or autonomous motion before starting; other CLI input/capture commands cannot run concurrently on that session. Guards and stop predicates run inside the burst. Capture overhead remains, cancellation is not responsive, and a process crash can lose in-memory frames. Resize, budget, or deadline failures produce incomplete evidence; inspect retained partial artifacts and preserve the failure. Use a stable viewport and bounded samples rather than treating the sequence as unperturbed animation timing.
 
 For what the user sees at startup, `screenshot assert-startup-presented --scene res://... --viewport 1280x720` captures compositor pixels before a QA viewport capture. It requires Linux Gamescope and an owned display. Without a baseline, it compares presented pixels against the later viewport image; with `--baseline`, it checks that image. Exact channel comparison is default; `--channel-tolerance 1` allows one 8-bit rounding level independently of the differing-pixel threshold. Do not loosen tolerances simply to pass.
 
@@ -39,7 +49,7 @@ Default run locations are `.qa/artifacts/<scenario>/<run-id>/` and `.qa/artifact
 
 ## Portable export
 
-Create an explicit selection file, then run `artifact export <selection.json> --out <new-directory> --json`. Example selection, with real run/image paths substituted:
+Create an explicit selection file, then run `artifact export <selection.json> --out <new-directory> --json`. Example selection, with real run/media paths substituted; omit image or audio selections when unneeded:
 
 ```json
 {
@@ -49,12 +59,15 @@ Create an explicit selection file, then run `artifact export <selection.json> --
     "id": "menu",
     "run_root": ".qa/artifacts/menu_start/run-id",
     "result": "result.json",
-    "images": [{"id": "after", "path": "snapshots/after/screenshot.png", "role": "original"}]
+    "images": [{"id": "after", "path": "snapshots/after/screenshot.png", "role": "original"}],
+    "audio": [{"id": "menu_sound", "path": "audio/menu.wav", "role": "original"}]
   }]
 }
 ```
 
-Relative run roots resolve beside the selection file. Select finalized `result.json` or external `verdict.json`, exact PNGs, and optionally scalar profile fields. Image reviews must bind to the source SHA-256. Export preserves failures, marks images unreviewed by default, and produces relative links without raw requests, logs, or connection data. It does not approve baselines.
+Relative run roots resolve beside the selection file; selected media paths are confined to each run root. Select finalized `result.json` or external `verdict.json`, exact PNGs, optional WAVs, and optionally scalar profile fields. WAV selections require `role: original`, valid bounded WAV data, and at most 64 MiB per file; packet limits are 64 WAVs and 512 MiB of audio. Export copies original WAV bytes, records source/export SHA-256 plus audio metadata and `byte_exact_copy`, and creates relative playback/download links. This packages saved evidence; it does not invent live-capture provenance or transcode it.
+
+Images and audio default to unreviewed (`visual_review` and `audio_review`). An explicit selection `review` with status `reviewed` must bind to the source `sha256` and supply `reviewer`, `method`, `scale`, `scope`, and `reviewed_at`; copying or analyzing media does not perform that review. Export preserves failed/incomplete source verdicts and produces relative links without raw requests, logs, or connection data. A portable packet does not turn a failed run into acceptance or approve baselines.
 
 ## External display wrappers
 
