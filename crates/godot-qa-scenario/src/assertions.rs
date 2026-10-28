@@ -1508,6 +1508,7 @@ fn evaluate_saved_visual_assertion(
             &node,
             &screenshot_path,
             artifacts,
+            &mut screenshots::ScreenshotAnalysisCache::default(),
         );
     }
     Ok(EvalOutcome::failed(failure(
@@ -1525,14 +1526,34 @@ fn evaluate_saved_visual_assertion(
     )))
 }
 
+/// Snapshot indexes are fixed for the duration of scenario finalization and can be
+/// reused by each target assertion without rebuilding cloned tree/UI maps.
+pub(crate) struct SavedSnapshotPixelContext {
+    indexes: Result<Indexes, FailureDetail>,
+}
+
+impl SavedSnapshotPixelContext {
+    pub(crate) fn new(snapshot_context: &Value) -> Self {
+        Self {
+            indexes: build_indexes(snapshot_context),
+        }
+    }
+}
+
 pub(crate) fn evaluate_saved_snapshot_pixels(
     assertion: &Map<String, Value>,
-    snapshot_context: &Value,
+    context: &SavedSnapshotPixelContext,
     artifacts: &Map<String, Value>,
+    cache: &mut screenshots::ScreenshotAnalysisCache,
 ) -> Result<EvalOutcome, FailureDetail> {
-    let mut normalized = assertion.clone();
-    normalized.insert("name".to_string(), json!("visible_pixels"));
-    evaluate_saved_visual_assertion(&normalized, snapshot_context, artifacts)
+    let target = assertion
+        .get("target")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let indexes = context.indexes.as_ref().map_err(Clone::clone)?;
+    let (node, _control) = resolve_target(indexes, target, artifacts)?;
+    let screenshot_path = require_safe_saved_visual_screenshot(artifacts, target)?;
+    evaluate_saved_visible_pixels(assertion, target, &node, &screenshot_path, artifacts, cache)
 }
 
 fn require_safe_saved_visual_screenshot(
@@ -1595,6 +1616,7 @@ fn evaluate_saved_visible_pixels(
     node: &Map<String, Value>,
     screenshot_path: &std::path::Path,
     artifacts: &Map<String, Value>,
+    cache: &mut screenshots::ScreenshotAnalysisCache,
 ) -> Result<EvalOutcome, FailureDetail> {
     let min_count = assertion
         .get("min_count")
@@ -1618,8 +1640,10 @@ fn evaluate_saved_visible_pixels(
         );
         return Ok(EvalOutcome::failed(detail));
     };
-    let mut evidence =
-        screenshots::measure_saved_target_pixels(screenshot_path, rect).map_err(|error| {
+    let mut evidence = cache
+        .get(screenshot_path)
+        .map(|analysis| analysis.measure_target(rect))
+        .map_err(|error| {
             failure(
                 "screenshot_read_failed",
                 "saved visible_pixels assertion could not read the screenshot PNG",
@@ -2850,3 +2874,7 @@ struct Indexes {
     ui_by_path: Map<String, Value>,
     filtered_evidence: bool,
 }
+
+#[cfg(test)]
+#[path = "assertions_saved_pixels_tests.rs"]
+mod saved_pixels_tests;

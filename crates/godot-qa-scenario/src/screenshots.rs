@@ -1,11 +1,12 @@
 use godot_qa_core::config::ProjectConfig;
 use godot_qa_core::results::{CommandResult, FailureDetail};
 use godot_qa_runtime as runtime;
-use image::{DynamicImage, GenericImageView, ImageBuffer, ImageError, Rgba};
+use image::{ImageBuffer, ImageError, Rgba, RgbaImage};
 use serde_json::{Map, Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::visual_risk::{self, ScreenshotArtifact, VisualRiskOptions};
@@ -737,7 +738,7 @@ pub fn compare_screenshot_files(
         threshold,
         diff_path,
         metrics_path,
-        None,
+        ScreenshotComparison::default(),
     )
 }
 
@@ -759,7 +760,40 @@ pub fn compare_presented_startup_files(
         threshold,
         diff_path,
         metrics_path,
-        Some(channel_tolerance),
+        ScreenshotComparison {
+            channel_tolerance: Some(channel_tolerance),
+            actual: None,
+        },
+    )
+}
+
+#[derive(Default)]
+struct ScreenshotComparison<'a> {
+    channel_tolerance: Option<u8>,
+    actual: Option<Result<&'a ScreenshotAnalysis, String>>,
+}
+
+pub(crate) fn compare_screenshot_files_cached(
+    command: &str,
+    actual_path: &Path,
+    baseline_path: &Path,
+    threshold: f64,
+    diff_path: Option<&Path>,
+    metrics_path: Option<&Path>,
+    cache: &mut ScreenshotAnalysisCache,
+) -> CommandResult {
+    compare_screenshot_files_inner(
+        command,
+        actual_path,
+        baseline_path,
+        threshold,
+        diff_path,
+        metrics_path,
+        ScreenshotComparison {
+            actual: (actual_path.is_file() && baseline_path.is_file())
+                .then(|| cache.get(actual_path)),
+            ..ScreenshotComparison::default()
+        },
     )
 }
 
@@ -770,8 +804,9 @@ fn compare_screenshot_files_inner(
     threshold: f64,
     diff_path: Option<&Path>,
     metrics_path: Option<&Path>,
-    channel_tolerance: Option<u8>,
+    comparison: ScreenshotComparison<'_>,
 ) -> CommandResult {
+    let channel_tolerance = comparison.channel_tolerance;
     if !actual_path.is_file() {
         return result(
             false,
@@ -815,10 +850,20 @@ fn compare_screenshot_files_inner(
         );
     }
 
-    let actual_image = match load_rgba_image(actual_path) {
-        Ok(image) => image,
-        Err(message) => {
+    let owned_actual;
+    let actual_image = match comparison.actual {
+        Some(Ok(analysis)) => &analysis.pixels,
+        Some(Err(message)) => {
             return decode_failure(command, actual_path, baseline_path, threshold, message);
+        }
+        None => {
+            owned_actual = match load_rgba_image(actual_path) {
+                Ok(image) => image,
+                Err(message) => {
+                    return decode_failure(command, actual_path, baseline_path, threshold, message);
+                }
+            };
+            &owned_actual
         }
     };
     let baseline_image = match load_rgba_image(baseline_path) {
@@ -828,8 +873,8 @@ fn compare_screenshot_files_inner(
         }
     };
 
-    let (metrics, diff_pixels, ok) =
-        compare_images_with_tolerance(&actual_image, &baseline_image, threshold, channel_tolerance);
+    let (metrics, ok) =
+        compare_images_with_tolerance(actual_image, &baseline_image, threshold, channel_tolerance);
     let mut artifacts = Map::new();
 
     if let Some(path) = metrics_path {
@@ -851,31 +896,9 @@ fn compare_screenshot_files_inner(
 
     if !ok || channel_tolerance.is_some() {
         if let Some(path) = diff_path {
-            if let Err(error) = write_diff_image(
-                path,
-                metrics
-                    .get("actual_size")
-                    .and_then(Value::as_array)
-                    .zip(metrics.get("baseline_size").and_then(Value::as_array))
-                    .map(|(actual_size, baseline_size)| {
-                        (
-                            actual_size
-                                .first()
-                                .and_then(Value::as_u64)
-                                .unwrap_or(0)
-                                .max(baseline_size.first().and_then(Value::as_u64).unwrap_or(0))
-                                as u32,
-                            actual_size
-                                .get(1)
-                                .and_then(Value::as_u64)
-                                .unwrap_or(0)
-                                .max(baseline_size.get(1).and_then(Value::as_u64).unwrap_or(0))
-                                as u32,
-                        )
-                    })
-                    .unwrap_or((0, 0)),
-                &diff_pixels,
-            ) {
+            if let Err(error) =
+                write_diff_image(path, &comparison_diff_image(actual_image, &baseline_image))
+            {
                 return artifact_write_failure(
                     command,
                     actual_path,
@@ -954,10 +977,75 @@ fn compare_screenshot_files_inner(
     )
 }
 
+/// Immutable decoded screenshot shared by finalization checks. Quality is computed only
+/// when requested; standalone comparisons need only the pixels.
+#[derive(Debug)]
+pub(crate) struct ScreenshotAnalysis {
+    pixels: RgbaImage,
+    path: PathBuf,
+    quality: OnceLock<Value>,
+}
+
+impl ScreenshotAnalysis {
+    fn load(path: &Path) -> Result<Self, String> {
+        Ok(Self {
+            pixels: load_rgba_image(path)?,
+            path: path.to_path_buf(),
+            quality: OnceLock::new(),
+        })
+    }
+
+    pub(crate) fn quality(&self) -> &Value {
+        self.quality
+            .get_or_init(|| analyze_screenshot_pixels(&self.path, &self.pixels))
+    }
+
+    pub(crate) fn measure_target(&self, rect: [f64; 4]) -> Value {
+        measure_saved_target_analysis(self, rect)
+    }
+}
+
+/// Lives only for one scenario's finalization. Retain at most two decoded
+/// frames, even in long runs; quality summaries survive eviction for later
+/// assertions without repeating whole-image color analysis.
+#[derive(Default)]
+pub(crate) struct ScreenshotAnalysisCache {
+    entries: HashMap<PathBuf, Result<ScreenshotAnalysis, String>>,
+    recent: VecDeque<PathBuf>,
+    quality: HashMap<PathBuf, Value>,
+}
+
+impl ScreenshotAnalysisCache {
+    pub(crate) fn get(&mut self, path: &Path) -> Result<&ScreenshotAnalysis, String> {
+        const MAX_DECODED_SCREENSHOTS: usize = 2;
+        if !self.entries.contains_key(path) {
+            if self.entries.len() == MAX_DECODED_SCREENSHOTS
+                && let Some(oldest) = self.recent.pop_front()
+                && let Some(Ok(analysis)) = self.entries.remove(&oldest)
+                && let Some(quality) = analysis.quality.get()
+            {
+                self.quality.insert(oldest, quality.clone());
+            }
+            let analysis = ScreenshotAnalysis::load(path).inspect(|analysis| {
+                if let Some(quality) = self.quality.get(path) {
+                    // This frame's immutable quality was computed before eviction.
+                    let _ = analysis.quality.set(quality.clone());
+                }
+            });
+            self.entries.insert(path.to_path_buf(), analysis);
+        }
+        self.recent.retain(|recent| recent != path);
+        self.recent.push_back(path.to_path_buf());
+        self.entries[path].as_ref().map_err(Clone::clone)
+    }
+}
+
 pub fn analyze_screenshot_file(path: &Path) -> Result<Value, String> {
-    let image = load_rgba_image(path)?;
-    let (width, height) = image.dimensions();
-    let pixels = image.to_rgba8();
+    Ok(ScreenshotAnalysis::load(path)?.quality().clone())
+}
+
+fn analyze_screenshot_pixels(path: &Path, pixels: &RgbaImage) -> Value {
+    let (width, height) = pixels.dimensions();
     let pixel_count = u64::from(width) * u64::from(height);
     let mut counts: HashMap<[u8; 4], u64> = HashMap::new();
     for pixel in pixels.pixels() {
@@ -1016,7 +1104,7 @@ pub fn analyze_screenshot_file(path: &Path) -> Result<Value, String> {
         })
         .collect::<Vec<_>>();
 
-    Ok(json!({
+    json!({
         "path": path.to_string_lossy().into_owned(),
         "width": width,
         "height": height,
@@ -1026,17 +1114,22 @@ pub fn analyze_screenshot_file(path: &Path) -> Result<Value, String> {
         "non_background_ratio": non_background_ratio,
         "low_information": !reasons.is_empty(),
         "low_information_reasons": reasons,
-    }))
+    })
 }
 
 pub fn measure_saved_target_pixels(path: &Path, rect: [f64; 4]) -> Result<Value, String> {
-    let quality = analyze_screenshot_file(path)?;
+    Ok(ScreenshotAnalysis::load(path)?.measure_target(rect))
+}
+
+fn measure_saved_target_analysis(analysis: &ScreenshotAnalysis, rect: [f64; 4]) -> Value {
+    let path = &analysis.path;
+    let quality = analysis.quality();
     if quality
         .get("low_information")
         .and_then(Value::as_bool)
         .unwrap_or(false)
     {
-        return Ok(json!({
+        return json!({
             "source_screenshot": path.to_string_lossy().into_owned(),
             "screenshot_quality": quality,
             "low_information": true,
@@ -1047,11 +1140,10 @@ pub fn measure_saved_target_pixels(path: &Path, rect: [f64; 4]) -> Result<Value,
             "target_rect": rect,
             "useful_pixel_count": 0_u64,
             "useful_pixel_ratio": 0.0,
-        }));
+        });
     }
 
-    let image = load_rgba_image(path)?;
-    let pixels = image.to_rgba8();
+    let pixels = &analysis.pixels;
     let (width, height) = pixels.dimensions();
     let x0 = rect[0].floor().max(0.0).min(f64::from(width)) as u32;
     let y0 = rect[1].floor().max(0.0).min(f64::from(height)) as u32;
@@ -1092,7 +1184,7 @@ pub fn measure_saved_target_pixels(path: &Path, rect: [f64; 4]) -> Result<Value,
         useful_pixel_count as f64 / measured_pixel_count as f64
     };
 
-    Ok(json!({
+    json!({
         "source_screenshot": path.to_string_lossy().into_owned(),
         "screenshot_quality": quality,
         "low_information": false,
@@ -1101,7 +1193,7 @@ pub fn measure_saved_target_pixels(path: &Path, rect: [f64; 4]) -> Result<Value,
         "measured_pixel_count": measured_pixel_count,
         "useful_pixel_count": useful_pixel_count,
         "useful_pixel_ratio": useful_pixel_ratio,
-    }))
+    })
 }
 
 fn result(
@@ -1198,9 +1290,9 @@ fn artifact_write_failure(
     )
 }
 
-fn load_rgba_image(path: &Path) -> Result<DynamicImage, String> {
+fn load_rgba_image(path: &Path) -> Result<RgbaImage, String> {
     image::open(path)
-        .map(|image| DynamicImage::ImageRgba8(image.to_rgba8()))
+        .map(image::DynamicImage::into_rgba8)
         .map_err(image_error_message)
 }
 
@@ -1209,29 +1301,26 @@ fn image_error_message(error: ImageError) -> String {
 }
 
 fn compare_images_with_tolerance(
-    actual_image: &DynamicImage,
-    baseline_image: &DynamicImage,
+    actual: &RgbaImage,
+    baseline: &RgbaImage,
     threshold: f64,
     channel_tolerance: Option<u8>,
-) -> (Map<String, Value>, Vec<[u8; 4]>, bool) {
-    let (actual_width, actual_height) = actual_image.dimensions();
-    let (baseline_width, baseline_height) = baseline_image.dimensions();
+) -> (Map<String, Value>, bool) {
+    let (actual_width, actual_height) = actual.dimensions();
+    let (baseline_width, baseline_height) = baseline.dimensions();
     let width = actual_width.max(baseline_width);
     let height = actual_height.max(baseline_height);
     let total_pixels = u64::from(width) * u64::from(height);
-    let actual = actual_image.to_rgba8();
-    let baseline = baseline_image.to_rgba8();
 
     let mut different_pixels = 0u64;
     let mut tolerated_different_pixels = 0u64;
     let mut max_channel_delta = 0u8;
     let mut channel_delta_total = 0u64;
-    let mut diff_pixels = Vec::with_capacity(total_pixels as usize);
 
     for y in 0..height {
         for x in 0..width {
-            let actual_pixel = pixel_from_buffer(&actual, x, y);
-            let baseline_pixel = pixel_from_buffer(&baseline, x, y);
+            let actual_pixel = pixel_from_buffer(actual, x, y);
+            let baseline_pixel = pixel_from_buffer(baseline, x, y);
             let deltas = [
                 actual_pixel[0].abs_diff(baseline_pixel[0]),
                 actual_pixel[1].abs_diff(baseline_pixel[1]),
@@ -1245,9 +1334,6 @@ fn compare_images_with_tolerance(
             }
             if actual_pixel != baseline_pixel {
                 different_pixels += 1;
-                diff_pixels.push([255, 0, 0, 255]);
-            } else {
-                diff_pixels.push([0, 0, 0, 0]);
             }
             if pixel_max_delta > channel_tolerance.unwrap_or(0) {
                 tolerated_different_pixels += 1;
@@ -1319,9 +1405,22 @@ fn compare_images_with_tolerance(
 
     (
         metrics,
-        diff_pixels,
         size_match && tolerated_different_ratio <= threshold,
     )
+}
+
+fn comparison_diff_image(actual: &RgbaImage, baseline: &RgbaImage) -> RgbaImage {
+    let width = actual.width().max(baseline.width());
+    let height = actual.height().max(baseline.height());
+    RgbaImage::from_fn(width, height, |x, y| {
+        Rgba(
+            if pixel_from_buffer(actual, x, y) != pixel_from_buffer(baseline, x, y) {
+                [255, 0, 0, 255]
+            } else {
+                [0, 0, 0, 0]
+            },
+        )
+    })
 }
 
 fn pixel_from_buffer(image: &ImageBuffer<Rgba<u8>, Vec<u8>>, x: u32, y: u32) -> [u8; 4] {
@@ -1341,23 +1440,10 @@ fn write_metrics(path: &Path, metrics: &Map<String, Value>) -> std::io::Result<(
     )
 }
 
-fn write_diff_image(
-    path: &Path,
-    size: (u32, u32),
-    pixels: &[[u8; 4]],
-) -> Result<(), std::io::Error> {
+fn write_diff_image(path: &Path, image: &RgbaImage) -> Result<(), std::io::Error> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let image = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_vec(
-        size.0,
-        size.1,
-        pixels
-            .iter()
-            .flat_map(|pixel| pixel.iter().copied())
-            .collect(),
-    )
-    .ok_or_else(|| std::io::Error::other("invalid diff image buffer"))?;
     image
         .save(path)
         .map_err(|error| std::io::Error::other(error.to_string()))
@@ -2950,3 +3036,7 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "screenshots_analysis_tests.rs"]
+mod analysis_tests;

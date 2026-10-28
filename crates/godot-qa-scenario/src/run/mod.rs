@@ -1772,9 +1772,21 @@ fn finalize_runtime_run(
     } else {
         runtime_result
     };
-    let runtime_result = apply_screenshot_quality(command, scenario, runtime_result);
-    let runtime_result =
-        apply_saved_snapshot_pixels(command, config, scenario, artifacts, runtime_result);
+    let mut screenshot_analysis = screenshots::ScreenshotAnalysisCache::default();
+    let runtime_result = apply_screenshot_quality_cached(
+        command,
+        scenario,
+        runtime_result,
+        &mut screenshot_analysis,
+    );
+    let runtime_result = apply_saved_snapshot_pixels(
+        command,
+        config,
+        scenario,
+        artifacts,
+        runtime_result,
+        &mut screenshot_analysis,
+    );
     let runtime_result = apply_visual_risk_analysis(command, scenario, runtime_result, options);
     // Fold a single-run `layout_audit` (zero/one viewport) over the run's final
     // snapshot BEFORE screenshot-match compares, so layout + screenshot_match can
@@ -1782,7 +1794,7 @@ fn finalize_runtime_run(
     // upstream (runtime_scenario_payload), so this is a no-op there — the matrix
     // path applies layout auditing itself, with no double-application.
     let runtime_result = apply_layout_audit(command, scenario, artifacts, runtime_result);
-    if use_runtime_request {
+    let result = if use_runtime_request {
         apply_screenshot_matches(
             command,
             scenario,
@@ -1790,10 +1802,12 @@ fn finalize_runtime_run(
             config,
             artifacts,
             runtime_result,
+            &mut screenshot_analysis,
         )
     } else {
-        persist_result(&artifacts.result_path, runtime_result)
-    }
+        runtime_result
+    };
+    persist_result(&artifacts.result_path, result)
 }
 
 include!("visual_preflight.rs");

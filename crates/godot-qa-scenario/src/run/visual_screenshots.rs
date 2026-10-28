@@ -1,9 +1,24 @@
 // Extracted from run.rs; included by mod.rs to preserve the original module namespace.
 
+#[cfg(test)]
 fn apply_screenshot_quality(
     command: &str,
     scenario: &Value,
+    result: CommandResult,
+) -> CommandResult {
+    apply_screenshot_quality_cached(
+        command,
+        scenario,
+        result,
+        &mut screenshots::ScreenshotAnalysisCache::default(),
+    )
+}
+
+fn apply_screenshot_quality_cached(
+    command: &str,
+    scenario: &Value,
     mut result: CommandResult,
+    cache: &mut screenshots::ScreenshotAnalysisCache,
 ) -> CommandResult {
     if !scenario_requests_screenshot(scenario) {
         return result;
@@ -43,9 +58,10 @@ fn apply_screenshot_quality(
         if !screenshot_path.is_file() {
             continue;
         }
-        let Ok(quality) = screenshots::analyze_screenshot_file(&screenshot_path) else {
+        let Ok(analysis) = cache.get(&screenshot_path) else {
             continue;
         };
+        let quality = analysis.quality();
         let low_information = quality
             .get("low_information")
             .and_then(Value::as_bool)
@@ -63,7 +79,7 @@ fn apply_screenshot_quality(
                     "screenshot appears blank, too small, or visually low-information".to_string(),
                 ),
                 expected: Some(json!("screenshot with useful visual evidence")),
-                actual: Some(quality),
+                actual: Some(quality.clone()),
                 severity: Some("error".to_string()),
                 artifacts: Some(Map::from_iter([(
                     "screenshot".to_string(),
@@ -118,10 +134,11 @@ fn apply_screenshot_matches(
     config: &ProjectConfig,
     artifacts: &artifacts::RunArtifacts,
     runtime_result: CommandResult,
+    cache: &mut screenshots::ScreenshotAnalysisCache,
 ) -> CommandResult {
     let screenshot_assertions = screenshot_match_assertions(scenario);
     if screenshot_assertions.is_empty() {
-        return persist_result(&artifacts.result_path, runtime_result);
+        return runtime_result;
     }
 
     let snapshot_artifacts = runtime_result
@@ -165,7 +182,7 @@ fn apply_screenshot_matches(
                     .join("screenshot.png")
             });
         let label = format!("screenshot-{:02}-{snapshot_name}", index + 1);
-        let compare_result = screenshots::compare_screenshot_files(
+        let compare_result = screenshots::compare_screenshot_files_cached(
             command,
             &actual_path,
             &baseline_path,
@@ -185,6 +202,7 @@ fn apply_screenshot_matches(
                     .join("diffs")
                     .join(format!("{label}.metrics.json")),
             ),
+            cache,
         );
         if compare_result.ok {
             continue;
@@ -234,21 +252,18 @@ fn apply_screenshot_matches(
             Some(&final_failures),
         ),
     );
-    persist_result(
-        &artifacts.result_path,
-        CommandResult {
-            ok: final_ok,
-            command: runtime_result.command,
-            message: if final_ok {
-                "scenario run passed".to_string()
-            } else {
-                "scenario run failed".to_string()
-            },
-            data,
-            failures: final_failures,
-            exit_code: if final_ok { 0 } else { 1 },
+    CommandResult {
+        ok: final_ok,
+        command: runtime_result.command,
+        message: if final_ok {
+            "scenario run passed".to_string()
+        } else {
+            "scenario run failed".to_string()
         },
-    )
+        data,
+        failures: final_failures,
+        exit_code: if final_ok { 0 } else { 1 },
+    }
 }
 
 fn refresh_outcome_summary(result: &mut CommandResult) {
@@ -555,6 +570,7 @@ fn apply_saved_snapshot_pixels(
     scenario: &Value,
     artifacts: &artifacts::RunArtifacts,
     mut result: CommandResult,
+    cache: &mut screenshots::ScreenshotAnalysisCache,
 ) -> CommandResult {
     let assertions = saved_snapshot_pixel_assertions(scenario);
     if assertions.is_empty() || !result.ok || !result.failures.is_empty() {
@@ -566,20 +582,36 @@ fn apply_saved_snapshot_pixels(
         .and_then(Value::as_str)
         .unwrap_or_default();
     let mut outcomes = Vec::new();
+    let mut contexts = std::collections::HashMap::new();
     for assertion in assertions {
         let snapshot = assertion
             .get("snapshot")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        let loaded = match snapshot_context::load_snapshot_context(
-            &config.artifacts_dir,
-            scenario_name,
-            Some(&artifacts.run_id),
-            Some(snapshot),
-            command,
-        ) {
+        // Bound large tree/UI contexts independently of the image cache.
+        if contexts.len() == 2
+            && !contexts.contains_key(snapshot)
+            && let Some(previous) = contexts.keys().next().cloned()
+        {
+            contexts.remove(&previous);
+        }
+        let loaded = contexts.entry(snapshot.to_string()).or_insert_with(|| {
+            snapshot_context::load_snapshot_context(
+                &config.artifacts_dir,
+                scenario_name,
+                Some(&artifacts.run_id),
+                Some(snapshot),
+                command,
+            )
+            .map(|loaded| {
+                let context = assertions::SavedSnapshotPixelContext::new(&loaded.snapshot_context);
+                (loaded, context)
+            })
+        });
+        let (loaded, context) = match loaded {
             Ok(loaded) => loaded,
-            Err(mut failure) => {
+            Err(failure) => {
+                let mut failure = failure.clone();
                 failure.command = Some(command.to_string());
                 result.failures.push(failure);
                 continue;
@@ -587,8 +619,9 @@ fn apply_saved_snapshot_pixels(
         };
         match assertions::evaluate_saved_snapshot_pixels(
             &assertion,
-            &loaded.snapshot_context,
+            context,
             &loaded.artifacts,
+            cache,
         ) {
             Ok(outcome) => {
                 let mut outcome_data = Map::from_iter([
@@ -597,7 +630,10 @@ fn apply_saved_snapshot_pixels(
                         "assertion".to_string(),
                         json!({"saved_snapshot_pixels": assertion.clone()}),
                     ),
-                    ("artifacts".to_string(), Value::Object(loaded.artifacts)),
+                    (
+                        "artifacts".to_string(),
+                        Value::Object(loaded.artifacts.clone()),
+                    ),
                 ]);
                 for (key, value) in outcome.data {
                     outcome_data.insert(key, value);

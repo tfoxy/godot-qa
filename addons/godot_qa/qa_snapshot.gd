@@ -486,7 +486,7 @@ static func save_viewport_screenshot(viewport: Viewport, path: String, allow_fal
 		image.convert(Image.FORMAT_RGBA8)
 	# Strict callers retain real blank pixels as evidence; only the portable
 	# capture path substitutes its diagnostic image for an empty viewport.
-	if _image_is_blank_or_transparent(image) and allow_fallback:
+	if allow_fallback and _image_is_blank_or_transparent(image):
 		return _write_fallback_screenshot(viewport, path)
 	var png_image := Image.create(image.get_width(), image.get_height(), false, Image.FORMAT_RGBA8)
 	png_image.blit_rect(
@@ -657,21 +657,7 @@ static func _write_fallback_screenshot(viewport: Viewport, path: String) -> int:
 	var fallback_size := viewport.get_visible_rect().size
 	var width := max(int(fallback_size.x), 1)
 	var height := max(int(fallback_size.y), 1)
-	var fallback_image := Image.create(
-		width,
-		height,
-		false,
-		Image.FORMAT_RGBA8,
-	)
-	for y in range(height):
-		for x in range(width):
-			var tile := int(floor(float(x) / 32.0)) + int(floor(float(y) / 32.0))
-			var color := Color(0.12, 0.14, 0.18, 1.0)
-			if tile % 2 == 0:
-				color = Color(0.24, 0.28, 0.34, 1.0)
-			if x < 12 or y < 12 or x >= width - 12 or y >= height - 12:
-				color = Color(0.64, 0.72, 0.82, 1.0)
-			fallback_image.set_pixel(x, y, color)
+	var fallback_image := _create_fallback_screenshot_image(width, height)
 	var png_buffer := fallback_image.save_png_to_buffer()
 	if png_buffer.is_empty():
 		png_buffer = Marshalls.base64_to_raw(HEADLESS_FALLBACK_PNG_BASE64)
@@ -680,6 +666,23 @@ static func _write_fallback_screenshot(viewport: Viewport, path: String) -> int:
 		return ERR_CANT_OPEN
 	file.store_buffer(png_buffer)
 	return OK
+
+# Keep the diagnostic pixels identical to the original per-pixel pattern while
+# filling tiles in native code. The border covers the entire image at tiny sizes.
+static func _create_fallback_screenshot_image(width: int, height: int) -> Image:
+	var image := Image.create(width, height, false, Image.FORMAT_RGBA8)
+	image.fill(Color(0.64, 0.72, 0.82, 1.0))
+	var interior := Rect2i(12, 12, max(width - 24, 0), max(height - 24, 0))
+	if not interior.has_area():
+		return image
+	image.fill_rect(interior, Color(0.12, 0.14, 0.18, 1.0))
+	for y in range(0, height, 32):
+		for x in range(0, width, 32):
+			if ((x >> 5) + (y >> 5)) % 2 == 0:
+				var tile := Rect2i(x, y, 32, 32).intersection(interior)
+				if tile.has_area():
+					image.fill_rect(tile, Color(0.24, 0.28, 0.34, 1.0))
+	return image
 
 static func _image_is_blank_or_transparent(image: Image) -> bool:
 	var width := image.get_width()
