@@ -62,78 +62,17 @@ pub fn isolate_visual_layers(
         return write_failure(&frames_dir, error);
     }
 
-    if let Err(result) = set_visual_layer_mode(config, &options, "normal", None) {
-        return result;
-    }
-    let baseline_path = frames_dir.join("baseline.png");
-    let baseline = match capture_named_frame(config, "baseline", &baseline_path) {
-        Ok(capture) => capture,
+    let (frames, layer_reports) = match capture_isolation_frames(
+        &mut LiveIsolationCommands {
+            config,
+            options: &options,
+        },
+        &frames_dir,
+        &layer_ids,
+    ) {
+        Ok(captures) => captures,
         Err(result) => return result,
     };
-
-    let mut frames = vec![manifest_frame(0, "baseline", &baseline_path, &baseline)];
-    let mut layer_reports = Vec::new();
-    let mut frame_index = 1_i64;
-
-    for layer_id in &layer_ids {
-        if let Err(result) = set_visual_layer_mode(config, &options, "only", Some(layer_id)) {
-            return result;
-        }
-        let only_path = frames_dir.join(format!("{layer_id}_only.png"));
-        let only = match capture_named_frame(config, &format!("{layer_id}_only"), &only_path) {
-            Ok(capture) => capture,
-            Err(result) => return result,
-        };
-        frames.push(manifest_frame(
-            frame_index,
-            &format!("{layer_id}_only"),
-            &only_path,
-            &only,
-        ));
-        frame_index += 1;
-
-        if let Err(result) = set_visual_layer_mode(config, &options, "without", Some(layer_id)) {
-            return result;
-        }
-        let without_path = frames_dir.join(format!("{layer_id}_without.png"));
-        let without =
-            match capture_named_frame(config, &format!("{layer_id}_without"), &without_path) {
-                Ok(capture) => capture,
-                Err(result) => return result,
-            };
-        frames.push(manifest_frame(
-            frame_index,
-            &format!("{layer_id}_without"),
-            &without_path,
-            &without,
-        ));
-        frame_index += 1;
-
-        let diff_path = frames_dir.join(format!("{layer_id}_diff.png"));
-        let diff = match write_diff_image(&baseline_path, &without_path, &diff_path) {
-            Ok(diff) => diff,
-            Err(result) => return result,
-        };
-        let diff_frame = image_manifest_frame(
-            frame_index,
-            &format!("{layer_id}_diff"),
-            &diff_path,
-            diff.get("width"),
-            diff.get("height"),
-        );
-        frames.push(diff_frame);
-        frame_index += 1;
-        layer_reports.push(json!({
-            "layer": layer_id,
-            "only": path_string(&only_path),
-            "without": path_string(&without_path),
-            "diff": diff,
-        }));
-    }
-
-    if let Err(result) = set_visual_layer_mode(config, &options, "normal", None) {
-        return result;
-    }
 
     let manifest_path = out_dir.join("manifest.json");
     let manifest = json!({
@@ -201,6 +140,121 @@ pub fn isolate_visual_layers(
         ]),
         failures: Vec::new(),
         exit_code: 0,
+    }
+}
+
+// Keep all scene mutations inside this operation so every error path attempts cleanup.
+trait IsolationCommands {
+    fn set_mode(&mut self, mode: &str, layer: Option<&str>) -> Result<(), CommandResult>;
+    fn capture(&mut self, index: i64, label: &str, path: &Path) -> Result<Value, CommandResult>;
+    fn diff(
+        &mut self,
+        baseline: &Path,
+        without: &Path,
+        path: &Path,
+    ) -> Result<Value, CommandResult>;
+}
+
+struct LiveIsolationCommands<'a> {
+    config: &'a ProjectConfig,
+    options: &'a VisualIsolateOptions,
+}
+
+impl IsolationCommands for LiveIsolationCommands<'_> {
+    fn set_mode(&mut self, mode: &str, layer: Option<&str>) -> Result<(), CommandResult> {
+        set_visual_layer_mode(self.config, self.options, mode, layer)
+    }
+
+    fn capture(&mut self, index: i64, label: &str, path: &Path) -> Result<Value, CommandResult> {
+        let capture = capture_named_frame(self.config, label, path)?;
+        Ok(manifest_frame(index, label, path, &capture))
+    }
+
+    fn diff(
+        &mut self,
+        baseline: &Path,
+        without: &Path,
+        path: &Path,
+    ) -> Result<Value, CommandResult> {
+        write_diff_image(baseline, without, path)
+    }
+}
+
+fn capture_isolation_frames(
+    commands: &mut impl IsolationCommands,
+    frames_dir: &Path,
+    layer_ids: &[String],
+) -> Result<(Vec<Value>, Vec<Value>), CommandResult> {
+    let outcome = (|| {
+        // A failed fixture call may already have mutated the scene, so even this first
+        // failure must go through the final normal-mode cleanup attempt.
+        commands.set_mode("normal", None)?;
+        let baseline_path = frames_dir.join("baseline.png");
+        let baseline = commands.capture(0, "baseline", &baseline_path)?;
+        let mut frames = vec![baseline];
+        let mut layer_reports = Vec::new();
+        let mut frame_index = 1_i64;
+
+        for layer_id in layer_ids {
+            commands.set_mode("only", Some(layer_id))?;
+            let only_label = format!("{layer_id}_only");
+            let only_path = frames_dir.join(format!("{only_label}.png"));
+            frames.push(commands.capture(frame_index, &only_label, &only_path)?);
+            frame_index += 1;
+
+            commands.set_mode("without", Some(layer_id))?;
+            let without_label = format!("{layer_id}_without");
+            let without_path = frames_dir.join(format!("{without_label}.png"));
+            frames.push(commands.capture(frame_index, &without_label, &without_path)?);
+            frame_index += 1;
+
+            let diff_label = format!("{layer_id}_diff");
+            let diff_path = frames_dir.join(format!("{diff_label}.png"));
+            let diff = commands.diff(&baseline_path, &without_path, &diff_path)?;
+            frames.push(image_manifest_frame(
+                frame_index,
+                &diff_label,
+                &diff_path,
+                diff.get("width"),
+                diff.get("height"),
+            ));
+            frame_index += 1;
+            layer_reports.push(json!({
+                "layer": layer_id,
+                "only": path_string(&only_path),
+                "without": path_string(&without_path),
+                "diff": diff,
+            }));
+        }
+        Ok((frames, layer_reports))
+    })();
+
+    match (outcome, commands.set_mode("normal", None)) {
+        (outcome, Ok(())) => outcome,
+        (Err(mut original), Err(cleanup)) => {
+            original.failures.push(cleanup_failure(&cleanup));
+            Err(original)
+        }
+        (Ok(_), Err(mut cleanup)) => {
+            cleanup.failures.push(cleanup_failure(&cleanup));
+            Err(cleanup)
+        }
+    }
+}
+
+fn cleanup_failure(result: &CommandResult) -> FailureDetail {
+    FailureDetail {
+        kind: "visual_isolation_cleanup_failed".to_string(),
+        command: Some(COMMAND.to_string()),
+        message: Some("could not restore visual isolation to normal mode".to_string()),
+        expected: Some(json!({"mode": "normal"})),
+        actual: Some(json!({
+            "command": result.command,
+            "message": result.message,
+            "data": result.data,
+            "failures": result.failures,
+        })),
+        ..FailureDetail::default()
     }
 }
 
@@ -377,10 +431,13 @@ fn write_diff_image(
     } else {
         json!({"x": min_x, "y": min_y, "width": max_x - min_x + 1, "height": max_y - min_y + 1})
     };
-    let changed_width_ratio = (max_x - min_x + 1) as f64 / width as f64;
-    let changed_height_ratio = (max_y - min_y + 1) as f64 / height as f64;
-    let rectangular_warning =
-        changed > 0 && changed_height_ratio > 0.75 && !(0.35..=0.65).contains(&changed_width_ratio);
+    let rectangular_warning = if changed == 0 {
+        false
+    } else {
+        let changed_width_ratio = (max_x - min_x + 1) as f64 / width as f64;
+        let changed_height_ratio = (max_y - min_y + 1) as f64 / height as f64;
+        changed_height_ratio > 0.75 && !(0.35..=0.65).contains(&changed_width_ratio)
+    };
     Ok(json!({
         "path": path_string(diff_path),
         "width": width,
@@ -478,5 +535,195 @@ fn invalid_params(field: &str, actual: Value, expected: Value) -> CommandResult 
             ..FailureDetail::default()
         }],
         exit_code: 2,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct MockCommands {
+        calls: Vec<String>,
+        fail_at: Option<usize>,
+        fail_cleanup: bool,
+        mode: String,
+    }
+
+    impl MockCommands {
+        fn step(&mut self, call: String) -> Result<(), CommandResult> {
+            let index = self.calls.len();
+            let cleanup = call == "mode:normal" && index > 0;
+            self.calls.push(call.clone());
+            if self.fail_at == Some(index) || (cleanup && self.fail_cleanup) {
+                return Err(invalid_params(
+                    "injected phase",
+                    json!(call),
+                    json!("success"),
+                ));
+            }
+            Ok(())
+        }
+    }
+
+    impl IsolationCommands for MockCommands {
+        fn set_mode(&mut self, mode: &str, _layer: Option<&str>) -> Result<(), CommandResult> {
+            // A primary fixture call may mutate before failing; failed cleanup
+            // may instead leave the last isolation mode active.
+            if !(mode == "normal" && !self.calls.is_empty() && self.fail_cleanup) {
+                self.mode = mode.to_string();
+            }
+            self.step(format!("mode:{mode}"))
+        }
+
+        fn capture(
+            &mut self,
+            index: i64,
+            label: &str,
+            path: &Path,
+        ) -> Result<Value, CommandResult> {
+            self.step(format!("capture:{label}"))?;
+            Ok(json!({"index": index, "label": label, "path": relative_frame_path(path)}))
+        }
+
+        fn diff(
+            &mut self,
+            _baseline: &Path,
+            _without: &Path,
+            path: &Path,
+        ) -> Result<Value, CommandResult> {
+            self.step("diff".to_string())?;
+            Ok(json!({"path": path_string(path), "width": 8, "height": 8}))
+        }
+    }
+
+    fn mock_commands(fail_at: Option<usize>, fail_cleanup: bool) -> MockCommands {
+        MockCommands {
+            calls: Vec::new(),
+            fail_at,
+            fail_cleanup,
+            mode: "normal".to_string(),
+        }
+    }
+
+    #[test]
+    fn every_failed_capture_phase_attempts_normal_cleanup_and_preserves_primary_failure() {
+        let phases = [
+            "mode:normal",
+            "capture:baseline",
+            "mode:only",
+            "capture:layer_only",
+            "mode:without",
+            "capture:layer_without",
+            "diff",
+        ];
+        for (index, phase) in phases.iter().enumerate() {
+            for fail_cleanup in [false, true] {
+                let mut commands = mock_commands(Some(index), fail_cleanup);
+                let result = capture_isolation_frames(
+                    &mut commands,
+                    Path::new("frames"),
+                    &["layer".to_string()],
+                )
+                .unwrap_err();
+                assert_eq!(
+                    commands.calls.last().unwrap(),
+                    "mode:normal",
+                    "phase {phase}"
+                );
+                assert_eq!(commands.calls.len(), index + 2, "phase {phase}");
+                if !fail_cleanup {
+                    assert_eq!(commands.mode, "normal");
+                } else if index >= 2 {
+                    assert_ne!(commands.mode, "normal");
+                }
+                assert_eq!(result.failures[0].actual, Some(json!(phase)));
+                assert_eq!(result.exit_code, 2);
+                assert_eq!(result.failures.len(), if fail_cleanup { 2 } else { 1 });
+                if fail_cleanup {
+                    let cleanup = &result.failures[1];
+                    assert_eq!(cleanup.kind, "visual_isolation_cleanup_failed");
+                    assert_eq!(cleanup.expected, Some(json!({"mode": "normal"})));
+                    assert_eq!(
+                        cleanup.actual.as_ref().unwrap()["failures"][0]["actual"],
+                        "mode:normal"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn successful_captures_restore_normal_before_artifact_finalization() {
+        let mut commands = mock_commands(None, false);
+        let (frames, reports) =
+            capture_isolation_frames(&mut commands, Path::new("frames"), &["layer".to_string()])
+                .unwrap();
+        assert_eq!(commands.calls.len(), 8);
+        assert_eq!(commands.calls.last().unwrap(), "mode:normal");
+        assert_eq!(frames.len(), 4);
+        assert_eq!(frames[0]["label"], "baseline");
+        assert_eq!(frames[3]["label"], "layer_diff");
+        assert_eq!(reports[0]["layer"], "layer");
+    }
+
+    #[test]
+    fn cleanup_failure_prevents_success_and_retains_native_failure() {
+        let mut commands = mock_commands(None, true);
+        let result =
+            capture_isolation_frames(&mut commands, Path::new("frames"), &["layer".to_string()])
+                .unwrap_err();
+        assert_eq!(result.failures[0].kind, "invalid_params");
+        assert_eq!(result.failures[1].kind, "visual_isolation_cleanup_failed");
+        assert!(!result.ok);
+    }
+
+    #[test]
+    fn diff_handles_identical_images_and_preserves_changed_bounds_and_pixels() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "godot-qa-visual-isolate-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let baseline_path = root.join("baseline.png");
+        let without_path = root.join("without.png");
+        let diff_path = root.join("diff.png");
+        let baseline = ImageBuffer::from_pixel(4, 4, Rgba([20_u8, 30, 40, 255]));
+        baseline.save(&baseline_path).unwrap();
+        baseline.save(&without_path).unwrap();
+        let identical = write_diff_image(&baseline_path, &without_path, &diff_path).unwrap();
+        assert_eq!(identical["changed_pixel_count"], 0);
+        assert_eq!(identical["changed_pixel_ratio"], 0.0);
+        assert_eq!(identical["changed_pixel_bounds"], Value::Null);
+        assert_eq!(
+            identical["straight_edge_or_rectangular_region_warning"],
+            false
+        );
+        let decoded = image::open(&diff_path).unwrap().to_rgba8();
+        assert!(decoded.pixels().all(|pixel| pixel.0 == [0, 0, 0, 255]));
+
+        let mut without = baseline;
+        for y in 0..4 {
+            without.put_pixel(3, y, Rgba([33, 30, 40, 255]));
+        }
+        // Differences at or below the existing threshold stay excluded.
+        without.put_pixel(0, 0, Rgba([32, 30, 40, 255]));
+        without.save(&without_path).unwrap();
+        let changed = write_diff_image(&baseline_path, &without_path, &diff_path).unwrap();
+        assert_eq!(changed["changed_pixel_count"], 4);
+        assert_eq!(changed["changed_pixel_ratio"], 0.25);
+        assert_eq!(
+            changed["changed_pixel_bounds"],
+            json!({"x": 3, "y": 0, "width": 1, "height": 4})
+        );
+        assert_eq!(changed["straight_edge_or_rectangular_region_warning"], true);
+        let decoded = image::open(&diff_path).unwrap().to_rgba8();
+        assert_eq!(decoded.get_pixel(3, 0).0, [255, 64, 64, 255]);
+        assert_eq!(decoded.get_pixel(0, 0).0, [0, 0, 0, 255]);
+        fs::remove_dir_all(root).unwrap();
     }
 }
