@@ -4,7 +4,7 @@ Use this reference for setup, one-shot checks, and live investigation. Every com
 
 ## Setup and focused checks
 
-`doctor --project <project> --json` checks readiness and reports non-failing warnings, including incompatible binaries on `PATH`. Keep the CLI and copied/linked addon versions aligned. For initial setup, copy the matching `addons/godot_qa` into the project's `addons/` directory and enable the Godot QA plugin. Keep QA mode test-only; normal game runs and release exports must not expose the bridge.
+`doctor --project <project> --json` checks readiness and reports non-failing warnings, including incompatible binaries on `PATH`. Keep the CLI and copied/linked addon versions aligned. In source-based development, identical version strings do not prove identical builds: confirm which executable runs and which checkout supplied the copied or linked addon. For initial setup, copy the matching `addons/godot_qa` into the project's `addons/` directory and enable the Godot QA plugin. Keep QA mode test-only; normal game runs and release exports must not expose the bridge.
 
 Configuration lives under the selected project: `qa/config.yaml` and optional ignored `qa/config.local.yaml`. Local overrides take precedence; inspect them before changing launch options. On a fresh checkout, run:
 
@@ -17,13 +17,15 @@ godot-qa check --project <project> --tests --json
 
 Choose only the checks relevant to the task. `check --tests` runs explicit `qa/tests/manifest.json` entries; it does not discover arbitrary test frameworks. `check --all-scenes` may encounter intentional negative fixtures. Script load/compile checks do not instantiate the script or exercise gameplay.
 
-`install-skills --project <project> --json` installs this embedded package into `.agents/skills/godot-qa`. Reinstallation replaces that skill directory, so maintain custom instructions elsewhere.
+`install-skills --project <project> --json` installs the package embedded in that executable into `.agents/skills/godot-qa`. After updating skill sources, rebuild the CLI before reinstalling; an older binary embeds older instructions. Reinstallation replaces that skill directory, so maintain custom instructions elsewhere.
 
 ## Live inspection and input
 
 Check `session status` before starting or reusing a session. Inspect `tree`, `ui`, `focus`, or `focus graph` to locate controls; `node inspect <locator>` gives focused runtime state. These commands accept `--project <project> --json`.
 
 For gameplay inputs, choose `input tap`, `input hold`/`input release`, `input click`, `input key`, `input type`, or `input joy button`/`input joy motion`. Mouse wheel, touch, and drag commands are also available; inspect their `--help` for coordinates, durations, and device IDs. Release held input after a test.
+
+Successful input dispatch does not establish that the game handled it; assert the resulting UI or semantic state. For resolution-dependent clicks, reproduce the same initial state and locator interaction at each relevant `session start --viewport WIDTHxHEIGHT`, then inspect rendered framing, transforms, focus, and overlays. Locator clicks account for viewport/canvas scaling and support Controls in the active root window viewport; a target in a SubViewport is unsupported. Do not treat logical UI rectangles as raw mouse coordinates or replace a failing mouse test with keyboard navigation when mouse behavior is the contract.
 
 Windowed realtime sessions are the default. For non-visual automation only:
 

@@ -11,9 +11,9 @@ godot-qa screenshot capture --project <project> --out .qa/artifacts/manual/curre
 godot-qa screenshot compare --project <project> --actual .qa/artifacts/manual/current.png --baseline qa/baselines/current.png --json
 ```
 
-For an existing approved baseline, `screenshot compare --live --baseline <path>` captures and compares the active windowed session. `--scenario <scenario>` selects saved scenario comparison inputs. Pass `--project <project> --json` in either case. Read the result and inspect actual, baseline, and diff images; baseline approval remains an explicit human action.
+For an existing approved baseline, `screenshot compare --live --baseline <path>` captures and compares the active windowed session. To compare saved scenario evidence, use its returned screenshot path with `--actual`. Pass `--project <project> --json` in either case. Read the result and inspect actual, baseline, and diff images; baseline approval remains an explicit human action.
 
-Capture guards `--require-visible`, `--require-hidden`, and `--require-state` can ensure the intended UI state before saving. Use `--setup-script <path>` only for reviewed setup steps. For transitions, use `screenshot sequence --frames N --every N --out <dir>` or `--seconds N --fps N`, then `screenshot contact-sheet <dir> --out <png>`. Run captures sequentially on a session.
+Capture guards `--require-visible`, `--require-hidden`, and `--require-state` can ensure the intended UI state before saving. Use `--setup-script <path>` only for reviewed setup steps. For transitions, use `screenshot sequence --frames N --every N --out <dir>` or `--seconds N --fps N`, then `screenshot contact-sheet <dir> --columns 5 --thumb-width 320 --out <png>`. Contact sheets consume the sequence manifest and its ordered frames, not an arbitrary image folder. Run captures sequentially on a session. Captures add runtime work; use bounded samples and inspect recorded frame/time evidence before interpreting a sequence as unperturbed animation timing.
 
 For what the user sees at startup, `screenshot assert-startup-presented --scene res://... --viewport 1280x720` captures compositor pixels before a QA viewport capture. It requires Linux Gamescope and an owned display. Without a baseline, it compares presented pixels against the later viewport image; with `--baseline`, it checks that image. Exact channel comparison is default; `--channel-tolerance 1` allows one 8-bit rounding level independently of the differing-pixel threshold. Do not loosen tolerances simply to pass.
 
@@ -24,7 +24,7 @@ godot-qa layout audit --project <project> --scene res://ui/settings_menu.tscn --
 godot-qa layout audit-current --project <project> --scenario <scenario> --live --json
 ```
 
-Use fresh scene audits for startup geometry and current audits for state reached through interaction. `visual audit` measures contrast/readability for explicit targets. `visual isolate` compares layers through a project visual-layer provider plus fixture driver. Inspect command help and existing project adapters before invoking these specialized workflows.
+Use fresh scene audits for startup geometry and current audits for state reached through interaction. When comparing resolutions, check actual screenshot dimensions, crop/letterboxing, and whether the intended content is in frame before attributing a difference to game layout. `visual audit` measures contrast/readability for explicit targets. `visual isolate` compares layers through a project visual-layer provider plus fixture driver. Target-hidden pixel assertions and layer isolation compare sequential captures: prepare a stable visual state when animation, camera movement, or particles would otherwise contaminate the differences. Inspect command help and existing project adapters before invoking these specialized workflows.
 
 ## Find and interpret evidence
 
@@ -35,7 +35,7 @@ godot-qa artifact query <run-root> --snapshot <name> --qa-id start_button --visi
 
 `summarize` indexes evidence; use `--no-write` when reviewing without creating its index artifact. Narrow with `--type`, `--warnings-only`, or `--expect` as needed. Queries inspect saved snapshots, not the current game.
 
-Default run locations are `.qa/artifacts/<scenario>/<run-id>/` and `.qa/artifacts/live/<session-id>/`. Snapshot bundles normally include `tree.json`, `ui.json`, `focus.json`, `errors.json`, and, when enabled, `screenshot.png`. Follow returned paths for configured artifact roots. Preserve the source run identity and failed results when sharing evidence.
+Default run locations are `.qa/artifacts/<scenario>/<run-id>/` and `.qa/artifacts/live/<session-id>/`. Snapshot bundles normally include `tree.json`, `ui.json`, `focus.json`, `errors.json`, and, when enabled, `screenshot.png`. Follow returned paths for configured artifact roots. Bind findings to the selected project, source revision/build when known, run identity, and capture time; historical evidence may describe an earlier source state. Keep failed runs when rerunning or sharing evidence, and distinguish their findings from current results.
 
 ## Portable export
 

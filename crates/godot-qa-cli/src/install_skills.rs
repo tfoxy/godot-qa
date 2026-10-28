@@ -28,6 +28,10 @@ const BUNDLED_FILES: &[(&str, &str)] = &[
         include_str!("../../../skills/godot-qa/references/scenario-authoring.md"),
     ),
     (
+        "references/asset-trials.md",
+        include_str!("../../../skills/godot-qa/references/asset-trials.md"),
+    ),
+    (
         "references/bundle-gates.md",
         include_str!("../../../skills/godot-qa/references/bundle-gates.md"),
     ),

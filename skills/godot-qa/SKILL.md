@@ -17,7 +17,7 @@ Use the installed `godot-qa` CLI to gather evidence from the actual Godot runtim
    godot-qa scenario list --project <project> --json
    ```
 
-   Inspect warnings as well as failures. Resolve missing or mismatched CLI/addon installations before trusting results. For fresh checkouts or import problems, use `godot-qa import --project <project> --json`.
+   Inspect warnings as well as failures. Resolve missing or mismatched CLI/addon installations before trusting results. For copied or development addons, follow project revision pins: equal version strings alone do not prove matching builds. For fresh checkouts or import problems, use `godot-qa import --project <project> --json`.
 3. Run the narrowest existing scenario that exercises the requested behavior:
 
    ```bash
@@ -46,7 +46,7 @@ Discover targets from runtime state rather than assuming the example locator exi
 ## Evidence and constraints
 
 - Read the result's `ok`, failures, warnings, and artifact paths together with the exit status. Report the command, target, expected and actual state, and relevant evidence. A startup or bridge failure does not prove a gameplay failure.
-- Evidence defaults to the selected project's `.qa/artifacts/`; follow returned paths when configured otherwise. Run `godot-qa artifact summarize <run-root> --json` before opening individual files. Inspect relevant images and structured data before making visual or behavioral claims.
+- Evidence defaults to the selected project's `.qa/artifacts/`; follow returned paths when configured otherwise. Run `godot-qa artifact summarize <run-root> --json` before opening individual files. Confirm the evidence's project, run, and source state under review; inspect relevant images and structured data before making visual or behavioral claims.
 - Godot is authoritative for live state, focus, layout, and pixels. Source files alone cannot establish runtime correctness. Screenshot evidence requires real rendered pixels; use a windowed session. Headless diagnostic images cannot validate appearance.
 - Serialize live bridge commands within each session, including long captures and profiles. Use `session run-script` for sequenced reviews. Treat `session_bridge_busy` as contention, not game-state evidence.
 - Preserve warm, warm-strict, and bounded parallel execution settings. Investigate failures instead of disabling strictness to obtain a pass.
@@ -61,6 +61,7 @@ Discover targets from runtime state rather than assuming the example locator exi
 | Write scenarios, set up fixtures, review recordings, simulate controllers | [Scenario authoring](references/scenario-authoring.md) |
 | Regression bundles, warm-strict failures, parallelism, selection, retries | [Bundle gates](references/bundle-gates.md) |
 | Screenshots, layout, visual audits, artifact queries and export | [Visual and artifact review](references/visual-and-artifacts.md) |
+| Try, review, keep, discard, or recover PNG/WAV resource bindings | [Verified asset trials](references/asset-trials.md) |
 | Add efficient QA anchors, state/probe providers, fixture adapters | [Runtime instrumentation](references/runtime-instrumentation.md) |
 | Editor diagnostics, profiling, physics, traces, telemetry, audio | [Diagnostics and profiling](references/diagnostics-and-profiling.md) |
 

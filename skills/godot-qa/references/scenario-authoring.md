@@ -10,7 +10,7 @@ Generate a starter without launching Godot:
 godot-qa scenario init menu_start --scene res://ui/main_menu.tscn --out qa/scenarios/menu_start.json --project <project> --json
 ```
 
-Names must be unique within the scenario tree and safe for artifact paths: letters, numbers, `.`, `_`, and `-`. Required fields are `name`, `scene`, and `steps`. A minimal behavior check, after substituting the scene and locators discovered in the project:
+Names must be unique within the scenario tree and safe for artifact paths: start with a Unicode alphanumeric character, then use only Unicode alphanumerics, `.`, `_`, and `-`. Composed names such as `1HYVÄ` and `玩家_二人` are supported; spelling and case are preserved without Unicode normalization. Snapshot and state-record names follow the same rule. Required fields are `name`, `scene`, and `steps`. A minimal behavior check, after substituting the scene and locators discovered in the project:
 
 ```yaml
 name: menu_start
@@ -41,6 +41,30 @@ godot-qa scenario run menu_start --project <project> --json
 Lint is static validation, not execution. Warning-only findings exit zero unless `--strict` is requested; contract errors fail either way. For variable timing, use an existing project's `wait_until` pattern instead of arbitrary long sleeps. For rendered evidence, add named `snapshot` steps, enable `snapshots.save_screenshot`, and follow [Visual and artifact review](visual-and-artifacts.md).
 
 Assertions should test the requested result: existence, visibility, focus, text, geometry, clean errors, or semantic state. Use `state_matches` and temporal/proximity/surface assertions when appropriate; inspect existing scenarios and matching format documentation for their exact shapes instead of guessing fields.
+
+## State evidence and pacing
+
+Use `wait_until` for readiness, `state_matches` to gate on an expected result, and `record_state` to retain a bounded read-only value as evidence. For an existing registered provider:
+
+```yaml
+steps:
+  - record_state:
+      name: match_summary
+      source: provider
+      provider: match_state
+      path: summary
+assert:
+  - state_matches:
+      source: provider
+      provider: match_state
+      matches:
+        - {path: summary.phase, operator: equals, expected: finished}
+        - {path: summary.winner_count, operator: equals, expected: 1}
+```
+
+Substitute actual provider fields. Group predicates that must hold in the same observation under one `matches` list; separate assertions can read different states. `record_state` saves the value under `state_records.<name>` in run results; it does not validate the value. Sweeps retain these records per seed, so outcomes need not be parsed from logs or custom files. A missing selected `path` records `present: false` and `value: null`; assert required fields separately.
+
+Scenarios and scenario profiles default to fastest fixed-FPS pacing even when `determinism.fixed_fps` is omitted. For audio-clock synchronization or realtime performance evidence, use top-level `time_control: {time_scale: 1.0}` and omit `determinism.fixed_fps`; these settings are mutually exclusive. Live sessions default to realtime. Do not infer realtime behavior from accelerated runs: audio playback does not follow `Engine.time_scale`. Keep deterministic asset-trial validation within its separate [asset trial contract](asset-trials.md).
 
 ## Deterministic setup
 

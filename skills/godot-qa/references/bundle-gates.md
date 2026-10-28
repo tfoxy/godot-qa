@@ -31,6 +31,16 @@ Several bundle names in one invocation share one warm pool; the reuse decision u
 
 `--retry-startup <count>` with optional `--retry-startup-backoff-ms <ms>` is bounded and opt-in, for infrastructure-only failures before gameplay assertions. It does not retry assertion, gameplay, or artifact failures.
 
+## When tuning execution
+
+Attribute cost before changing execution defaults. Compare measured command wall time with child `data.timing` (engine phases), `data.cold_timing` (`artifact_prepare_ms`, `request_prepare_ms`, `cli_finalize_ms`), and `data.process.timing` (`spawn_ms`, `runtime_started_observed_ms`, `result_observed_ms`, `post_result_exit_ms`, `cleanup_ms`, `total_ms`). Missing observations remain null. Process observations and engine phases overlap; parallel child durations also overlap and must not be summed as bundle wall time. Outer launchers, project locks, imports, display setup, and final artifact work can add cost outside engine timings. See [Diagnostics and profiling](diagnostics-and-profiling.md) for bounded in-engine measurements.
+
+Compare alternatives on the same source, CLI/addon, selected inventory, assertions, inputs, rendering mode, and isolation requirements. Retain failures and incomplete results. Changed inventories or sources give execution timings, not a controlled speedup comparison; a faster failing run does not establish a faster passing gate.
+
+For projects considering warm adoption, QA argument readers can use `QaArgs.effective_user_args()` from `res://addons/godot_qa/qa_args.gd` so each scenario sees its own `project_args`. Reset project-owned globals, autoload/static state, provider/fixture registrations, pause state, and fixture-injected input on teardown, including after failure. Test a case that fails midway followed by another case, then use `--equivalence-check` before changing defaults. Keep explicit cold isolation where needed; see [Runtime instrumentation](runtime-instrumentation.md) when changing adapters.
+
+For repeated manifest-backed scene/script checks, evaluate existing `check --tests --batch` only when those entries tolerate sharing a process. It preserves per-test results but trades away per-test process isolation; selected entries marked `"batch": false` reject batching. Use isolated checks for incompatible entries. Bundles and manifest batches solve different workloads; neither requires migrating every project to shared execution.
+
 ## Evidence
 
 Follow returned artifact paths. Each bundle rotates `.qa/artifacts/bundles/<bundle>/latest` to its newest run. Inspect `summary.json`, the artifact index, and relevant child results; filtered successes must be reported as filtered coverage. Warm runs preserve per-scenario log slices; missing markers can indicate an older copied addon. Keep CLI and addon versions aligned.
