@@ -632,6 +632,8 @@
                 "hunter2".to_string(),
             ],
             returncode: -1,
+            termination: None,
+            process_timing: None,
             stdout: String::new(),
             stderr: String::new(),
             display: godot_qa_process::resolve_project_display_launch_metadata(&root, &[], true),

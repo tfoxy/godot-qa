@@ -463,6 +463,9 @@ pub(crate) fn check_result(cli: &Cli) -> CommandResult {
                     path: Some(artifacts.import_logs_path.to_string_lossy().into_owned()),
                     expected: Some(json!("Godot import exits with status 0")),
                     actual: Some(json!(run.returncode)),
+                    details: [("termination".to_string(), json!(run.termination))]
+                        .into_iter()
+                        .collect(),
                     ..FailureDetail::default()
                 }],
                 exit_code: 1,
@@ -1490,6 +1493,9 @@ pub(crate) fn validate_runtime_result(
             target: Some(scene.to_string()),
             expected: Some(json!("Godot check exits with status 0")),
             actual: Some(json!(process_result.returncode)),
+            details: [("termination".to_string(), json!(process_result.termination))]
+                .into_iter()
+                .collect(),
             artifacts: value_as_object_map(artifacts.to_json()),
             ..FailureDetail::default()
         });
@@ -1651,6 +1657,9 @@ pub(crate) fn validate_script_compile_result(
             target: Some(script.to_string()),
             expected: Some(json!("Godot script check exits with status 0")),
             actual: Some(json!(process_result.returncode)),
+            details: [("termination".to_string(), json!(process_result.termination))]
+                .into_iter()
+                .collect(),
             artifacts: value_as_object_map(artifacts.to_json()),
             ..FailureDetail::default()
         });
@@ -1956,6 +1965,8 @@ run/main_scene="res://ui/menu\"quoted.tscn"
         let process_result = godot_qa_process::GodotRunResult {
             command: vec!["godot".to_string()],
             returncode: 0,
+            termination: None,
+            process_timing: None,
             stdout: String::new(),
             stderr: String::new(),
             display: godot_qa_process::resolve_project_display_launch_metadata(&root, &[], true),

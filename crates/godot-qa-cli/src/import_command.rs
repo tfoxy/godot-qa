@@ -85,6 +85,14 @@ pub(crate) fn import_result(cli: &Cli) -> CommandResult {
                 ("project_root".to_string(), json!(config.project_root)),
                 ("artifacts".to_string(), artifacts.to_json()),
                 (
+                    "process".to_string(),
+                    json!({
+                        "exit_code": run.returncode,
+                        "termination": run.termination,
+                        "timing": run.process_timing,
+                    }),
+                ),
+                (
                     "duration_ms".to_string(),
                     json!(started.elapsed().as_millis() as u64),
                 ),
@@ -100,6 +108,14 @@ pub(crate) fn import_result(cli: &Cli) -> CommandResult {
                 ("project_root".to_string(), json!(config.project_root)),
                 ("artifacts".to_string(), artifacts.to_json()),
                 (
+                    "process".to_string(),
+                    json!({
+                        "exit_code": run.returncode,
+                        "termination": run.termination,
+                        "timing": run.process_timing,
+                    }),
+                ),
+                (
                     "duration_ms".to_string(),
                     json!(started.elapsed().as_millis() as u64),
                 ),
@@ -110,6 +126,9 @@ pub(crate) fn import_result(cli: &Cli) -> CommandResult {
                 path: Some(artifacts.logs_path.to_string_lossy().into_owned()),
                 expected: Some(json!("Godot import exits with status 0")),
                 actual: Some(json!(run.returncode)),
+                details: [("termination".to_string(), json!(run.termination))]
+                    .into_iter()
+                    .collect(),
                 ..FailureDetail::default()
             }],
             exit_code: 1,

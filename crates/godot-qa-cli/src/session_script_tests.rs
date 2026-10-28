@@ -478,6 +478,8 @@ fn script_diagnostic_excerpt_detects_parse_and_compile_failures() {
     let process_result = godot_qa_process::GodotRunResult {
             command: vec!["godot".to_string()],
             returncode: 0,
+            termination: None,
+            process_timing: None,
             stdout: "SCRIPT ERROR: Parse Error: unknown identifier\n          at: GDScript::reload (res://src/preloaded_dependency.gd:12)\n".to_string(),
             stderr: "ERROR: Compilation failed.\n".to_string(),
             display: godot_qa_process::resolve_project_display_launch_metadata(&root, &[], true),

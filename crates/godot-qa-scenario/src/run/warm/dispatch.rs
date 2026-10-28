@@ -926,6 +926,8 @@ fn synth_warm_process_result(
     godot_qa_process::GodotRunResult {
         command: Vec::new(),
         returncode: 0,
+        termination: None,
+        process_timing: None,
         stdout: String::new(),
         stderr: String::new(),
         display,

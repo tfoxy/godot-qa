@@ -301,6 +301,8 @@ fn synth_android_process_result() -> godot_qa_process::GodotRunResult {
     godot_qa_process::GodotRunResult {
         command: Vec::new(),
         returncode: 0,
+        termination: None,
+        process_timing: None,
         stdout: String::new(),
         stderr: String::new(),
         display: android_display_metadata(),

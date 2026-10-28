@@ -17,7 +17,7 @@ use serde_json::{Map, Value, json};
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const PROFILE_MAX_FRAME_SAMPLES: usize = 600;
 const PROFILE_TOP_SCRIPT_METHODS: usize = 10;
@@ -48,6 +48,7 @@ fn frame_budget_wall_backstop(
 
 #[derive(Debug, Clone, Copy, Default)]
 struct RuntimeExecutionOptions {
+    artifact_prepare_ms: Option<u64>,
     profile: bool,
     timeout: Option<Duration>,
     visual_risk: VisualRiskExecutionOptions,
@@ -149,6 +150,7 @@ pub fn run_scenario_once(
     };
     let scenario_for_artifacts =
         scenario_with_effective_launch_args(config, &scenario_for_artifacts);
+    let artifact_started = Instant::now();
     let artifacts = match artifacts::prepare_run_artifacts(
         &config.artifacts_dir,
         &scenario_for_artifacts,
@@ -183,6 +185,8 @@ pub fn run_scenario_once(
             };
         }
     };
+
+    let artifact_prepare_ms = duration_millis_u64(artifact_started.elapsed());
 
     // The viewport matrix is reserved for genuine multi-viewport fan-out. A
     // scenario with zero or one `viewports` entry — including a single-viewport
@@ -232,6 +236,7 @@ pub fn run_scenario_once(
         requires_windowed_media_evidence,
         RuntimeExecutionOptions {
             timeout: scenario_timeout,
+            artifact_prepare_ms: Some(artifact_prepare_ms),
             visual_risk,
             ..RuntimeExecutionOptions::default()
         },
@@ -309,6 +314,7 @@ pub fn run_scenario_profile_once(
     };
     let scenario_for_artifacts =
         scenario_with_effective_launch_args(config, &scenario_for_artifacts);
+    let artifact_started = Instant::now();
     let artifacts = match artifacts::prepare_run_artifacts(
         &config.artifacts_dir,
         &scenario_for_artifacts,
@@ -347,6 +353,8 @@ pub fn run_scenario_profile_once(
     // As in `run_scenario_once`: the matrix is only for genuine multi-viewport
     // fan-out. A single-viewport `layout_audit` profile runs normally and its
     // layout audit is applied as a finalize post-process.
+    let artifact_prepare_ms = duration_millis_u64(artifact_started.elapsed());
+
     if viewports.len() > 1 {
         return run_viewport_matrix(
             command,
@@ -388,6 +396,7 @@ pub fn run_scenario_profile_once(
         selected_audio,
         requires_windowed_media_evidence,
         RuntimeExecutionOptions {
+            artifact_prepare_ms: Some(artifact_prepare_ms),
             profile: true,
             ..RuntimeExecutionOptions::default()
         },
@@ -1253,6 +1262,7 @@ fn execute_runtime_run(
     requires_windowed_media_evidence: bool,
     options: RuntimeExecutionOptions,
 ) -> CommandResult {
+    let preparation_started = Instant::now();
     let scenario_godot_args = scenario_godot_args(scenario);
     let scenario_project_args = scenario_project_args(scenario);
     let godot_args = merged_launch_args(&config.godot_args, &scenario_godot_args);
@@ -1422,6 +1432,13 @@ fn execute_runtime_run(
         Some(request_path)
     };
 
+    base_data.insert(
+        "cold_timing".to_string(),
+        json!({
+            "artifact_prepare_ms": options.artifact_prepare_ms,
+            "request_prepare_ms": duration_millis_u64(preparation_started.elapsed()),
+        }),
+    );
     let process_result =
         match godot_qa_process::launch_godot_one_shot(godot_qa_process::GodotOneShotLaunch {
             binary: config.godot_binary.as_deref().unwrap_or_default(),
@@ -1498,6 +1515,20 @@ fn finalize_runtime_run(
     mut base_data: Map<String, Value>,
     process_result: &godot_qa_process::GodotRunResult,
 ) -> CommandResult {
+    let finalization_started = Instant::now();
+    let persist_finalized = |mut result: CommandResult| {
+        if let Some(timing) = result
+            .data
+            .get_mut("cold_timing")
+            .and_then(Value::as_object_mut)
+        {
+            timing.insert(
+                "cli_finalize_ms".to_string(),
+                json!(duration_millis_u64(finalization_started.elapsed())),
+            );
+        }
+        persist_result(&artifacts.result_path, result)
+    };
     if let Ok(request_bytes) = fs::read(&artifacts.request_path)
         && let Ok(request) = serde_json::from_slice::<Value>(&request_bytes)
         && let Some(run) = request.get("run")
@@ -1630,7 +1661,7 @@ fn finalize_runtime_run(
             failures,
             exit_code: 1,
         };
-        return persist_result(&artifacts.result_path, result);
+        return persist_finalized(result);
     }
 
     base_data.insert(
@@ -1682,7 +1713,7 @@ fn finalize_runtime_run(
                 failures: vec![failure],
                 exit_code: 1,
             };
-            return persist_result(&artifacts.result_path, result);
+            return persist_finalized(result);
         }
     };
 
@@ -1727,17 +1758,14 @@ fn finalize_runtime_run(
                 Some(std::slice::from_ref(&failure)),
             ),
         );
-        return persist_result(
-            &artifacts.result_path,
-            CommandResult {
-                ok: false,
-                command: command.to_string(),
-                message: result_message.to_string(),
-                data: base_data,
-                failures: vec![failure],
-                exit_code: 1,
-            },
-        );
+        return persist_finalized(CommandResult {
+            ok: false,
+            command: command.to_string(),
+            message: result_message.to_string(),
+            data: base_data,
+            failures: vec![failure],
+            exit_code: 1,
+        });
     }
     if let Some(completion) = base_data.get_mut("completion") {
         let passed = raw_runtime_result.get("ok").and_then(Value::as_bool);
@@ -1807,7 +1835,7 @@ fn finalize_runtime_run(
     } else {
         runtime_result
     };
-    persist_result(&artifacts.result_path, result)
+    persist_finalized(result)
 }
 
 include!("visual_preflight.rs");

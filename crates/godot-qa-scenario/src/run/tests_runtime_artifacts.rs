@@ -1,4 +1,52 @@
     #[test]
+    fn cold_lifecycle_timing_is_retained_when_runtime_result_is_missing() {
+        let root = temp_dir("cold-lifecycle-timing");
+        write(&root.join("project.godot"), "config_version=5\n");
+        let scenario_path = root.join("qa/scenarios/timing.json");
+        let scenario = json!({"name": "timing", "scene": "res://main.tscn", "steps": []});
+        let mut config = test_config(&root);
+        config.godot_binary = Some(
+            godot_qa_test_support::fixture(&root.join("fake-godot"), &[])
+                .to_string_lossy()
+                .into_owned(),
+        );
+        let result = super::run_scenario_once(
+            &config,
+            &scenario_path,
+            &scenario,
+            "scenario run timing",
+            Some(true),
+            None,
+            VisualRiskExecutionOptions::default(),
+        );
+        assert!(
+            !result.ok,
+            "the fixture intentionally emits no runtime result"
+        );
+        assert_eq!(result.failures[0].kind, "scenario_result_missing");
+        for field in [
+            "artifact_prepare_ms",
+            "request_prepare_ms",
+            "cli_finalize_ms",
+        ] {
+            assert!(
+                result.data["cold_timing"][field].is_u64(),
+                "missing {field}"
+            );
+        }
+        assert_eq!(result.data["process"]["termination"]["exit_code"], json!(0));
+        assert_eq!(
+            result.data["process"]["termination"]["tool_initiated"],
+            json!(false)
+        );
+        assert!(result.data["process"]["timing"]["total_ms"].is_u64());
+        let result_path = result.data["artifacts"]["result_path"].as_str().unwrap();
+        let persisted: Value = serde_json::from_slice(&fs::read(result_path).unwrap()).unwrap();
+        assert_eq!(persisted["data"], json!(result.data));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn scenario_process_outcome_strict_malformed_result_json_is_distinct() {
         let root = temp_dir("scenario-process-outcome-invalid-result");
         let result_path = root.join("result.json");
@@ -312,6 +360,8 @@
         let process_result = GodotRunResult {
             command: vec!["godot".to_string()],
             returncode: 11,
+            termination: None,
+            process_timing: None,
             stdout: String::new(),
             stderr: String::new(),
             display: godot_qa_process::resolve_project_display_launch_metadata(&root, &[], true),

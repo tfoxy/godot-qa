@@ -472,6 +472,8 @@ fn process_summary_json(process_result: &GodotRunResult) -> Value {
         "command": command,
         "command_line": command_line,
         "exit_code": process_result.returncode,
+        "termination": process_result.termination,
+        "timing": process_result.process_timing,
         "status": if process_result.returncode == 0 { "passed" } else { "failed" },
         "pid": process_result.pid,
         "process_group": process_result.process_group,

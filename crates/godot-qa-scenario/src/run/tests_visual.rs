@@ -855,6 +855,8 @@
         let process_result = GodotRunResult {
             command: vec!["godot".to_string()],
             returncode: 1,
+            termination: None,
+            process_timing: None,
             stdout: String::new(),
             stderr: String::new(),
             display,

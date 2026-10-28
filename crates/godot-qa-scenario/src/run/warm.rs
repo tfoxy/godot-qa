@@ -41,7 +41,6 @@
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::Instant;
 
 const WARM_SESSION_VIEWPORT: &str = "1920x1080";
 

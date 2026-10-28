@@ -34,10 +34,34 @@ pub struct OutputTruncation {
     pub raw_stderr_path: String,
 }
 
+/// Native status of the process launched by the CLI (possibly a wrapper).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ProcessTermination {
+    pub scope: &'static str,
+    pub exit_code: Option<i32>,
+    pub signal: Option<i32>,
+    pub core_dumped: Option<bool>,
+    pub native_status: String,
+    pub tool_initiated: bool,
+}
+
+/// CLI monotonic observations; these do not claim to measure engine CPU time.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct ProcessTiming {
+    pub spawn_ms: u64,
+    pub runtime_started_observed_ms: Option<u64>,
+    pub result_observed_ms: Option<u64>,
+    pub post_result_exit_ms: Option<u64>,
+    pub cleanup_ms: u64,
+    pub total_ms: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct GodotRunResult {
     pub command: Vec<String>,
     pub returncode: i32,
+    pub termination: Option<ProcessTermination>,
+    pub process_timing: Option<ProcessTiming>,
     pub stdout: String,
     pub stderr: String,
     pub display: DisplayLaunchMetadata,
@@ -1445,6 +1469,8 @@ fn run_godot_command_with_completion_path(
         Ok(child_output) => {
             let OwnedChildOutput {
                 status_code,
+                termination,
+                process_timing,
                 stdout,
                 stderr,
                 pid,
@@ -1504,6 +1530,8 @@ fn run_godot_command_with_completion_path(
             Ok(GodotRunResult {
                 command: command.to_vec(),
                 returncode: status_code,
+                termination,
+                process_timing: Some(process_timing),
                 stdout,
                 stderr,
                 display,
@@ -1554,6 +1582,8 @@ fn effective_godot_command(launch_prefix: &[String], binary: &str, args: &[Strin
 
 struct OwnedChildOutput {
     status_code: i32,
+    termination: Option<ProcessTermination>,
+    process_timing: ProcessTiming,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
     pid: Option<i64>,
@@ -1570,6 +1600,8 @@ fn run_owned_child_output(
     completion_path: Option<&Path>,
     file_capture_path: Option<&Path>,
 ) -> std::io::Result<OwnedChildOutput> {
+    let started = Instant::now();
+    let expected = completion_path.and_then(CompletionIdentity::read);
     let Some(executable) = command.first() else {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -1603,6 +1635,10 @@ fn run_owned_child_output(
         child_command.creation_flags(windows_sys::Win32::System::Threading::CREATE_SUSPENDED);
     }
     let mut child = child_command.spawn()?;
+    let mut process_timing = ProcessTiming {
+        spawn_ms: duration_millis_u64(started.elapsed()),
+        ..ProcessTiming::default()
+    };
     #[cfg(windows)]
     let owned_job = match windows::OwnedJob::attach(&child) {
         Ok(job) => job,
@@ -1629,8 +1665,11 @@ fn run_owned_child_output(
         } else {
             (output.stdout, output.stderr)
         };
+        process_timing.total_ms = duration_millis_u64(started.elapsed());
         return Ok(OwnedChildOutput {
             status_code: output.status.code().unwrap_or(-1),
+            termination: Some(process_termination(output.status, false)),
+            process_timing,
             stdout,
             stderr,
             pid: Some(pid),
@@ -1670,14 +1709,39 @@ fn run_owned_child_output(
     });
     let deadline = timeout.map(|timeout| Instant::now() + timeout);
     let mut completion_deadline = None;
+    let mut result_observed_at = None;
     loop {
+        if process_timing.runtime_started_observed_ms.is_none()
+            && expected
+                .as_ref()
+                .is_some_and(CompletionIdentity::runtime_started)
+        {
+            process_timing.runtime_started_observed_ms =
+                Some(duration_millis_u64(started.elapsed()));
+        }
         if let Some(status) = child.try_wait()? {
+            let exit_observed = Instant::now();
+            // A fast child may exit between polls; inspect its final result too.
+            if result_observed_at.is_none()
+                && completion_path
+                    .zip(expected.as_ref())
+                    .is_some_and(|(path, identity)| identity.matches(path))
+            {
+                result_observed_at = Some(exit_observed);
+                process_timing.result_observed_ms =
+                    Some(duration_millis_u64(exit_observed.duration_since(started)));
+            }
+            process_timing.post_result_exit_ms =
+                result_observed_at.map(|at| duration_millis_u64(exit_observed.duration_since(at)));
             #[cfg(windows)]
             owned_job.terminate()?;
             let (stdout, stderr, output_truncation) =
                 collected_child_output(&file_paths, stdout_reader, stderr_reader)?;
+            process_timing.total_ms = duration_millis_u64(started.elapsed());
             return Ok(OwnedChildOutput {
                 status_code: status.code().unwrap_or(-1),
+                termination: Some(process_termination(status, false)),
+                process_timing,
                 stdout,
                 stderr,
                 pid: Some(pid),
@@ -1697,9 +1761,14 @@ fn run_owned_child_output(
         }
         if completion_deadline.is_none()
             && deadline.is_none_or(|deadline| Instant::now() < deadline)
-            && completion_path.is_some_and(completion_matches_current_request)
+            && completion_path
+                .zip(expected.as_ref())
+                .is_some_and(|(path, identity)| identity.matches(path))
         {
-            completion_deadline = Some(Instant::now() + Duration::from_secs(3));
+            let observed = Instant::now();
+            result_observed_at = Some(observed);
+            process_timing.result_observed_ms = Some(duration_millis_u64(started.elapsed()));
+            completion_deadline = Some(observed + Duration::from_secs(3));
         }
         // Once a current result has been written, allow the complete exit grace.
         // The declared deadline remains hard until that result exists.
@@ -1708,14 +1777,26 @@ fn run_owned_child_output(
         let completion_expired =
             completion_deadline.is_some_and(|deadline| Instant::now() >= deadline);
         if overall_expired || completion_expired {
+            let cleanup_started = Instant::now();
             #[cfg(windows)]
             owned_job.terminate()?;
             let cleanup = terminate_owned_child_after_timeout(&mut child, pid, process_group);
-            let _ = child.wait();
+            let termination = child
+                .wait()
+                .ok()
+                .map(|status| process_termination(status, true));
+            let cleanup_finished = Instant::now();
+            process_timing.cleanup_ms =
+                duration_millis_u64(cleanup_finished.duration_since(cleanup_started));
+            process_timing.post_result_exit_ms = result_observed_at
+                .map(|at| duration_millis_u64(cleanup_finished.duration_since(at)));
             let (stdout, stderr, output_truncation) =
                 collected_child_output(&file_paths, stdout_reader, stderr_reader)?;
+            process_timing.total_ms = duration_millis_u64(started.elapsed());
             return Ok(OwnedChildOutput {
                 status_code: -1,
+                termination,
+                process_timing,
                 stdout,
                 stderr,
                 pid: Some(pid),
@@ -1734,38 +1815,96 @@ fn run_owned_child_output(
     }
 }
 
-fn completion_matches_current_request(result_path: &Path) -> bool {
-    let Some(parent) = result_path.parent() else {
-        return false;
+struct CompletionIdentity {
+    run_id: String,
+    nonce: String,
+    progress_path: Option<std::path::PathBuf>,
+}
+
+impl CompletionIdentity {
+    fn read(result_path: &Path) -> Option<Self> {
+        let request_bytes = fs::read(result_path.parent()?.join("request.json")).ok()?;
+        let request: serde_json::Value = serde_json::from_slice(&request_bytes).ok()?;
+        let run = request.get("run")?;
+        Some(Self {
+            run_id: run.get("id")?.as_str()?.to_owned(),
+            nonce: run.get("nonce")?.as_str()?.to_owned(),
+            progress_path: request
+                .get("artifacts")
+                .and_then(|artifacts| {
+                    artifacts
+                        .get("progress")
+                        .or_else(|| artifacts.get("progress_path"))
+                })
+                .and_then(serde_json::Value::as_str)
+                .map(Into::into),
+        })
+    }
+
+    fn matches(&self, result_path: &Path) -> bool {
+        let Ok(result_bytes) = fs::read(result_path) else {
+            return false;
+        };
+        let Ok(result) = serde_json::from_slice::<serde_json::Value>(&result_bytes) else {
+            return false;
+        };
+        result
+            .get("run_identity")
+            .is_some_and(|identity| self.matches_identity(identity, "run_id"))
+            && result
+                .get("ok")
+                .and_then(serde_json::Value::as_bool)
+                .is_some()
+    }
+
+    fn matches_identity(&self, identity: &serde_json::Value, id_field: &str) -> bool {
+        identity.get(id_field).and_then(serde_json::Value::as_str) == Some(self.run_id.as_str())
+            && identity.get("nonce").and_then(serde_json::Value::as_str)
+                == Some(self.nonce.as_str())
+    }
+
+    fn runtime_started(&self) -> bool {
+        let Some(path) = &self.progress_path else {
+            return false;
+        };
+        let Ok(file) = File::open(path) else {
+            return false;
+        };
+        // The marker is the first executor record. Bound reads while the game runs.
+        let mut bytes = Vec::new();
+        if file.take(4096).read_to_end(&mut bytes).is_err() {
+            return false;
+        }
+        let contents = String::from_utf8_lossy(&bytes);
+        contents
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .any(|event| {
+                event.get("event").and_then(serde_json::Value::as_str) == Some("runtime_started")
+                    && self.matches_identity(&event, "run_id")
+            })
+    }
+}
+
+fn process_termination(
+    status: std::process::ExitStatus,
+    tool_initiated: bool,
+) -> ProcessTermination {
+    #[cfg(unix)]
+    let (signal, core_dumped) = {
+        use std::os::unix::process::ExitStatusExt;
+        (status.signal(), Some(status.core_dumped()))
     };
-    let Ok(request_bytes) = fs::read(parent.join("request.json")) else {
-        return false;
-    };
-    let Ok(result_bytes) = fs::read(result_path) else {
-        return false;
-    };
-    let Ok(request) = serde_json::from_slice::<serde_json::Value>(&request_bytes) else {
-        return false;
-    };
-    let Ok(result) = serde_json::from_slice::<serde_json::Value>(&result_bytes) else {
-        return false;
-    };
-    let Some(run) = request.get("run") else {
-        return false;
-    };
-    let Some(identity) = result.get("run_identity") else {
-        return false;
-    };
-    let nonce = run.get("nonce").and_then(serde_json::Value::as_str);
-    let run_id = run.get("id").and_then(serde_json::Value::as_str);
-    nonce.is_some()
-        && run_id.is_some()
-        && identity.get("nonce").and_then(serde_json::Value::as_str) == nonce
-        && identity.get("run_id").and_then(serde_json::Value::as_str) == run_id
-        && result
-            .get("ok")
-            .and_then(serde_json::Value::as_bool)
-            .is_some()
+    #[cfg(not(unix))]
+    let (signal, core_dumped) = (None, None);
+    ProcessTermination {
+        scope: "direct_child",
+        exit_code: status.code(),
+        signal,
+        core_dumped,
+        native_status: status.to_string(),
+        tool_initiated,
+    }
 }
 
 fn duration_millis_u64(duration: Duration) -> u64 {
@@ -3603,6 +3742,10 @@ mod tests {
             "valid result must receive a full exit grace"
         );
         assert_eq!(result.returncode, 0);
+        let timing = result.process_timing.as_ref().unwrap();
+        assert!(timing.result_observed_ms.unwrap() >= timing.spawn_ms);
+        assert!(timing.post_result_exit_ms.unwrap() >= 400);
+        assert!(timing.total_ms >= timing.result_observed_ms.unwrap());
         assert!(started.elapsed() >= Duration::from_millis(1400));
         let _ = fs::remove_dir_all(temp_dir);
     }
@@ -3647,6 +3790,138 @@ mod tests {
         assert!(result.timed_out);
         assert_eq!(result.timeout_ms, Some(3000));
         assert!(started.elapsed() >= Duration::from_millis(3700));
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn completion_identity_is_cached_and_rejects_stale_or_partial_results() {
+        let temp_dir = unique_temp_dir();
+        fs::create_dir_all(&temp_dir).unwrap();
+        let result_path = temp_dir.join("result.json");
+        let progress_path = temp_dir.join("progress.jsonl");
+        fs::write(
+            temp_dir.join("request.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "run": {"id": "current", "nonce": "fresh"},
+                "artifacts": {"progress": progress_path},
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let identity = super::CompletionIdentity::read(&result_path).unwrap();
+        // Polling uses the request identity captured before process launch.
+        fs::remove_file(temp_dir.join("request.json")).unwrap();
+        for invalid in [
+            r#"{"run_identity":{"run_id":"stale","nonce":"fresh"},"ok":true}"#,
+            r#"{"run_identity":{"run_id":"current","nonce":"old"},"ok":true}"#,
+            r#"{"run_identity":{"run_id":"current","nonce":"fresh"}}"#,
+            r#"{"run_identity":{"run_id":"current","nonce":"fresh"},"ok":"true"}"#,
+            r#"{"run_identity":{"run_id":"current","nonce":"fresh"},"ok":tru"#,
+        ] {
+            fs::write(&result_path, invalid).unwrap();
+            assert!(
+                !identity.matches(&result_path),
+                "accepted invalid result: {invalid}"
+            );
+        }
+        fs::write(
+            &result_path,
+            r#"{"run_identity":{"run_id":"current","nonce":"fresh"},"ok":false}"#,
+        )
+        .unwrap();
+        assert!(
+            identity.matches(&result_path),
+            "failed assertions still mark completion"
+        );
+        fs::write(
+            &progress_path,
+            r#"{"event":"runtime_started","run_id":"current","nonce":"old"}"#,
+        )
+        .unwrap();
+        assert!(!identity.runtime_started());
+        fs::write(
+            &progress_path,
+            r#"{"event":"runtime_started","run_id":"current","nonce":"fresh"}"#,
+        )
+        .unwrap();
+        assert!(identity.runtime_started());
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_signal_is_distinct_from_tool_timeout() {
+        let _signal_guard = PROCESS_SIGNAL_LOCK.lock().unwrap();
+        let natural = super::run_owned_child_output(
+            &["/bin/sh".into(), "-c".into(), "kill -TERM $$".into()],
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(natural.status_code, -1);
+        assert!(!natural.timed_out);
+        let termination = natural.termination.unwrap();
+        assert_eq!(termination.scope, "direct_child");
+        assert_eq!(termination.exit_code, None);
+        assert_eq!(termination.signal, Some(libc::SIGTERM));
+        assert_eq!(termination.core_dumped, Some(false));
+        assert!(!termination.tool_initiated);
+        assert!(!termination.native_status.is_empty());
+
+        let timeout = super::run_owned_child_output(
+            &["/bin/sh".into(), "-c".into(), "sleep 30".into()],
+            Some(Duration::from_millis(50)),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(timeout.status_code, -1);
+        assert!(timeout.timed_out);
+        let termination = timeout.termination.unwrap();
+        assert!(termination.tool_initiated);
+        assert!(matches!(
+            termination.signal,
+            Some(libc::SIGTERM | libc::SIGKILL)
+        ));
+        assert!(timeout.process_timing.total_ms >= timeout.process_timing.spawn_ms);
+        assert!(timeout.process_timing.runtime_started_observed_ms.is_none());
+        assert!(timeout.process_timing.result_observed_ms.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stale_or_partial_completion_never_extends_process_deadline() {
+        let _signal_guard = PROCESS_SIGNAL_LOCK.lock().unwrap();
+        let temp_dir = unique_temp_dir();
+        fs::create_dir_all(&temp_dir).unwrap();
+        let result_path = temp_dir.join("result.json");
+        fs::write(
+            temp_dir.join("request.json"),
+            r#"{"run":{"id":"run-1","nonce":"fresh"}}"#,
+        )
+        .unwrap();
+        for invalid in [
+            r#"{"run_identity":{"run_id":"run-1","nonce":"stale"},"ok":true}"#,
+            r#"{"run_identity":{"run_id":"run-1","nonce":"fresh"},"ok":tru"#,
+        ] {
+            fs::write(&result_path, invalid).unwrap();
+            let started = std::time::Instant::now();
+            let output = super::run_owned_child_output(
+                &["/bin/sh".into(), "-c".into(), "sleep 30".into()],
+                Some(Duration::from_millis(50)),
+                Some(&result_path),
+                Some(&temp_dir.join("logs.txt")),
+            )
+            .unwrap();
+            assert!(output.timed_out);
+            assert_eq!(output.timeout_ms, Some(50));
+            assert!(output.process_timing.result_observed_ms.is_none());
+            assert!(
+                started.elapsed() < Duration::from_secs(3),
+                "invalid result granted exit grace"
+            );
+        }
         let _ = fs::remove_dir_all(temp_dir);
     }
 

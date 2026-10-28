@@ -171,6 +171,8 @@ mod tests {
                 root.to_string_lossy().into_owned(),
             ],
             returncode,
+            termination: None,
+            process_timing: None,
             stdout: String::new(),
             stderr: String::new(),
             display: godot_qa_process::resolve_project_display_launch_metadata(root, &[], true),
