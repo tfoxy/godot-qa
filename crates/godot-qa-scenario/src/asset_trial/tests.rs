@@ -494,12 +494,84 @@ fn loader_uncertainty_covers_whitespace_threaded_and_generic_forms() {
     for source in [
         "load (path)",
         "ResourceLoader.load_threaded_request(path)",
+        "ResourceLoader.load_interactive(path)",
         "GD.Load<Texture2D>(path)",
         "GD.Load <Texture2D> (path)",
+        "Image.LoadFromFile(path)",
+        "ResourceLoader.LoadWithCache(path)",
+        "ResourceLoader.LoadBytes(bytes)",
+        "return load(path)",
+        "await load(path)",
         "preload(\"res://known\"); load \n (variable)",
     ] {
         assert!(has_dynamic_load(source), "{source}");
     }
+}
+
+#[test]
+fn loader_names_require_identifier_boundaries() {
+    for source in [
+        "_relay_payload(payload)",
+        "reload(path)",
+        "_load(path)",
+        "unload(path)",
+        "preload(\"res://known\")",
+        "reload_threaded_request(path)",
+        "reload_interactive(path)",
+        "Reload<Texture2D>(path)",
+        "ReloadFromFile(path)",
+        "ReloadWithCache(path)",
+        "ReloadBytes(bytes)",
+        "πload(path)",
+        "var load_threaded_request_count = 0",
+    ] {
+        assert!(!has_dynamic_load(source), "{source}");
+        assert!(has_dynamic_load(&format!("{source}; load(path)")));
+    }
+}
+
+#[test]
+fn literal_loads_remain_static_and_comments_remain_conservative() {
+    for source in [
+        "ResourceLoader.load ( \"res://known\" )",
+        "GD.Load('res://known')",
+        r#"load("res://escaped\"quote.png")"#,
+    ] {
+        assert!(!has_dynamic_load(source), "{source}");
+    }
+    for source in [
+        "load(\"res://known\", type_hint)",
+        "load(\"res://known\" + suffix)",
+        "load(\"unterminated)",
+        "# load(variable)",
+        "// ResourceLoader.load_threaded_request(variable)",
+        "var example = \"load(variable)\"",
+    ] {
+        assert!(has_dynamic_load(source), "{source}");
+    }
+}
+
+#[test]
+fn helper_calls_do_not_retain_unreferenced_trial_media() {
+    let root = root();
+    let config = test_config(&root);
+    let (j, _) = evidence_fixture(&root);
+    let source = root.join("gameplay.gd");
+    write_new(&source, b"func update():\n    _relay_payload(value)\n").unwrap();
+    assert!(source_references(&config, &j).unwrap().is_empty());
+    fs::write(&source, "func update():\n    return load(resource_path)\n").unwrap();
+    assert!(
+        source_references(&config, &j)
+            .unwrap()
+            .contains(&"res://coin.png".to_string())
+    );
+    fs::write(&source, "var texture = preload(\"res://coin.png\")\n").unwrap();
+    assert!(
+        source_references(&config, &j)
+            .unwrap()
+            .contains(&"res://coin.png".to_string())
+    );
+    fs::remove_dir_all(root).unwrap();
 }
 fn test_config(root: &Path) -> ProjectConfig {
     write_new(&root.join("project.godot"), b"config_version=5\n").unwrap();

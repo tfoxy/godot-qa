@@ -1063,39 +1063,67 @@ fn execution_config(config: &ProjectConfig) -> Value {
     json!({"godot_binary":config.godot_binary,"godot_binary_identity":binary_identity(config),"artifacts_dir":config.artifacts_dir,"godot_args":config.godot_args,"project_args":config.godot_project_args,"launch_prefix":config.godot_launch_prefix,"windowed_launch_prefix":config.godot_windowed_launch_prefix,"headless":config.launch_mode_headless_override(),"audio":config.audio_mode_override(),"log_ignore_patterns":config.log_ignore_patterns})
 }
 fn has_dynamic_load(text: &str) -> bool {
-    let compact = text
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .collect::<String>();
-    let lower = compact.to_ascii_lowercase();
-    if [
-        "load_threaded_request",
-        "load_interactive",
-        "load<",
-        "loadbytes",
-        "loadfrom",
-        "loadwith",
-    ]
-    .iter()
-    .any(|token| lower.contains(token))
-    {
-        return true;
-    }
-    for (index, _) in lower.match_indices("load(") {
-        if lower[..index].ends_with("pre") {
+    // Match whole identifiers before allowing call whitespace. Compacting the
+    // source first both matches helper suffixes (_relay_payload) and hides real
+    // calls after keywords (return load(path)). Keep comments and strings in the
+    // conservative scan: this is not a language-specific source parser.
+    let mut chars = text.char_indices().peekable();
+    while let Some((start, character)) = chars.next() {
+        if !is_loader_identifier_char(character) {
             continue;
         }
-        let args = &compact[index + 5..];
-        let quote = match args.as_bytes().first() {
-            Some(b'"') => '"',
-            Some(b'\'') => '\'',
-            _ => return true,
-        };
-        let Some(end) = args[1..].find(quote) else {
+        let mut end = start + character.len_utf8();
+        while let Some(&(index, character)) = chars.peek() {
+            if !is_loader_identifier_char(character) {
+                break;
+            }
+            chars.next();
+            end = index + character.len_utf8();
+        }
+        let identifier = text[start..end].to_ascii_lowercase();
+        let call = text[end..].trim_start();
+        if !call.starts_with(['(', '<']) {
+            continue;
+        }
+        if identifier == "load_threaded_request"
+            || identifier == "load_interactive"
+            || ["loadbytes", "loadfrom", "loadwith"]
+                .iter()
+                .any(|prefix| identifier.starts_with(prefix))
+        {
             return true;
+        }
+        if identifier != "load" {
+            continue;
+        }
+        let Some(args) = call.strip_prefix('(') else {
+            return true; // Generic C# Load<T> calls remain uncertain.
         };
-        if !args[end + 2..].starts_with(')') {
+        if !has_single_literal_argument(args.trim_start()) {
             return true;
+        }
+    }
+    false
+}
+
+fn is_loader_identifier_char(character: char) -> bool {
+    character.is_alphanumeric() || character == '_'
+}
+
+fn has_single_literal_argument(args: &str) -> bool {
+    let Some(quote @ ('"' | '\'')) = args.chars().next() else {
+        return false;
+    };
+    let mut escaped = false;
+    for (index, character) in args.char_indices().skip(1) {
+        if escaped {
+            escaped = false;
+        } else if character == '\\' {
+            escaped = true;
+        } else if character == quote {
+            return args[index + character.len_utf8()..]
+                .trim_start()
+                .starts_with(')');
         }
     }
     false
