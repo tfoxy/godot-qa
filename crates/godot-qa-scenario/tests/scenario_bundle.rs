@@ -234,6 +234,17 @@ fn list_bundles_is_sorted_by_name_then_path_and_reports_duplicates() {
 }
 
 #[test]
+fn validate_bundle_manifest_accepts_unicode_artifact_names_and_references() {
+    let document = json!({
+        "name": "門_hyvä",
+        "required_scenarios": ["playable_1hyvä_two_player"],
+        "optional_scenarios": ["1HYVÄ"],
+        "required_bundles": ["玩家_二人"]
+    });
+    validate_bundle_manifest(&document, Path::new("gate.json")).unwrap();
+}
+
+#[test]
 fn validate_bundle_manifest_rejects_malformed_types_and_unsafe_refs() {
     let root = temp_dir("bundle-invalid");
     let path = root.join("qa/gates/bad.json");

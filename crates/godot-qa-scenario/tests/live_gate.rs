@@ -179,6 +179,16 @@ fn live_gate_manifest_contract_reports_duplicate_names() {
 }
 
 #[test]
+fn live_gate_manifest_accepts_unicode_artifact_names_and_anchors() {
+    let document = json!({
+        "name": "門_hyvä",
+        "scene": "res://main.tscn",
+        "anchors": {"required": ["玩家_二人"], "optional": ["1HYVÄ"]}
+    });
+    validate_live_gate_manifest(&document, Path::new("gate.json")).unwrap();
+}
+
+#[test]
 fn live_gate_manifest_contract_rejects_unsafe_names_and_anchors() {
     let root = temp_dir("live-gate-unsafe");
     let path = root.join("qa/live_gates/bad.json");

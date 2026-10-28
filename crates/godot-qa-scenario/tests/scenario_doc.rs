@@ -30,6 +30,104 @@ fn failure_json(error: ScenarioError) -> serde_json::Value {
 }
 
 #[test]
+fn unicode_artifact_names_validate_and_preserve_exact_identity() {
+    let root = temp_dir("scenario-unicode-artifact-names");
+    for name in [
+        "playable_1hyvä_two_player",
+        "1HYVÄ",
+        "玩家_二人.開始-1",
+        "١مرحلة",
+        "Ascii_1.dot-hyphen",
+    ] {
+        let document = json!({
+            "name": name,
+            "scene": "res://ui/main_menu.tscn",
+            "steps": [
+                {"snapshot": name},
+                {"record_state": {"name": name, "source": "provider", "provider": "state"}},
+                {"audio_capture": {"name": name, "duration_seconds": 1.0}},
+                {"audio_export": {"name": name, "target": "qa:audio", "method": "qa_export"}}
+            ]
+        });
+        let path = root.join(format!("{name}.json"));
+        write(&path, &serde_json::to_string(&document).unwrap());
+        let normalized = load_and_normalize_scenario_document(&path).unwrap();
+        assert_eq!(normalized["name"], name);
+        assert_eq!(normalized["steps"][0]["snapshot"], name);
+        for (index, kind) in [
+            (1, "record_state"),
+            (2, "audio_capture"),
+            (3, "audio_export"),
+        ] {
+            assert_eq!(normalized["steps"][index][kind]["name"], name);
+        }
+        assert_eq!(find_scenario_by_name(&root, name), Some(path));
+    }
+    // Discovery and lookups retain case and accents instead of transliterating.
+    assert!(find_scenario_by_name(&root, "1HYVA").is_none());
+    assert!(find_scenario_by_name(&root, "1hyvä").is_none());
+    assert!(find_scenario_by_name(&root, "1HYVA\u{308}").is_none());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn artifact_name_validation_rejects_unsafe_unicode_paths_and_controls() {
+    for name in [
+        "",
+        ".",
+        "..",
+        ".hyvä",
+        "_hyvä",
+        "-hyvä",
+        "../hyvä",
+        "hyvä/escape",
+        "hyvä\\escape",
+        "hyvä:escape",
+        "hyvä\u{2215}escape", // Unicode division slash is not a path-name letter.
+        "hyvä\u{ff0f}escape", // Fullwidth slash.
+        "hyvä\u{ff3c}escape", // Fullwidth backslash.
+        "hyvä name",
+        "hyvä\u{a0}name",   // Non-breaking space.
+        "hyvä\u{3000}name", // Ideographic space.
+        "hyvä\tname",
+        "hyvä\nname",
+        "hyvä\0name",
+        "hyvä\u{7f}name",
+        "hyvä\u{85}name",
+        "hyvä\u{61c}name",  // Arabic letter mark (bidi control).
+        "hyvä\u{200e}name", // Left-to-right mark.
+        "hyvä\u{202e}name", // Right-to-left override.
+        "hyvä\u{2066}name", // Left-to-right isolate.
+        "hyvä\u{200b}name", // Zero-width space.
+        "hyvä\u{200d}name", // Zero-width joiner.
+        "hyvä\u{feff}name",
+        "hyvä😀",
+        "hyva\u{308}", // Decomposed spelling is not silently composed.
+    ] {
+        let base = json!({"name": "safe", "scene": "res://main.tscn", "steps": []});
+        let mut document = base.clone();
+        document["name"] = json!(name);
+        assert!(
+            validate_scenario_document(&document, Path::new("scenario.json")).is_err(),
+            "scenario name accepted {name:?}"
+        );
+        for step in [
+            json!({"snapshot": name}),
+            json!({"record_state": {"name": name, "source": "provider", "provider": "state"}}),
+            json!({"audio_capture": {"name": name, "duration_seconds": 1.0}}),
+            json!({"audio_export": {"name": name, "target": "qa:audio", "method": "qa_export"}}),
+        ] {
+            let mut document = base.clone();
+            document["steps"] = json!([step]);
+            assert!(
+                validate_scenario_document(&document, Path::new("scenario.json")).is_err(),
+                "artifact step accepted {name:?}: {document}"
+            );
+        }
+    }
+}
+
+#[test]
 fn list_scenarios_prefers_declared_names_and_stable_sorting() {
     let root = temp_dir("scenario-list");
     let scenarios_dir = root.join("qa/scenarios/examples");

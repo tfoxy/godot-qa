@@ -4330,10 +4330,10 @@ pub(crate) fn is_safe_artifact_segment(value: &str) -> bool {
     let Some(first) = chars.next() else {
         return false;
     };
-    if !first.is_ascii_alphanumeric() {
+    if !first.is_alphanumeric() {
         return false;
     }
-    chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+    chars.all(|ch| ch.is_alphanumeric() || matches!(ch, '.' | '_' | '-'))
 }
 
 fn strip_wrapping_quotes(value: &str) -> String {
