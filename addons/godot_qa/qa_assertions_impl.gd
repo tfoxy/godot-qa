@@ -1,6 +1,7 @@
 extends RefCounted
 
 const QaSnapshot = preload("res://addons/godot_qa/qa_snapshot.gd")
+const QaJsonEquality = preload("res://addons/godot_qa/qa_json_equality.gd")
 
 var _runtime: RefCounted = null
 var _root_window: Window = null
@@ -890,7 +891,7 @@ func _observe_until_sample_payload(node: Node, params: Dictionary, condition: Di
 		elif not exists:
 			actual_payload["mismatch_type"] = "property_not_found"
 		elif operator == "equals":
-			matched = value == condition.get("expected", null)
+			matched = QaJsonEquality.equals(value, condition.get("expected", null))
 			if not matched:
 				actual_payload["mismatch_type"] = "value_mismatch"
 				_add_state_numeric_mismatch_diagnostics(actual_payload, value, condition.get("expected", null))
@@ -1283,7 +1284,7 @@ func _evaluate_state_match(state: Variant, check: Dictionary) -> Dictionary:
 		return {"ok": false, "data": payload}
 	if operator == "equals":
 		var expected = check.get("expected", null)
-		var equals: bool = actual == expected
+		var equals := QaJsonEquality.equals(actual, expected)
 		if not equals:
 			payload["mismatch_type"] = "value_mismatch"
 			_add_state_numeric_mismatch_diagnostics(payload, actual, expected)
@@ -1463,7 +1464,7 @@ func _state_item_matches_where(item: Variant, where: Dictionary) -> bool:
 		var actual_result := _state_path_value(item, key)
 		if not bool(actual_result.get("exists", false)):
 			return false
-		if actual_result.get("value") != expected:
+		if not QaJsonEquality.equals(actual_result.get("value"), expected):
 			return false
 	return true
 
@@ -1500,12 +1501,15 @@ func _state_value_contains(actual: Variant, expected: Variant) -> bool:
 	if actual is String:
 		return (actual as String).contains(str(expected))
 	if actual is Array:
-		return (actual as Array).has(expected)
+		for item in actual:
+			if QaJsonEquality.equals(item, expected):
+				return true
+		return false
 	if actual is Dictionary:
 		var dict: Dictionary = actual
 		if expected is Dictionary:
 			for key in (expected as Dictionary).keys():
-				if not dict.has(key) or dict.get(key) != (expected as Dictionary).get(key):
+				if not dict.has(key) or not QaJsonEquality.equals(dict.get(key), (expected as Dictionary).get(key)):
 					return false
 			return true
 		return dict.has(expected)

@@ -661,6 +661,8 @@ assert:
   - no_errors: true
 ```
 
+`equals` compares JSON arrays recursively in order and dictionaries by matching keys and values. Integer and floating-point representations compare equal only when they denote the exact same finite integer within int64 range; booleans do not equal numbers, and missing paths remain distinct from present null values. No epsilon is applied. The same comparator is used by property observation, selection predicates, and array/dictionary containment. Precision already lost before a value reaches the runtime cannot be recovered by comparison.
+
 Numeric checks support the `within` operator for absolute-tolerance windows: `|actual - expected| <= tolerance`. Unlike `approx_equals` (whose `epsilon` defaults to `0.0001` and exists for float noise), `within` requires an explicit positive `tolerance` and is meant for gameplay-sized windows ("temperature is 100 ± 5"):
 
 ```yaml
