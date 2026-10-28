@@ -33,7 +33,14 @@ pub fn preflight_bundle_names(
     config: &ProjectConfig,
     names: &[String],
 ) -> Result<Vec<BundleManifest>, CommandResult> {
-    let listed = bundle::list_bundles(config);
+    preflight_listed_bundle_names(config, names, &bundle::list_bundles(config))
+}
+
+fn preflight_listed_bundle_names(
+    config: &ProjectConfig,
+    names: &[String],
+    listed: &bundle::BundleListResult,
+) -> Result<Vec<BundleManifest>, CommandResult> {
     // A manifest that does not load or a globally duplicated name poisons the whole
     // listing, so it is reported before any per-name lookup: "bundle 'x' was not found"
     // would be a misleading second-order symptom of a manifest that failed to parse.
@@ -41,7 +48,8 @@ pub fn preflight_bundle_names(
         return Err(preflight_failure_result(
             listed
                 .failures
-                .into_iter()
+                .iter()
+                .cloned()
                 .map(|mut failure| {
                     failure.command = Some(COMMAND.to_string());
                     failure
@@ -199,18 +207,34 @@ pub fn run_scenario_bundles(
     options: &ScenarioBundleRunOptions,
 ) -> CommandResult {
     let started = Instant::now();
-    if let Err(result) = preflight_bundle_names(config, names) {
-        return result;
-    }
-    let results: Vec<CommandResult> = names
-        .iter()
-        .map(|name| bundle::run_scenario_bundle(config, name, options))
+    let prepared = match prepare_bundles(config, names, options) {
+        Ok(prepared) => prepared,
+        Err(result) => return result,
+    };
+    let results: Vec<CommandResult> = prepared
+        .into_iter()
+        .map(|prepared| bundle::run_prepared_scenario_bundle(config, prepared, options))
         .collect();
     let envelope = MultiBundleEnvelope {
         wall_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         ..MultiBundleEnvelope::default()
     };
     aggregate_bundle_results(names, results, envelope)
+}
+
+/// All bundles share one manifest listing, scenario index and normalized document cache.
+/// Name preflight still reports every invalid name before any preparation or execution.
+pub(crate) fn prepare_bundles(
+    config: &ProjectConfig,
+    names: &[String],
+    options: &ScenarioBundleRunOptions,
+) -> Result<Vec<Result<bundle::PreparedBundleRun, CommandResult>>, CommandResult> {
+    let mut preparation = bundle::BundlePreparation::new(config);
+    preflight_listed_bundle_names(config, names, &preparation.listed)?;
+    Ok(names
+        .iter()
+        .map(|name| bundle::prepare_bundle_run(config, name, options, &mut preparation))
+        .collect())
 }
 
 fn preflight_failure_result(failures: Vec<FailureDetail>) -> CommandResult {
@@ -350,6 +374,98 @@ mod tests {
                 .collect(),
             exit_code: if ok { 0 } else { 1 },
         }
+    }
+
+    #[test]
+    fn bundle_preparation_reuses_manifest_index_and_normalized_snapshot_across_bundles() {
+        let root = temp_root("prepared-snapshot");
+        write_gate(&root, "a", "gate_a");
+        write_gate(&root, "b", "gate_b");
+        let config = test_config(&root);
+        fs::create_dir_all(&config.scenarios_dir).expect("scenario directory");
+        let path = config.scenarios_dir.join("some_scenario.yaml");
+        fs::write(
+            &path,
+            "name: some_scenario\nscene: res://original.tscn\nsteps: []\n",
+        )
+        .expect("scenario");
+        let options = ScenarioBundleRunOptions::default();
+        let mut preparation = bundle::BundlePreparation::new(&config);
+        let first = bundle::prepare_bundle_run(&config, "gate_a", &options, &mut preparation);
+        assert_eq!(first.as_ref().ok().map(|run| run.runnable_count()), Some(1));
+        // Both subsequent preparation and dispatch must use the invocation's snapshot:
+        // no new manifest listing, scenario discovery, or normalized document load.
+        fs::remove_dir_all(root.join("qa/gates")).expect("remove manifests");
+        fs::remove_file(&path).expect("remove scenario");
+        let second = bundle::prepare_bundle_run(&config, "gate_b", &options, &mut preparation);
+        assert_eq!(
+            second.as_ref().ok().map(|run| run.runnable_count()),
+            Some(1)
+        );
+        for prepared in [first, second] {
+            let result = bundle::run_prepared_scenario_bundle_with_runner(
+                &config,
+                prepared,
+                &options,
+                |_, scenario_path, scenario, _, _, _| {
+                    assert_eq!(scenario_path, path);
+                    assert_eq!(scenario["scene"], "res://original.tscn");
+                    CommandResult::success("scenario run", "snapshot dispatched")
+                },
+                bundle::BundlePostRun::default,
+            );
+            assert!(result.ok, "{:?}", result.failures);
+            assert_eq!(result.data["runs"].as_array().expect("runs").len(), 1);
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn multi_bundle_preparation_keeps_selection_errors_as_exit_two_before_execution() {
+        let root = temp_root("prepared-selection");
+        write_gate(&root, "a", "gate_a");
+        write_gate(&root, "b", "gate_b");
+        let config = test_config(&root);
+        let mut options = ScenarioBundleRunOptions::default();
+        options.selection.only.push("missing".to_string());
+        let prepared = prepare_bundles(&config, &names(&["gate_b", "gate_a"]), &options)
+            .unwrap_or_else(|result| panic!("name preflight failed: {:?}", result.failures));
+        assert_eq!(prepared.len(), 2);
+        for prepared in prepared {
+            let result = match prepared {
+                Err(result) => result,
+                Ok(_) => panic!("invalid selection must fail preparation"),
+            };
+            assert_eq!(result.exit_code, 2);
+            assert_eq!(result.failures[0].kind, "selection_unknown_scenario");
+        }
+        assert!(!config.artifacts_dir.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unresolved_preparation_preserves_warm_start_failure_precedence() {
+        let root = temp_root("warm-invalid-selection");
+        write_gate(&root, "a", "gate_a");
+        let mut config = test_config(&root);
+        config.godot_binary = Some(root.join("missing-godot").to_string_lossy().into_owned());
+        for warm_strict in [false, true] {
+            let mut options = ScenarioBundleRunOptions {
+                warm_strict,
+                jobs: 1,
+                ..ScenarioBundleRunOptions::default()
+            };
+            options.selection.only.push("missing".to_string());
+            let result = crate::run::run_scenario_bundle_warm(&config, "gate_a", &options);
+            if warm_strict {
+                assert_eq!(result.exit_code, 1);
+                assert_eq!(result.failures[0].kind, "warm_session_start_failed");
+            } else {
+                assert_eq!(result.exit_code, 2);
+                assert_eq!(result.failures[0].kind, "selection_unknown_scenario");
+            }
+        }
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

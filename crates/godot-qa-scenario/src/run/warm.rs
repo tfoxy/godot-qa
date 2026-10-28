@@ -152,11 +152,21 @@ pub fn run_scenario_bundle_warm(
     // keeps running the parallel cold path — jobs are NOT forced to 1 and nothing
     // hard-errors (see run_scenario_bundle_skipping_warm). Never applied to the
     // equivalence-check entry point, which needs the warm leg to compare.
-    if let Some(count) = crate::bundle::resolve_bundle_runnable_count(config, name, options) {
-        if skip_warm_below_parallelism(options.jobs, count) {
-            return run_scenario_bundle_skipping_warm(config, name, options);
-        }
+    let prepared = crate::bundle::prepare_bundle_run(
+        config,
+        name,
+        options,
+        &mut crate::bundle::BundlePreparation::new(config),
+    );
+    if prepared
+        .as_ref()
+        .is_ok_and(|prepared| skip_warm_below_parallelism(options.jobs, prepared.runnable_count()))
+    {
+        return run_scenario_bundle_skipping_warm(config, prepared, options);
     }
+    // Unresolved preparation cannot justify skipping warm. Keep the existing strict
+    // startup failure precedence; successful startup still consumes the prepared error
+    // through the runner so its post-run hook tears down the pool.
     // Eagerly start ONE headless pool session first: it both (a) lets --warm-strict
     // fail fast on a dead session and (b) fixes the session fixed_fps used to
     // classify every scenario. The rest of the pool (up to K sessions) starts
@@ -175,7 +185,7 @@ pub fn run_scenario_bundle_warm(
             // never worse than a plain bundle run. The failure rides along instead
             // of being discarded: a bundle that silently paid for an all-cold run
             // must say WHY.
-            let mut cold = crate::bundle::run_scenario_bundle(config, name, options);
+            let mut cold = crate::bundle::run_prepared_scenario_bundle(config, prepared, options);
             cold.data
                 .insert("warm".to_string(), warm_session_start_failed_json(&detail));
             return cold;
@@ -193,9 +203,9 @@ pub fn run_scenario_bundle_warm(
     ));
     let runner_pool = Arc::clone(&pool);
     let post_run_pool = Arc::clone(&pool);
-    let mut result = crate::bundle::run_scenario_bundle_with_runner(
+    let mut result = crate::bundle::run_prepared_scenario_bundle_with_runner(
         config,
-        name,
+        prepared,
         options,
         move |config, scenario_path, scenario, command_line, headless_override, audio_override| {
             warm_or_cold_scenario(
@@ -247,9 +257,10 @@ pub fn run_scenario_bundles_warm(
     let started = Instant::now();
     // Resolve every name before anything runs or boots: a typo in the third gate must not
     // cost a pool seed, and it must be reported alongside a typo in the first.
-    if let Err(result) = crate::bundle_multi::preflight_bundle_names(config, names) {
-        return result;
-    }
+    let prepared = match crate::bundle_multi::prepare_bundles(config, names, options) {
+        Ok(prepared) => prepared,
+        Err(result) => return result,
+    };
     // Sessions are the invocation's, not any bundle's, so no bundle prunes them.
     let child_options = crate::bundle::ScenarioBundleRunOptions {
         prune_pool_sessions: false,
@@ -259,14 +270,19 @@ pub fn run_scenario_bundles_warm(
     // ONE skip decision for the invocation. Deciding per bundle would defeat the point:
     // three six-scenario gates on a twelve-lane host are eighteen scenarios sharing twelve
     // lanes, which reuses sessions, even though each gate on its own would not.
-    let runnable_counts: Vec<Option<usize>> = names
+    let runnable_counts: Vec<Option<usize>> = prepared
         .iter()
-        .map(|name| crate::bundle::resolve_bundle_runnable_count(config, name, options))
+        .map(|prepared| {
+            prepared
+                .as_ref()
+                .ok()
+                .map(|prepared| prepared.runnable_count())
+        })
         .collect();
     if let Some(runnable_total) = multi_bundle_warm_skip_total(options.jobs, &runnable_counts) {
-        let results: Vec<CommandResult> = names
-            .iter()
-            .map(|name| run_scenario_bundle_skipping_warm(config, name, &child_options))
+        let results: Vec<CommandResult> = prepared
+            .into_iter()
+            .map(|prepared| run_scenario_bundle_skipping_warm(config, prepared, &child_options))
             .collect();
         let mut warm = warm_skipped_below_parallelism_json(options.warm_strict);
         if let Some(warm) = warm.as_object_mut() {
@@ -296,9 +312,11 @@ pub fn run_scenario_bundles_warm(
             if options.warm_strict {
                 return warm_session_start_failed_result(command, &detail);
             }
-            let results: Vec<CommandResult> = names
-                .iter()
-                .map(|name| crate::bundle::run_scenario_bundle(config, name, &child_options))
+            let results: Vec<CommandResult> = prepared
+                .into_iter()
+                .map(|prepared| {
+                    crate::bundle::run_prepared_scenario_bundle(config, prepared, &child_options)
+                })
                 .collect();
             return finish_multi_bundle_warm(
                 config,
@@ -320,13 +338,13 @@ pub fn run_scenario_bundles_warm(
         warm_pool_max(options),
         Some(seed_boot),
     ));
-    let results: Vec<CommandResult> = names
-        .iter()
-        .map(|name| {
+    let results: Vec<CommandResult> = prepared
+        .into_iter()
+        .map(|prepared| {
             let runner_pool = Arc::clone(&pool);
-            let mut result = crate::bundle::run_scenario_bundle_with_runner(
+            let mut result = crate::bundle::run_prepared_scenario_bundle_with_runner(
                 config,
-                name,
+                prepared,
                 &child_options,
                 move |config,
                       scenario_path,
@@ -458,6 +476,12 @@ pub fn run_scenario_bundle_warm_equivalence(
     name: &str,
     options: &crate::bundle::ScenarioBundleRunOptions,
 ) -> CommandResult {
+    let prepared = crate::bundle::prepare_bundle_run(
+        config,
+        name,
+        options,
+        &mut crate::bundle::BundlePreparation::new(config),
+    );
     let seed_started = Instant::now();
     let seed = start_warm_pool_session(config, true, false);
     let seed_boot = seed_started.elapsed();
@@ -488,9 +512,9 @@ pub fn run_scenario_bundle_warm_equivalence(
     let runner_pool = pool.clone();
     let post_run_pool = pool.clone();
 
-    let mut result = crate::bundle::run_scenario_bundle_with_runner(
+    let mut result = crate::bundle::run_prepared_scenario_bundle_with_runner(
         config,
-        name,
+        prepared,
         options,
         move |config, scenario_path, scenario, command_line, headless_override, audio_override| {
             // Cold is authoritative for the gate.
@@ -713,7 +737,7 @@ const WARM_SKIPPED_BELOW_PARALLELISM_REASON: &str = "warm_skipped_below_parallel
 /// to 1 and nothing hard-errors.
 fn run_scenario_bundle_skipping_warm(
     config: &ProjectConfig,
-    name: &str,
+    prepared: Result<crate::bundle::PreparedBundleRun, CommandResult>,
     options: &crate::bundle::ScenarioBundleRunOptions,
 ) -> CommandResult {
     let warm_strict = options.warm_strict;
@@ -722,9 +746,9 @@ fn run_scenario_bundle_skipping_warm(
     // identical to the equivalence path's no-pool fallback — so `fixed_fps_mismatch`
     // is judged the same way as on the non-skip path.
     let session_fps = project_default_fixed_fps(config);
-    let mut cold = crate::bundle::run_scenario_bundle_with_runner(
+    let mut cold = crate::bundle::run_prepared_scenario_bundle_with_runner(
         config,
-        name,
+        prepared,
         options,
         move |config, scenario_path, scenario, command_line, headless_override, audio_override| {
             skip_cold_scenario(

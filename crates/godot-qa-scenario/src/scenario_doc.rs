@@ -177,9 +177,7 @@ fn list_scenario_entries(scenarios_dir: &Path) -> Vec<ScenarioEntry> {
     }
 
     let mut scenario_paths = Vec::new();
-    collect_paths_with_extension(scenarios_dir, "yaml", &mut scenario_paths);
-    collect_paths_with_extension(scenarios_dir, "yml", &mut scenario_paths);
-    collect_paths_with_extension(scenarios_dir, "json", &mut scenario_paths);
+    collect_scenario_paths(scenarios_dir, &mut scenario_paths);
 
     let mut entries: Vec<ScenarioEntry> = scenario_paths
         .into_iter()
@@ -780,17 +778,20 @@ pub fn load_and_normalize_scenario_document(path: &Path) -> Result<Value, Scenar
     Ok(normalize_scenario_document(&document))
 }
 
-fn collect_paths_with_extension(dir: &Path, extension: &str, paths: &mut Vec<PathBuf>) {
+fn collect_scenario_paths(dir: &Path, paths: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            collect_paths_with_extension(&path, extension, paths);
+            collect_scenario_paths(&path, paths);
             continue;
         }
-        if path.extension().and_then(|ext| ext.to_str()) == Some(extension) {
+        if matches!(
+            path.extension().and_then(|ext| ext.to_str()),
+            Some("yaml" | "yml" | "json")
+        ) {
             paths.push(path);
         }
     }
@@ -895,9 +896,7 @@ pub fn list_abstract_scenario_files(scenarios_dir: &Path) -> Vec<PathBuf> {
         return Vec::new();
     }
     let mut paths = Vec::new();
-    collect_paths_with_extension(scenarios_dir, "yaml", &mut paths);
-    collect_paths_with_extension(scenarios_dir, "yml", &mut paths);
-    collect_paths_with_extension(scenarios_dir, "json", &mut paths);
+    collect_scenario_paths(scenarios_dir, &mut paths);
     let mut abstract_paths: Vec<PathBuf> = paths
         .into_iter()
         .filter(|path| is_abstract_scenario_file(path))

@@ -247,7 +247,7 @@ struct BundleChildTask {
     bundle_chain: Vec<String>,
     source_kind: BundleReferenceSource,
     scenario_path: PathBuf,
-    scenario: Value,
+    scenario: Arc<Value>,
 }
 
 /// What a bundle RUNNER wants folded into the bundle result after every child has
@@ -295,49 +295,55 @@ struct BundleRunAnnotations {
     scheduling: Value,
 }
 
-/// Count the runnable scenario tasks a bundle expands to, WITHOUT running any of
-/// them (no Godot launched). Mirrors the resolution `run_scenario_bundle_with_runner`
-/// does before dispatch (`list_bundles` -> `expand_bundle` -> `prepare_bundle_child_tasks`),
-/// returning `prepared.tasks.len()` — the same value fed to `resolve_bundle_parallelism`.
-///
-/// Returns `None` if the bundle cannot be resolved (listing failure, unknown or
-/// duplicate name, expansion failure) so callers fall through to the normal path,
-/// which surfaces the real failure rather than masking it here.
+/// An invocation-local snapshot shared by warm eligibility and actual dispatch.
+/// Discovery and normalized documents are reused across every requested bundle.
+pub(crate) struct BundlePreparation {
+    pub(crate) listed: BundleListResult,
+    scenario_index: Option<scenario_doc::ScenarioIndex>,
+    scenarios: HashMap<PathBuf, Result<Arc<Value>, scenario_doc::ScenarioError>>,
+    listing_started: Option<(Instant, u64)>,
+}
+
+impl BundlePreparation {
+    pub(crate) fn new(config: &ProjectConfig) -> Self {
+        let started = Instant::now();
+        let started_at_ms = epoch_millis();
+        let listed = list_bundles(config);
+        Self {
+            listed,
+            scenario_index: None,
+            scenarios: HashMap::new(),
+            listing_started: Some((started, started_at_ms)),
+        }
+    }
+}
+
+pub(crate) struct PreparedBundleRun {
+    bundle: BundleManifest,
+    selection: bundle_selection::ResolvedBundleSelection,
+    selection_warnings: Vec<Value>,
+    children: BundlePreparedChildren,
+    prepare_elapsed: Duration,
+    started: Instant,
+    started_at_ms: u64,
+}
+
+impl PreparedBundleRun {
+    pub(crate) fn runnable_count(&self) -> usize {
+        self.children.tasks.len()
+    }
+}
+
+/// Resolve the same tasks as execution without launching Godot.
+/// Invocation drivers retain `PreparedBundleRun` instead of repeating this work.
 pub fn resolve_bundle_runnable_count(
     config: &ProjectConfig,
     name: &str,
     options: &ScenarioBundleRunOptions,
 ) -> Option<usize> {
-    let command = "scenario bundle run";
-    let listed = list_bundles(config);
-    if !listed.failures.is_empty() {
-        return None;
-    }
-    let matches: Vec<&BundleManifest> = listed.bundles.iter().filter(|b| b.name == name).collect();
-    if matches.len() != 1 {
-        return None;
-    }
-    let expanded = expand_bundle(matches[0], &listed.bundles, command).ok()?;
-    // Selection narrows what "runnable" means, so the warm skip decision has to see the
-    // FILTERED count: `--only one_scenario` on a 100-scenario gate runs one child and must
-    // take the same below-parallelism skip a one-scenario bundle would. An unresolvable
-    // selection returns `None` for the same reason an unresolvable bundle does — the normal
-    // path is where that failure is reported, not here.
-    let (selection, _) = bundle_selection::resolve_bundle_selection(
-        &config.artifacts_dir,
-        name,
-        &expanded_member_names(&expanded),
-        &options.selection,
-    )
-    .ok()?;
-    let prepared = prepare_bundle_child_tasks(
-        config,
-        expanded,
-        options,
-        command,
-        selection.selected.as_ref(),
-    );
-    Some(prepared.tasks.len())
+    prepare_bundle_run(config, name, options, &mut BundlePreparation::new(config))
+        .ok()
+        .map(|prepared| prepared.runnable_count())
 }
 
 /// The bundle's expansion as a plain name list, in expansion order — the member list
@@ -355,9 +361,18 @@ pub fn run_scenario_bundle(
     name: &str,
     options: &ScenarioBundleRunOptions,
 ) -> CommandResult {
-    run_scenario_bundle_with_runner(
+    let prepared = prepare_bundle_run(config, name, options, &mut BundlePreparation::new(config));
+    run_prepared_scenario_bundle(config, prepared, options)
+}
+
+pub(crate) fn run_prepared_scenario_bundle(
+    config: &ProjectConfig,
+    prepared: Result<PreparedBundleRun, CommandResult>,
+    options: &ScenarioBundleRunOptions,
+) -> CommandResult {
+    run_prepared_scenario_bundle_with_runner(
         config,
-        name,
+        prepared,
         options,
         |config, scenario_path, scenario, command_line, headless_override, audio_override| {
             run::run_scenario_once(
@@ -385,50 +400,57 @@ where
     F: Fn(&ProjectConfig, &Path, &Value, &str, Option<bool>, Option<bool>) -> CommandResult + Sync,
     P: FnOnce() -> BundlePostRun,
 {
+    let prepared = prepare_bundle_run(config, name, options, &mut BundlePreparation::new(config));
+    run_prepared_scenario_bundle_with_runner(config, prepared, options, runner, post_run)
+}
+
+/// Prepare a bundle once, before warm pool startup or any child execution.
+pub(crate) fn prepare_bundle_run(
+    config: &ProjectConfig,
+    name: &str,
+    options: &ScenarioBundleRunOptions,
+    preparation: &mut BundlePreparation,
+) -> Result<PreparedBundleRun, CommandResult> {
     let command = "scenario bundle run";
     // The bundle wall clock starts here, before discovery: a bundle that spends
     // seconds resolving 101 manifests has to be able to say so.
-    let bundle_started = Instant::now();
-    let bundle_started_at_ms = epoch_millis();
-    let listed = list_bundles(config);
+    let (bundle_started, bundle_started_at_ms) = preparation
+        .listing_started
+        .take()
+        .unwrap_or_else(|| (Instant::now(), epoch_millis()));
+    let listed = &preparation.listed;
     if !listed.failures.is_empty() {
-        // A runner can already own process-level resources before the bundle is even
-        // resolved — the warm pool is seeded before this call — so every abandoning
-        // return runs the post-run hook. Nothing it reports can be published from these
-        // shapes, but a leaked pool would leave Godot processes running after the CLI
-        // exits, which is far worse than losing the (empty) evidence.
-        let _ = post_run();
-        return CommandResult {
+        return Err(CommandResult {
             ok: false,
             command: command.to_string(),
             message: "scenario bundle run failed".to_string(),
             data: serde_json::Map::new(),
             failures: listed
                 .failures
-                .into_iter()
+                .iter()
+                .cloned()
                 .map(|mut failure| {
                     failure.command = Some(command.to_string());
                     failure
                 })
                 .collect(),
             exit_code: 1,
-        };
+        });
     }
     let matches: Vec<&BundleManifest> = listed.bundles.iter().filter(|b| b.name == name).collect();
     if matches.is_empty() {
-        let _ = post_run();
         if let Some(mut failure) = invalid_manifest_failure_for_name(config, name) {
             failure.command = Some(command.to_string());
-            return CommandResult {
+            return Err(CommandResult {
                 ok: false,
                 command: command.to_string(),
                 message: "scenario bundle run failed".to_string(),
                 data: serde_json::Map::new(),
                 failures: vec![failure],
                 exit_code: 1,
-            };
+            });
         }
-        return CommandResult {
+        return Err(CommandResult {
             ok: false,
             command: command.to_string(),
             message: "scenario bundle run failed".to_string(),
@@ -449,11 +471,10 @@ where
                 ..FailureDetail::default()
             }],
             exit_code: 1,
-        };
+        });
     }
     if matches.len() > 1 {
-        let _ = post_run();
-        return CommandResult {
+        return Err(CommandResult {
             ok: false,
             command: command.to_string(),
             message: "scenario bundle run failed".to_string(),
@@ -470,21 +491,20 @@ where
                 ..FailureDetail::default()
             }],
             exit_code: 1,
-        };
+        });
     }
     let bundle = matches[0];
     let expanded = match expand_bundle(bundle, &listed.bundles, command) {
         Ok(expanded) => expanded,
         Err(failure) => {
-            let _ = post_run();
-            return CommandResult {
+            return Err(CommandResult {
                 ok: false,
                 command: command.to_string(),
                 message: "scenario bundle run failed".to_string(),
                 data: serde_json::Map::new(),
                 failures: vec![failure],
                 exit_code: 1,
-            };
+            });
         }
     };
     // Which of the expanded children actually run. Resolved here, before anything is
@@ -498,9 +518,8 @@ where
     ) {
         Ok(resolved) => resolved,
         Err(mut failure) => {
-            let _ = post_run();
             failure.command = Some(command.to_string());
-            return CommandResult {
+            return Err(CommandResult {
                 ok: false,
                 command: command.to_string(),
                 message: "scenario bundle run failed".to_string(),
@@ -510,16 +529,68 @@ where
                 // gate: exit 2 keeps "the bundle ran and something failed" (1) distinct
                 // from "the bundle never ran".
                 exit_code: 2,
-            };
+            });
         }
     };
+    let bundle = bundle.clone();
     let prepared = prepare_bundle_child_tasks(
         config,
+        preparation,
         expanded,
         options,
         command,
         selection.selected.as_ref(),
     );
+    Ok(PreparedBundleRun {
+        bundle,
+        selection,
+        selection_warnings,
+        children: prepared,
+        prepare_elapsed: bundle_started.elapsed(),
+        started: bundle_started,
+        started_at_ms: bundle_started_at_ms,
+    })
+}
+
+pub(crate) fn run_prepared_scenario_bundle_with_runner<F, P>(
+    config: &ProjectConfig,
+    prepared: Result<PreparedBundleRun, CommandResult>,
+    options: &ScenarioBundleRunOptions,
+    runner: F,
+    post_run: P,
+) -> CommandResult
+where
+    F: Fn(&ProjectConfig, &Path, &Value, &str, Option<bool>, Option<bool>) -> CommandResult + Sync,
+    P: FnOnce() -> BundlePostRun,
+{
+    let prepared = match prepared {
+        Ok(prepared) => prepared,
+        Err(result) => {
+            let _ = post_run();
+            return result;
+        }
+    };
+    let PreparedBundleRun {
+        bundle,
+        selection,
+        selection_warnings,
+        children: prepared,
+        prepare_elapsed,
+        started: bundle_started,
+        started_at_ms: bundle_started_at_ms,
+    } = prepared;
+    let command = "scenario bundle run";
+    // Preparation happens before shared pool startup and earlier bundles. Keep real
+    // timestamps, and attribute that interval separately from filesystem preparation.
+    let dispatch_wait_ms = round_to(
+        bundle_started
+            .elapsed()
+            .saturating_sub(prepare_elapsed)
+            .as_secs_f64()
+            * 1000.0,
+        1000.0,
+    );
+    let scheduling_started = Instant::now();
     let parallelism = resolve_bundle_parallelism(options.jobs, prepared.tasks.len());
     // Dispatch order is decided after parallelism, because a serial run has nothing to
     // gain from reordering and must stay in plain expansion order.
@@ -530,7 +601,10 @@ where
         options,
         parallelism.resolved_jobs,
     );
-    let prepare_ms = millis_since(bundle_started);
+    let prepare_ms = round_to(
+        prepare_elapsed.as_secs_f64() * 1000.0 + millis_since(scheduling_started),
+        1000.0,
+    );
     let execute_started = Instant::now();
     let mut child_summaries =
         execute_bundle_child_tasks(config, tasks, options, parallelism.resolved_jobs, &runner);
@@ -562,6 +636,7 @@ where
         started: bundle_started,
         started_at_ms: bundle_started_at_ms,
         prepare_ms,
+        dispatch_wait_ms,
         execute_ms,
         // Nothing has been written yet, and summary.json is written from inside
         // the artifact phase — so the snapshot it carries necessarily stops here.
@@ -576,7 +651,7 @@ where
     let artifacts_started = Instant::now();
     let bundle_artifacts = prepare_bundle_artifacts(
         config,
-        bundle,
+        &bundle,
         options,
         &parallelism,
         &warnings,
@@ -736,6 +811,7 @@ fn schedule_bundle_tasks(
 /// the run was filtered.
 fn prepare_bundle_child_tasks(
     config: &ProjectConfig,
+    preparation: &mut BundlePreparation,
     expanded: Vec<ExpandedBundleChild>,
     options: &ScenarioBundleRunOptions,
     command: &str,
@@ -744,7 +820,9 @@ fn prepare_bundle_child_tasks(
     let mut prepared = BundlePreparedChildren::default();
     // One discovery pass for the whole bundle: per-name lookup would re-walk and
     // re-read the entire scenarios tree once per child.
-    let scenario_index = scenario_doc::ScenarioIndex::load(&config.scenarios_dir);
+    let scenario_index = preparation
+        .scenario_index
+        .get_or_insert_with(|| scenario_doc::ScenarioIndex::load(&config.scenarios_dir));
     for (index, child_entry) in expanded.into_iter().enumerate() {
         if let Some(selected) = selected
             && !selected.contains(&index)
@@ -789,7 +867,14 @@ fn prepare_bundle_child_tasks(
         }
 
         let scenario_path = paths[0].clone();
-        let scenario = match scenario_doc::load_and_normalize_scenario_document(&scenario_path) {
+        let scenario = match preparation
+            .scenarios
+            .entry(scenario_path.clone())
+            .or_insert_with(|| {
+                scenario_doc::load_and_normalize_scenario_document(&scenario_path).map(Arc::new)
+            })
+            .clone()
+        {
             Ok(v) => v,
             Err(error) => {
                 prepared.failures.push(IndexedFailure {
@@ -1102,6 +1187,7 @@ struct BundleTiming {
     started: Instant,
     started_at_ms: u64,
     prepare_ms: f64,
+    dispatch_wait_ms: f64,
     execute_ms: f64,
     artifacts_ms: f64,
     pool_seed_ms: Option<f64>,
@@ -1130,6 +1216,7 @@ impl BundleTiming {
             "finished_at_ms": epoch_millis(),
             "wall_ms": millis_since(self.started),
             "prepare_ms": self.prepare_ms,
+            "dispatch_wait_ms": self.dispatch_wait_ms,
             "execute_ms": self.execute_ms,
             "artifacts_ms": self.artifacts_ms,
             "sum_child_duration_ms": sum_child_duration_ms,
