@@ -19,7 +19,7 @@ const FOCUS_NEIGHBOR_SIDES := {
 	"bottom": SIDE_BOTTOM,
 }
 
-static func node_to_dict(node: Node) -> Dictionary:
+static func node_to_dict(node: Node, captured_visual_evidence: Variant = null) -> Dictionary:
 	var result := {
 		"path": str(node.get_path()),
 		"name": str(node.name),
@@ -48,7 +48,7 @@ static func node_to_dict(node: Node) -> Dictionary:
 		result["visible"] = (node as CanvasItem).is_visible_in_tree()
 	else:
 		result["visible"] = true
-	result["visual_evidence"] = visual_evidence_for_node(node)
+	result["visual_evidence"] = visual_evidence_for_node(node) if captured_visual_evidence == null else captured_visual_evidence
 	return result
 
 static func node_summary_to_dict(node: Node, locator := "") -> Dictionary:
@@ -61,12 +61,6 @@ static func node_summary_to_dict(node: Node, locator := "") -> Dictionary:
 	if locator != "":
 		result["locator"] = locator
 	return result
-
-static func _has_property(object: Object, property_name: String) -> bool:
-	for property in object.get_property_list():
-		if property.get("name", "") == property_name:
-			return true
-	return false
 
 static func _groups_to_array(groups: Array) -> Array[String]:
 	var normalized: Array[String] = []
@@ -356,11 +350,21 @@ static func all_controls(root: Node) -> Array[Control]:
 	_collect_all_controls(root, controls)
 	return controls
 
-static func control_to_dict(control: Control) -> Dictionary:
-	var result := node_to_dict(control)
-	if _has_property(control, "disabled"):
+static func control_to_dict(control: Control, captured_visual_evidence: Variant = null) -> Dictionary:
+	var result := node_to_dict(control, captured_visual_evidence)
+	# Enumerate once per serialization: custom Controls may supply properties
+	# dynamically, so a class-wide cache would become stale.
+	var has_disabled := false
+	var has_text := false
+	for property in control.get_property_list():
+		var property_name := str(property.get("name", ""))
+		has_disabled = has_disabled or property_name == "disabled"
+		has_text = has_text or property_name == "text"
+		if has_disabled and has_text:
+			break
+	if has_disabled:
 		result["disabled"] = bool(control.get("disabled"))
-	if _has_property(control, "text"):
+	if has_text:
 		result["text"] = str(control.get("text"))
 	result["global_rect"] = _rect2_to_array(control.get_global_rect())
 	result["rect"] = _rect2_to_array(Rect2(control.position, control.size))
@@ -383,11 +387,9 @@ static func control_state_to_dict(control: Control) -> Dictionary:
 		result.erase(key)
 	return result
 
-static func visible_controls_to_dict(root: Node, controls: Array[Control] = [], options := {}) -> Dictionary:
+static func visible_controls_to_dict(root: Node, controls: Variant = null, options := {}) -> Dictionary:
 	var normalized := normalize_filter_options(options)
-	var visible := controls
-	if visible.is_empty():
-		visible = _filtered_visible_controls(root, normalized)
+	var visible: Array = _filtered_visible_controls(root, normalized) if controls == null else controls
 	var viewport_rect := root.get_viewport().get_visible_rect()
 	var entries: Array[Dictionary] = []
 	for control in visible:
@@ -400,11 +402,9 @@ static func visible_controls_to_dict(root: Node, controls: Array[Control] = [], 
 		result["filter"] = normalized.duplicate(true)
 	return result
 
-static func all_controls_to_dict(root: Node, controls: Array[Control] = [], options := {}) -> Dictionary:
+static func all_controls_to_dict(root: Node, controls: Variant = null, options := {}) -> Dictionary:
 	var normalized := normalize_filter_options(options)
-	var all := controls
-	if all.is_empty():
-		all = _filtered_all_controls(root, normalized)
+	var all: Array = _filtered_all_controls(root, normalized) if controls == null else controls
 	var viewport_rect := root.get_viewport().get_visible_rect()
 	var entries: Array[Dictionary] = []
 	for control in all:
@@ -463,22 +463,24 @@ static func errors_to_dict(runtime_errors: Array) -> Dictionary:
 		"errors": errors,
 	}
 
-static func save_viewport_screenshot(viewport: Viewport, path: String, allow_fallback := true) -> int:
+# Copy the rendered texture before collecting metadata or writing artifacts.
+# Returning an Image keeps capture separate from PNG encoding and disk I/O.
+static func _capture_viewport_image(viewport: Viewport) -> Image:
 	if OS.has_feature("headless") or DisplayServer.get_name() == "headless":
-		if not allow_fallback:
-			return ERR_UNAVAILABLE
-		return _write_fallback_screenshot(viewport, path)
+		return null
 	var texture := viewport.get_texture()
 	if texture == null:
-		if not allow_fallback:
-			return ERR_UNAVAILABLE
-		return _write_fallback_screenshot(viewport, path)
+		return null
 	var image := texture.get_image()
+	if image == null or image.get_width() <= 0 or image.get_height() <= 0:
+		return null
+	return image
+
+static func save_viewport_screenshot(viewport: Viewport, path: String, allow_fallback := true) -> int:
+	return _save_captured_viewport_screenshot(viewport, _capture_viewport_image(viewport), path, allow_fallback)
+
+static func _save_captured_viewport_screenshot(viewport: Viewport, image: Image, path: String, allow_fallback := true) -> int:
 	if image == null:
-		if not allow_fallback:
-			return ERR_UNAVAILABLE
-		return _write_fallback_screenshot(viewport, path)
-	if image.get_width() <= 0 or image.get_height() <= 0:
 		if not allow_fallback:
 			return ERR_UNAVAILABLE
 		return _write_fallback_screenshot(viewport, path)
@@ -503,7 +505,10 @@ static func save_viewport_screenshot(viewport: Viewport, path: String, allow_fal
 	if file == null:
 		return ERR_CANT_OPEN
 	file.store_buffer(png_buffer)
-	return OK
+	file.flush()
+	var write_error := file.get_error()
+	file.close()
+	return write_error
 
 static func snapshot_paths(snapshot_dir: String) -> Dictionary:
 	return {
@@ -535,8 +540,8 @@ static func capture_screenshot(root_window: Window, output_path: String, allow_f
 		}
 
 	await root_window.get_tree().process_frame
-	RenderingServer.force_draw(false)
 	await root_window.get_tree().process_frame
+	RenderingServer.force_draw(false)
 
 	var screenshot_error := save_viewport_screenshot(root_window, output_path, allow_fallback)
 	if screenshot_error != OK:
@@ -594,29 +599,34 @@ static func capture_snapshot_bundle(
 			"artifacts": paths,
 		}
 
-	var visible := _filtered_visible_controls(scene_root, normalized)
-	var all := _filtered_all_controls(scene_root, normalized)
+	# Settle before the final draw. No yields may separate this pixel copy from
+	# metadata collection: advancing the tree would mix different frames.
+	await root_window.get_tree().process_frame
+	await root_window.get_tree().process_frame
+	RenderingServer.force_draw(false)
+	var image := _capture_viewport_image(root_window)
+	var payloads := _snapshot_payloads(scene_root, root_window, runtime_errors, normalized)
 	var failures: Array[Dictionary] = []
 	for job in [
 		{
 			"key": "tree",
 			"path": str(paths["tree"]),
-			"payload": node_tree_to_dict(scene_root, normalized),
+			"payload": payloads["tree"],
 		},
 		{
 			"key": "ui",
 			"path": str(paths["ui"]),
-			"payload": all_controls_to_dict(scene_root, all, normalized),
+			"payload": payloads["ui"],
 		},
 		{
 			"key": "focus",
 			"path": str(paths["focus"]),
-			"payload": focus_to_dict(root_window, visible, normalized),
+			"payload": payloads["focus"],
 		},
 		{
 			"key": "errors",
 			"path": str(paths["errors"]),
-			"payload": errors_to_dict(runtime_errors),
+			"payload": payloads["errors"],
 		},
 	]:
 		var save_error := _write_json_file(str(job["path"]), job["payload"])
@@ -631,11 +641,7 @@ static func capture_snapshot_bundle(
 				}
 			)
 
-	await root_window.get_tree().process_frame
-	RenderingServer.force_draw(false)
-	await root_window.get_tree().process_frame
-
-	var screenshot_error := save_viewport_screenshot(root_window, str(paths["screenshot"]))
+	var screenshot_error := _save_captured_viewport_screenshot(root_window, image, str(paths["screenshot"]))
 	if screenshot_error != OK:
 		failures.append(
 			{
@@ -722,14 +728,39 @@ static func _write_json_file(path: String, payload: Dictionary) -> int:
 	file.store_string(JSON.stringify(payload))
 	return OK
 
-static func _node_tree_entry(node: Node, options := {}, depth := 0) -> Variant:
+static func _snapshot_payloads(scene_root: Node, root_window: Window, runtime_errors: Array, options: Dictionary) -> Dictionary:
+	var visible: Array[Control] = []
+	var context := {"visible": visible, "entries": []}
+	var tree := {"root": _node_tree_entry(scene_root, options, 0, context)}
+	var ui := {
+		"viewport": _vector2_to_array(scene_root.get_viewport().get_visible_rect().size),
+		"controls": context["entries"],
+	}
+	if not options.is_empty():
+		tree["filter"] = options.duplicate(true)
+		ui["filter"] = options.duplicate(true)
+	return {
+		"tree": tree,
+		"ui": ui,
+		"focus": focus_to_dict(root_window, visible, options),
+		"errors": errors_to_dict(runtime_errors),
+	}
+
+static func _node_tree_entry(node: Node, options := {}, depth := 0, capture: Variant = null) -> Variant:
+	var qa_matches := _node_matches_qa_filter(node) if bool((options as Dictionary).get("qa_only", false)) else true
+	var visual_evidence := visual_evidence_for_node(node)
+	if capture != null and node is Control and qa_matches:
+		var control := node as Control
+		(capture["entries"] as Array).append(_filtered_control_to_dict(control, options, visual_evidence))
+		if control.is_visible_in_tree():
+			(capture["visible"] as Array).append(control)
 	var entry := {
 		"path": str(node.get_path()),
 		"name": str(node.name),
 		"type": node.get_class(),
 		"qa_id": str(node.get_meta("qa_id", "")),
 		"visible": _node_visible(node),
-		"visual_evidence": visual_evidence_for_node(node),
+		"visual_evidence": visual_evidence,
 		"children": [],
 	}
 	if bool((options as Dictionary).get("include_metadata", true)):
@@ -741,11 +772,11 @@ static func _node_tree_entry(node: Node, options := {}, depth := 0) -> Variant:
 			var child_node := child as Node
 			if child_node == null:
 				continue
-			var child_entry = _node_tree_entry(child_node, options, depth + 1)
+			var child_entry = _node_tree_entry(child_node, options, depth + 1, capture)
 			if child_entry is Dictionary:
 				children.append(child_entry)
 	entry["children"] = children
-	if bool((options as Dictionary).get("qa_only", false)) and children.is_empty() and not _node_matches_qa_filter(node):
+	if children.is_empty() and not qa_matches:
 		return null
 	return entry
 
@@ -790,23 +821,27 @@ static func _node_within_depth(node: Node, root: Node, options: Dictionary) -> b
 	return current == root and depth <= int(options.get("max_depth", 0))
 
 static func _filtered_visible_controls(root: Node, options := {}) -> Array[Control]:
-	var controls := visible_controls(root)
-	var filtered: Array[Control] = []
-	for control in controls:
-		if _control_allowed(control, root, options as Dictionary):
-			filtered.append(control)
-	return filtered
+	var controls: Array[Control] = []
+	_collect_filtered_controls(root, options, 0, true, controls)
+	return controls
 
 static func _filtered_all_controls(root: Node, options := {}) -> Array[Control]:
-	var controls := all_controls(root)
-	var filtered: Array[Control] = []
-	for control in controls:
-		if _control_allowed(control, root, options as Dictionary):
-			filtered.append(control)
-	return filtered
+	var controls: Array[Control] = []
+	_collect_filtered_controls(root, options, 0, false, controls)
+	return controls
 
-static func _filtered_control_to_dict(control: Control, options := {}) -> Dictionary:
-	var result := control_to_dict(control)
+static func _collect_filtered_controls(node: Node, options: Dictionary, depth: int, visible_only: bool, controls: Array[Control]) -> void:
+	if node is Control:
+		var control := node as Control
+		if (not visible_only or control.is_visible_in_tree()) and (not bool(options.get("qa_only", false)) or _node_matches_qa_filter(control)):
+			controls.append(control)
+	if options.has("max_depth") and depth >= int(options["max_depth"]):
+		return
+	for child in node.get_children():
+		_collect_filtered_controls(child, options, depth + 1, visible_only, controls)
+
+static func _filtered_control_to_dict(control: Control, options := {}, captured_visual_evidence: Variant = null) -> Dictionary:
+	var result := control_to_dict(control, captured_visual_evidence)
 	if not bool((options as Dictionary).get("include_metadata", true)):
 		result.erase("metadata")
 	elif (options as Dictionary).has("metadata_keys"):
