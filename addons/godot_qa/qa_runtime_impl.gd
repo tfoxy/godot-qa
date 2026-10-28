@@ -1184,6 +1184,17 @@ func _click_target(target: String) -> Dictionary:
 		)
 
 	var control := target_node as Control
+	if control.get_viewport() != _root_window:
+		return _error(
+			"target_not_clickable",
+			"Locator clicks require a Control in the active root window viewport",
+			{
+				"target": target,
+				"resolved": resolution.get("resolved", ""),
+				"expected": str(_root_window.get_path()),
+				"actual": str(control.get_viewport().get_path()),
+			},
+		)
 	var rect := control.get_global_rect()
 	if not control.is_visible_in_tree() or rect.size.x <= 0.0 or rect.size.y <= 0.0:
 		return _error(
@@ -1199,7 +1210,10 @@ func _click_target(target: String) -> Dictionary:
 			},
 		)
 
-	var center := rect.position + (rect.size / 2.0)
+	# Input.parse_input_event enters through the window, before Godot applies
+	# its inverse stretch transform. Include the canvas and viewport transforms
+	# (including letterboxing), but exclude the desktop window position.
+	var center := control.get_viewport_transform() * control.get_global_transform() * (control.size / 2.0)
 	await _emit_left_click(center)
 	return _ok(
 		{
