@@ -1,10 +1,11 @@
 use serde::Serialize;
 use serde_json::Value;
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::Path;
 
 const MAX_WAV_BYTES: usize = 64 * 1024 * 1024;
+const MAX_DECODED_MONO_BYTES: usize = 512 * 1024 * 1024;
 const SILENCE_THRESHOLD: f64 = 0.001;
 const NEAR_SILENCE_RMS_THRESHOLD: f64 = 0.01;
 const CLIPPING_THRESHOLD: f64 = 0.999;
@@ -147,15 +148,7 @@ pub fn analyze_wav_file_with_options(
     options: AudioAnalysisOptions,
 ) -> Result<Value, AudioAnalysisError> {
     validate_options(options)?;
-    let bytes = fs::read(path).map_err(|error| AudioAnalysisError {
-        code: "audio_read_failed",
-        message: format!("failed to read WAV file {}: {error}", path.display()),
-    })?;
-    let analysis = analyze_wav_bytes(&bytes, options)?;
-    serde_json::to_value(analysis).map_err(|error| AudioAnalysisError {
-        code: "audio_analysis_serialization_failed",
-        message: format!("failed to serialize WAV analysis: {error}"),
-    })
+    DecodedWav::read(path)?.analyze(options)
 }
 
 pub fn write_audio_analysis_artifact(path: &Path, analysis: &Value) -> io::Result<()> {
@@ -188,14 +181,6 @@ fn validate_options(options: AudioAnalysisOptions) -> Result<(), AudioAnalysisEr
         }
     }
     Ok(())
-}
-
-fn analyze_wav_bytes(
-    bytes: &[u8],
-    options: AudioAnalysisOptions,
-) -> Result<AudioAnalysis, AudioAnalysisError> {
-    let (format, data) = parse_wav(bytes)?;
-    samples_to_analysis(format, data, options)
 }
 
 fn parse_wav(bytes: &[u8]) -> Result<(WavFormat, &[u8]), AudioAnalysisError> {
@@ -273,56 +258,147 @@ fn parse_wav(bytes: &[u8]) -> Result<(WavFormat, &[u8]), AudioAnalysisError> {
 
 /// Decode a WAV file to a mono `f64` sample buffer (used by the spectrogram renderer).
 pub fn load_wav_mono(path: &Path) -> Result<(Vec<f64>, u32), AudioAnalysisError> {
-    let bytes = fs::read(path).map_err(|error| AudioAnalysisError {
-        code: "audio_read_failed",
-        message: format!("failed to read WAV file {}: {error}", path.display()),
-    })?;
-    let (format, data) = parse_wav(&bytes)?;
-    let mono = decode_mono(format, data)?;
-    Ok((mono, format.sample_rate))
+    let wav = DecodedWav::read(path)?;
+    Ok((wav.mono, wav.format.sample_rate))
 }
 
-/// Render a waveform + log-frequency spectrogram PNG for `wav_path` to `png_path`,
-/// making audio quality visible to an eyes-only reviewer (see `crate::spectrogram`).
+/// Render a waveform and spectrogram from a bounded WAV file.
 pub fn write_spectrogram_artifact(
     wav_path: &Path,
     png_path: &Path,
 ) -> Result<(), AudioAnalysisError> {
-    let (mono, sample_rate) = load_wav_mono(wav_path)?;
-    crate::spectrogram::render_to_png(png_path, &mono, sample_rate).map_err(|error| {
-        AudioAnalysisError {
-            code: "audio_spectrogram_write_failed",
-            message: format!(
-                "failed to write spectrogram PNG {}: {error}",
-                png_path.display()
-            ),
-        }
-    })
+    DecodedWav::read(wav_path)?.write_spectrogram(png_path)
 }
 
-fn decode_mono(format: WavFormat, data: &[u8]) -> Result<Vec<f64>, AudioAnalysisError> {
-    let block_align = usize::from(format.block_align);
-    if data.is_empty() || block_align == 0 || !data.len().is_multiple_of(block_align) {
-        return Err(err(
-            "audio_invalid_data_chunk",
-            "data chunk length is not aligned to complete sample frames".to_string(),
-        ));
+/// Immutable decoded audio shared by analysis and spectrogram rendering.
+#[derive(Debug)]
+pub struct DecodedWav {
+    format: WavFormat,
+    byte_count: usize,
+    mono: Vec<f64>,
+    peak: f64,
+    sum_squares: f64,
+    silent_samples: u64,
+    clipping_sample_count: u64,
+    zero_crossings: u64,
+    transient_count: u64,
+}
+
+/// Container and sample metadata; no analysis or browser compatibility is implied.
+#[derive(Debug, Clone, Serialize)]
+pub struct WavMetadata {
+    pub byte_count: usize,
+    pub duration_seconds: f64,
+    pub sample_rate: u32,
+    pub channels: u16,
+    pub bits_per_sample: u16,
+    pub encoding: &'static str,
+}
+
+impl DecodedWav {
+    pub fn read(path: &Path) -> Result<Self, AudioAnalysisError> {
+        let bytes =
+            read_bounded_wav(fs::File::open(path).map_err(|error| read_error(path, error))?)
+                .map_err(|error| match error {
+                    BoundedReadError::Io(error) => read_error(path, error),
+                    BoundedReadError::TooLarge => wav_too_large(MAX_WAV_BYTES + 1),
+                })?;
+        Self::from_bytes(&bytes)
     }
-    let bytes_per_sample = usize::from(format.bits_per_sample.div_ceil(8));
-    let frame_count = data.len() / block_align;
-    let mut mono = Vec::with_capacity(frame_count);
-    for frame_index in 0..frame_count {
-        let mut frame_sum = 0.0f64;
-        for channel_index in 0..usize::from(format.channels) {
-            let sample_offset = frame_index * block_align + channel_index * bytes_per_sample;
-            frame_sum += decode_sample(
-                format,
-                &data[sample_offset..sample_offset + bytes_per_sample],
-            )?;
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, AudioAnalysisError> {
+        let (format, data) = parse_wav(bytes)?;
+        decode_wav(format, data, bytes.len())
+    }
+
+    pub fn metadata(&self) -> WavMetadata {
+        WavMetadata {
+            byte_count: self.byte_count,
+            duration_seconds: self.mono.len() as f64 / f64::from(self.format.sample_rate),
+            sample_rate: self.format.sample_rate,
+            channels: self.format.channels,
+            bits_per_sample: self.format.bits_per_sample,
+            encoding: if self.format.audio_format == 1 {
+                "pcm"
+            } else {
+                "ieee_float"
+            },
         }
-        mono.push(frame_sum / f64::from(format.channels));
     }
-    Ok(mono)
+
+    pub fn analyze(&self, options: AudioAnalysisOptions) -> Result<Value, AudioAnalysisError> {
+        validate_options(options)?;
+        let analysis =
+            serde_json::to_value(decoded_to_analysis(self, options)?).map_err(|error| {
+                AudioAnalysisError {
+                    code: "audio_analysis_serialization_failed",
+                    message: format!("failed to serialize WAV analysis: {error}"),
+                }
+            })?;
+        // Analysis has no nullable fields. serde_json maps nonfinite derived f64
+        // values to null, which must never masquerade as successful metrics.
+        if contains_null(&analysis) {
+            return Err(err(
+                "audio_invalid_sample",
+                "WAV samples overflow finite derived analysis metrics".to_string(),
+            ));
+        }
+        Ok(analysis)
+    }
+
+    pub fn write_spectrogram(&self, path: &Path) -> Result<(), AudioAnalysisError> {
+        crate::spectrogram::render_to_png(path, &self.mono, self.format.sample_rate).map_err(
+            |error| AudioAnalysisError {
+                code: "audio_spectrogram_write_failed",
+                message: format!(
+                    "failed to write spectrogram PNG {}: {error}",
+                    path.display()
+                ),
+            },
+        )
+    }
+}
+
+fn contains_null(value: &Value) -> bool {
+    match value {
+        Value::Null => true,
+        Value::Array(items) => items.iter().any(contains_null),
+        Value::Object(items) => items.values().any(contains_null),
+        _ => false,
+    }
+}
+
+enum BoundedReadError {
+    Io(io::Error),
+    TooLarge,
+}
+
+fn read_bounded_wav(reader: impl Read) -> Result<Vec<u8>, BoundedReadError> {
+    let mut bytes = Vec::new();
+    reader
+        .take(MAX_WAV_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(BoundedReadError::Io)?;
+    if bytes.len() > MAX_WAV_BYTES {
+        return Err(BoundedReadError::TooLarge);
+    }
+    Ok(bytes)
+}
+
+fn read_error(path: &Path, error: io::Error) -> AudioAnalysisError {
+    err(
+        "audio_read_failed",
+        format!("failed to read WAV file {}: {error}", path.display()),
+    )
+}
+
+fn wav_too_large(size: usize) -> AudioAnalysisError {
+    err(
+        "audio_wav_too_large",
+        format!(
+            "WAV file is at least {size} bytes; maximum supported analysis size is {MAX_WAV_BYTES} bytes"
+        ),
+    )
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -397,11 +473,25 @@ fn parse_format_chunk(chunk: &[u8]) -> Result<WavFormat, AudioAnalysisError> {
     Ok(format)
 }
 
-fn samples_to_analysis(
+fn reserve_mono(frame_count: usize) -> Result<Vec<f64>, AudioAnalysisError> {
+    let bytes = frame_count.checked_mul(std::mem::size_of::<f64>())
+        .filter(|bytes| *bytes <= MAX_DECODED_MONO_BYTES)
+        .ok_or_else(|| err("audio_resource_limit", format!("decoded mono buffer for {frame_count} frames exceeds maximum {MAX_DECODED_MONO_BYTES} bytes")))?;
+    let mut mono = Vec::new();
+    mono.try_reserve_exact(frame_count).map_err(|error| {
+        err(
+            "audio_resource_limit",
+            format!("cannot allocate {bytes} decoded mono bytes for {frame_count} frames: {error}"),
+        )
+    })?;
+    Ok(mono)
+}
+
+fn decode_wav(
     format: WavFormat,
     data: &[u8],
-    options: AudioAnalysisOptions,
-) -> Result<AudioAnalysis, AudioAnalysisError> {
+    byte_count: usize,
+) -> Result<DecodedWav, AudioAnalysisError> {
     if data.is_empty() {
         return Err(err(
             "audio_empty_data_chunk",
@@ -417,7 +507,6 @@ fn samples_to_analysis(
     }
 
     let bytes_per_sample = usize::from(format.bits_per_sample.div_ceil(8));
-    let sample_count = data.len() / bytes_per_sample;
     let frame_count = data.len() / block_align;
     if frame_count == 0 {
         return Err(err(
@@ -426,7 +515,7 @@ fn samples_to_analysis(
         ));
     }
 
-    let mut mono = Vec::with_capacity(frame_count);
+    let mut mono = reserve_mono(frame_count)?;
     let mut peak = 0.0f64;
     let mut sum_squares = 0.0f64;
     let mut silent_samples = 0u64;
@@ -443,6 +532,14 @@ fn samples_to_analysis(
                 format,
                 &data[sample_offset..sample_offset + bytes_per_sample],
             )?;
+            if !sample.is_finite() {
+                return Err(err(
+                    "audio_invalid_sample",
+                    format!(
+                        "WAV sample at frame {frame_index}, channel {channel_index} must be finite; got {sample}"
+                    ),
+                ));
+            }
             let abs = sample.abs();
             peak = peak.max(abs);
             sum_squares += sample * sample;
@@ -453,6 +550,14 @@ fn samples_to_analysis(
                 clipping_sample_count += 1;
             }
             frame_sum += sample;
+            if !sum_squares.is_finite() || !frame_sum.is_finite() {
+                return Err(err(
+                    "audio_invalid_sample",
+                    format!(
+                        "WAV sample at frame {frame_index}, channel {channel_index} overflows finite energy or downmix accumulation; got {sample}"
+                    ),
+                ));
+            }
         }
         let mono_sample = frame_sum / f64::from(format.channels);
         if let Some(previous) = previous_mono {
@@ -466,6 +571,34 @@ fn samples_to_analysis(
         previous_mono = Some(mono_sample);
         mono.push(mono_sample);
     }
+
+    Ok(DecodedWav {
+        format,
+        byte_count,
+        mono,
+        peak,
+        sum_squares,
+        silent_samples,
+        clipping_sample_count,
+        zero_crossings,
+        transient_count,
+    })
+}
+
+fn decoded_to_analysis(
+    wav: &DecodedWav,
+    options: AudioAnalysisOptions,
+) -> Result<AudioAnalysis, AudioAnalysisError> {
+    let format = wav.format;
+    let mono = &wav.mono;
+    let frame_count = mono.len();
+    let sample_count = frame_count * usize::from(format.channels);
+    let peak = wav.peak;
+    let sum_squares = wav.sum_squares;
+    let silent_samples = wav.silent_samples;
+    let clipping_sample_count = wav.clipping_sample_count;
+    let zero_crossings = wav.zero_crossings;
+    let transient_count = wav.transient_count;
 
     let rms = (sum_squares / sample_count as f64).sqrt();
     let duration_seconds = frame_count as f64 / f64::from(format.sample_rate);
@@ -489,7 +622,7 @@ fn samples_to_analysis(
     }
 
     let window_summaries = summarize_windows(
-        &mono,
+        mono,
         format.sample_rate,
         window_samples,
         hop_samples,
@@ -520,9 +653,8 @@ fn samples_to_analysis(
         })
         .collect::<Vec<_>>();
     let clipping_regions =
-        regions_for_threshold(&mono, format.sample_rate, CLIPPING_THRESHOLD, true);
-    let silence_regions =
-        regions_for_threshold(&mono, format.sample_rate, SILENCE_THRESHOLD, false);
+        regions_for_threshold(mono, format.sample_rate, CLIPPING_THRESHOLD, true);
+    let silence_regions = regions_for_threshold(mono, format.sample_rate, SILENCE_THRESHOLD, false);
     let suspected_event_spam_regions = event_spam_regions(&window_summaries);
     let near_silent_frames = mono
         .iter()
@@ -970,4 +1102,181 @@ fn read_u32_le(bytes: &[u8], offset: usize) -> Result<u32, AudioAnalysisError> {
 
 fn err(code: &'static str, message: String) -> AudioAnalysisError {
     AudioAnalysisError { code, message }
+}
+
+#[cfg(test)]
+mod decoded_tests {
+    use super::*;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    fn pcm_stereo() -> Vec<u8> {
+        let data: Vec<u8> = [32767_i16, -32767, 16384, -16384, 0, 0]
+            .into_iter()
+            .flat_map(i16::to_le_bytes)
+            .collect();
+        let mut wav = b"RIFF".to_vec();
+        wav.extend_from_slice(&(36_u32 + data.len() as u32).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16_u32.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&2_u16.to_le_bytes());
+        wav.extend_from_slice(&8000_u32.to_le_bytes());
+        wav.extend_from_slice(&32000_u32.to_le_bytes());
+        wav.extend_from_slice(&4_u16.to_le_bytes());
+        wav.extend_from_slice(&16_u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        wav.extend_from_slice(&data);
+        wav
+    }
+
+    #[test]
+    fn shared_decode_preserves_channel_metrics_when_stereo_cancels() {
+        let bytes = pcm_stereo();
+        let wav = DecodedWav::from_bytes(&bytes).unwrap();
+        let analysis = wav.analyze(AudioAnalysisOptions::default()).unwrap();
+        assert!(wav.mono.iter().all(|sample| *sample == 0.0));
+        assert!(analysis["peak"].as_f64().unwrap() > 0.99);
+        assert!(analysis["rms"].as_f64().unwrap() > 0.6);
+        assert_eq!(analysis["clipping_sample_count"], 2);
+        assert_eq!(analysis["silence_ratio"], 1.0 / 3.0);
+        let metadata = wav.metadata();
+        assert_eq!(metadata.byte_count, bytes.len());
+        assert_eq!(metadata.channels, 2);
+        assert_eq!(metadata.encoding, "pcm");
+        assert_eq!(metadata.bits_per_sample, 16);
+        assert_eq!(metadata.duration_seconds, 3.0 / 8000.0);
+        assert_eq!(
+            wav.analyze(AudioAnalysisOptions::default()).unwrap(),
+            analysis
+        );
+    }
+
+    fn sample_wav(encoding: u16, bits: u16, data: &[u8]) -> Vec<u8> {
+        let padded_size = data.len() + data.len() % 2;
+        let mut bytes = b"RIFF".to_vec();
+        bytes.extend_from_slice(&(36_u32 + padded_size as u32).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16_u32.to_le_bytes());
+        bytes.extend_from_slice(&encoding.to_le_bytes());
+        bytes.extend_from_slice(&1_u16.to_le_bytes());
+        bytes.extend_from_slice(&8000_u32.to_le_bytes());
+        bytes.extend_from_slice(&(8000_u32 * u32::from(bits / 8)).to_le_bytes());
+        bytes.extend_from_slice(&(bits / 8).to_le_bytes());
+        bytes.extend_from_slice(&bits.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(data);
+        if !data.len().is_multiple_of(2) {
+            bytes.push(0);
+        }
+        bytes
+    }
+
+    #[test]
+    fn shared_decode_rejects_nonfinite_ieee_float_samples() {
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for (bits, data) in [
+                (32, (value as f32).to_le_bytes().to_vec()),
+                (64, value.to_le_bytes().to_vec()),
+            ] {
+                let error = DecodedWav::from_bytes(&sample_wav(3, bits, &data)).unwrap_err();
+                assert_eq!(error.code, "audio_invalid_sample");
+                assert!(error.message.contains("frame 0, channel 0"));
+            }
+        }
+    }
+
+    #[test]
+    fn shared_decode_keeps_supported_pcm_and_float_sample_values() {
+        for (encoding, bits, data) in [
+            (1_u16, 8_u16, vec![192]),
+            (1, 16, 16384_i16.to_le_bytes().to_vec()),
+            (1, 24, vec![0, 0, 64]),
+            (1, 32, 1_073_741_824_i32.to_le_bytes().to_vec()),
+            (3, 32, 0.5_f32.to_le_bytes().to_vec()),
+            (3, 64, 0.5_f64.to_le_bytes().to_vec()),
+        ] {
+            let bytes = sample_wav(encoding, bits, &data);
+            let wav = DecodedWav::from_bytes(&bytes).unwrap();
+            assert_eq!(wav.mono, vec![0.5], "{encoding}/{bits}");
+            let analysis = wav.analyze(AudioAnalysisOptions::default()).unwrap();
+            assert_eq!(analysis["peak"], 0.5);
+            assert_eq!(analysis["rms"], 0.5);
+            assert_eq!(wav.metadata().bits_per_sample, bits);
+        }
+    }
+
+    #[test]
+    fn shared_decode_rejects_overflowing_finite_float_samples() {
+        for samples in [vec![1e308_f64, 1e308], vec![1e154, 1e154, 1e154]] {
+            let data: Vec<_> = samples.into_iter().flat_map(f64::to_le_bytes).collect();
+            let error = DecodedWav::from_bytes(&sample_wav(3, 64, &data)).unwrap_err();
+            assert_eq!(error.code, "audio_invalid_sample");
+            assert!(error.message.contains("overflows finite"));
+        }
+    }
+
+    #[test]
+    fn analysis_rejects_nonfinite_derived_spectral_metrics() {
+        let data: Vec<_> = std::iter::repeat_n(1e152_f64, 2048)
+            .flat_map(f64::to_le_bytes)
+            .collect();
+        let wav = DecodedWav::from_bytes(&sample_wav(3, 64, &data)).unwrap();
+        let error = wav.analyze(AudioAnalysisOptions::default()).unwrap_err();
+        assert_eq!(error.code, "audio_invalid_sample");
+    }
+
+    #[test]
+    fn decoded_mono_reservation_checks_size_before_allocating() {
+        assert_eq!(
+            reserve_mono(usize::MAX).unwrap_err().code,
+            "audio_resource_limit"
+        );
+        assert_eq!(
+            reserve_mono(MAX_DECODED_MONO_BYTES / 8 + 1)
+                .unwrap_err()
+                .code,
+            "audio_resource_limit"
+        );
+        assert_eq!(reserve_mono(4).unwrap().capacity(), 4);
+    }
+
+    struct CountingReader {
+        remaining: usize,
+        observed: Rc<Cell<usize>>,
+    }
+    impl Read for CountingReader {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            let count = buffer.len().min(self.remaining);
+            buffer[..count].fill(0);
+            self.remaining -= count;
+            self.observed.set(self.observed.get() + count);
+            Ok(count)
+        }
+    }
+
+    #[test]
+    fn bounded_reader_accepts_limit_and_consumes_only_one_extra_byte() {
+        let observed = Rc::new(Cell::new(0));
+        let bytes = read_bounded_wav(CountingReader {
+            remaining: MAX_WAV_BYTES,
+            observed: observed.clone(),
+        });
+        assert_eq!(bytes.ok().unwrap().len(), MAX_WAV_BYTES);
+        observed.set(0);
+        let result = read_bounded_wav(CountingReader {
+            remaining: MAX_WAV_BYTES * 2,
+            observed: observed.clone(),
+        });
+        assert!(matches!(result, Err(BoundedReadError::TooLarge)));
+        assert_eq!(observed.get(), MAX_WAV_BYTES + 1);
+    }
+
+    #[test]
+    fn from_bytes_rejects_oversized_input_before_parsing() {
+        let error = DecodedWav::from_bytes(&vec![0; MAX_WAV_BYTES + 1]).unwrap_err();
+        assert_eq!(error.code, "audio_wav_too_large");
+    }
 }

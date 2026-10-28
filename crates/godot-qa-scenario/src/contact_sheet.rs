@@ -4,6 +4,7 @@ use image::imageops::{FilterType, resize};
 use image::{GenericImageView, ImageBuffer, Rgba};
 use serde_json::{Map, Value, json};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 const COMMAND: &str = "screenshot contact-sheet";
@@ -11,6 +12,11 @@ const LABEL_MARGIN: u32 = 18;
 const CELL_GAP: u32 = 8;
 const PADDING: u32 = 8;
 const LABEL_SCALE: u32 = 2;
+const MAX_MANIFEST_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_FRAMES: usize = 1_000;
+const MAX_DIMENSION: u32 = 16_384;
+const MAX_PIXELS: u64 = 64_000_000;
+const MAX_DECODE_BYTES: u64 = 256 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct ScreenshotContactSheetOptions {
@@ -33,7 +39,6 @@ struct ContactFrame {
     thumb_width: u32,
     thumb_height: u32,
     label: String,
-    pixels: ImageBuffer<Rgba<u8>, Vec<u8>>,
 }
 
 pub fn build_contact_sheet(
@@ -48,14 +53,14 @@ pub fn build_contact_sheet(
     let output_path = resolve_input_path(&config.project_root, &options.out);
     let companion_path = companion_json_path(&output_path);
     let manifest_path = sequence_dir.join("manifest.json");
-    let columns = options.columns as u32;
-    let thumb_width = options.thumb_width as u32;
+    let columns = u32::try_from(options.columns).expect("validated columns");
+    let thumb_width = u32::try_from(options.thumb_width).expect("validated thumbnail width");
 
     let manifest = match read_manifest(&manifest_path) {
         Ok(manifest) => manifest,
         Err(result) => return result,
     };
-    let frames = match load_frames(&sequence_dir, &manifest, thumb_width) {
+    let frames = match prepare_frames(&sequence_dir, &manifest, thumb_width) {
         Ok(frames) => frames,
         Err(result) => return result,
     };
@@ -77,11 +82,46 @@ pub fn build_contact_sheet(
     }
 
     let cell_width = thumb_width;
-    let cell_height = max_thumb_height + LABEL_MARGIN;
-    let output_width = sheet_extent(columns, cell_width);
-    let output_height = sheet_extent(rows, cell_height);
-    let mut sheet =
-        ImageBuffer::from_pixel(output_width, output_height, Rgba([245, 245, 245, 255]));
+    let cell_height = match max_thumb_height.checked_add(LABEL_MARGIN) {
+        Some(height) => height,
+        None => {
+            return resource_failure(
+                Some(&manifest_path),
+                "cell height overflow",
+                json!(max_thumb_height),
+            );
+        }
+    };
+    let dimensions = sheet_extent(columns, cell_width)
+        .and_then(|width| sheet_extent(rows, cell_height).map(|height| (width, height)));
+    let (output_width, output_height) = match dimensions {
+        Some(size) => size,
+        None => {
+            return resource_failure(
+                Some(&manifest_path),
+                "canvas extent overflow",
+                json!({"columns": columns, "rows": rows}),
+            );
+        }
+    };
+    if let Err(result) = validate_dimensions(&output_path, output_width, output_height) {
+        return result;
+    }
+    let byte_count = (u64::from(output_width) * u64::from(output_height) * 4) as usize;
+    let mut pixels = Vec::new();
+    if let Err(error) = pixels.try_reserve_exact(byte_count) {
+        return resource_failure(
+            Some(&output_path),
+            "canvas allocation failed",
+            json!(error.to_string()),
+        );
+    }
+    pixels.resize(byte_count, 245);
+    for alpha in pixels.iter_mut().skip(3).step_by(4) {
+        *alpha = 255;
+    }
+    let mut sheet = ImageBuffer::from_raw(output_width, output_height, pixels)
+        .expect("validated canvas length");
     let mut metadata_frames = Vec::new();
 
     for (position, frame) in frames.iter().enumerate() {
@@ -91,7 +131,11 @@ pub fn build_contact_sheet(
         let cell_y = PADDING + row * (cell_height + CELL_GAP);
         let image_x = cell_x + (cell_width - frame.thumb_width) / 2;
         let image_y = cell_y + (max_thumb_height - frame.thumb_height) / 2;
-        blit(&mut sheet, &frame.pixels, image_x, image_y);
+        let pixels = match decode_thumbnail(frame) {
+            Ok(pixels) => pixels,
+            Err(result) => return result,
+        };
+        blit(&mut sheet, &pixels, image_x, image_y);
 
         let label_x = cell_x;
         let label_y = cell_y + max_thumb_height + 4;
@@ -159,7 +203,12 @@ pub fn build_contact_sheet(
     });
 
     if let Err(error) = write_json_file(&companion_path, &metadata) {
-        return write_failure(&companion_path, error);
+        let mut result = write_failure(&companion_path, error);
+        result.data.insert(
+            "artifacts".to_string(),
+            json!({"contact_sheet": output_path}),
+        );
+        return result;
     }
 
     CommandResult {
@@ -226,18 +275,18 @@ fn validate_options(options: &ScreenshotContactSheetOptions) -> Result<(), Comma
             json!("non-empty sequence directory"),
         ));
     }
-    if options.columns <= 0 {
+    if options.columns <= 0 || u32::try_from(options.columns).is_err() {
         return Err(args_invalid(
             "screenshot contact-sheet requires --columns > 0",
             json!(options.columns),
-            json!("positive integer columns"),
+            json!("positive integer columns that fit in u32"),
         ));
     }
-    if options.thumb_width <= 0 {
+    if options.thumb_width <= 0 || options.thumb_width > i64::from(MAX_DIMENSION) {
         return Err(args_invalid(
             "screenshot contact-sheet requires --thumb-width > 0",
             json!(options.thumb_width),
-            json!("positive integer thumb width"),
+            json!("integer thumbnail width in 1..=16384"),
         ));
     }
     if options.out.trim().is_empty() {
@@ -251,15 +300,28 @@ fn validate_options(options: &ScreenshotContactSheetOptions) -> Result<(), Comma
 }
 
 fn read_manifest(path: &Path) -> Result<Value, CommandResult> {
-    let bytes = fs::read(path).map_err(|error| {
-        contact_result_from_detail(contact_failure_detail(
-            "screenshot_contact_sheet_manifest_missing",
+    let bytes = fs::File::open(path)
+        .and_then(|file| {
+            let mut bytes = Vec::new();
+            file.take(MAX_MANIFEST_BYTES + 1).read_to_end(&mut bytes)?;
+            Ok(bytes)
+        })
+        .map_err(|error| {
+            contact_result_from_detail(contact_failure_detail(
+                "screenshot_contact_sheet_manifest_missing",
+                Some(path),
+                &format!("failed to read sequence manifest: {error}"),
+                json!("readable <sequence-dir>/manifest.json"),
+                json!("missing or unreadable manifest"),
+            ))
+        })?;
+    if bytes.len() as u64 > MAX_MANIFEST_BYTES {
+        return Err(resource_failure(
             Some(path),
-            &format!("failed to read sequence manifest: {error}"),
-            json!("readable <sequence-dir>/manifest.json"),
-            json!("missing or unreadable manifest"),
-        ))
-    })?;
+            "manifest exceeds byte limit",
+            json!(bytes.len()),
+        ));
+    }
     serde_json::from_slice(&bytes).map_err(|error| {
         contact_result_from_detail(contact_failure_detail(
             "screenshot_contact_sheet_manifest_malformed",
@@ -271,7 +333,7 @@ fn read_manifest(path: &Path) -> Result<Value, CommandResult> {
     })
 }
 
-fn load_frames(
+fn prepare_frames(
     sequence_dir: &Path,
     manifest: &Value,
     thumb_width: u32,
@@ -295,6 +357,13 @@ fn load_frames(
         )));
     }
 
+    if frames.len() > MAX_FRAMES {
+        return Err(resource_failure(
+            Some(&sequence_dir.join("manifest.json")),
+            "frame count exceeds limit",
+            json!(frames.len()),
+        ));
+    }
     let mut loaded = Vec::new();
     for (manifest_index, frame) in frames.iter().enumerate() {
         let Some(path_value) = frame.get("path").and_then(Value::as_str) else {
@@ -317,39 +386,12 @@ fn load_frames(
         }
 
         let source_path = resolve_frame_path(sequence_dir, path_value);
-        let image = image::open(&source_path).map_err(|error| {
-            let kind = if source_path.exists() {
-                "screenshot_contact_sheet_image_unreadable"
-            } else {
-                "screenshot_contact_sheet_frame_missing"
-            };
-            contact_result_from_detail(contact_failure_detail(
-                kind,
-                Some(&source_path),
-                &format!("failed to read sequence frame image: {error}"),
-                json!("readable frame image from manifest path"),
-                json!(path_value),
-            ))
-        })?;
-        let (source_width, source_height) = image.dimensions();
-        if source_width == 0 || source_height == 0 {
-            return Err(contact_result_from_detail(contact_failure_detail(
-                "screenshot_contact_sheet_invalid_dimensions",
-                Some(&source_path),
-                "sequence frame image has invalid dimensions",
-                json!("positive width and height"),
-                json!({"width": source_width, "height": source_height}),
-            )));
-        }
+        let (source_width, source_height) = image::image_dimensions(&source_path)
+            .map_err(|error| frame_read_failure(&source_path, error))?;
+        validate_dimensions(&source_path, source_width, source_height)?;
         validate_manifest_dimensions(frame, &source_path, source_width, source_height)?;
-
         let thumb_height = scaled_height(source_width, source_height, thumb_width)?;
-        let pixels = resize(
-            &image.to_rgba8(),
-            thumb_width,
-            thumb_height,
-            FilterType::Triangle,
-        );
+        validate_dimensions(&source_path, thumb_width, thumb_height)?;
         let engine_frame = frame.get("engine_frame").and_then(Value::as_i64);
         let time_msec = frame.get("time_msec").and_then(Value::as_i64);
         let index = frame.get("index").and_then(Value::as_i64);
@@ -365,7 +407,6 @@ fn load_frames(
             thumb_width,
             thumb_height,
             label: frame_label(index, engine_frame, time_msec),
-            pixels,
         });
     }
     Ok(loaded)
@@ -497,8 +538,87 @@ fn glyph(ch: char) -> Option<[&'static str; 5]> {
     })
 }
 
-fn sheet_extent(count: u32, item: u32) -> u32 {
-    PADDING * 2 + count * item + count.saturating_sub(1) * CELL_GAP
+fn sheet_extent(count: u32, item: u32) -> Option<u32> {
+    count
+        .checked_mul(item)?
+        .checked_add(count.saturating_sub(1).checked_mul(CELL_GAP)?)?
+        .checked_add(PADDING * 2)
+}
+
+fn validate_dimensions(path: &Path, width: u32, height: u32) -> Result<(), CommandResult> {
+    if width == 0 || height == 0 {
+        return Err(contact_failure(
+            "screenshot_contact_sheet_invalid_dimensions",
+            Some(path),
+            "image dimensions must be positive",
+            json!("positive width and height"),
+            json!({"width":width,"height":height}),
+        ));
+    }
+    if width > MAX_DIMENSION
+        || height > MAX_DIMENSION
+        || u64::from(width) * u64::from(height) > MAX_PIXELS
+    {
+        return Err(resource_failure(
+            Some(path),
+            "image exceeds dimensions or pixel limit",
+            json!({"width":width,"height":height}),
+        ));
+    }
+    Ok(())
+}
+
+fn frame_read_failure(path: &Path, error: impl std::fmt::Display) -> CommandResult {
+    contact_failure(
+        if path.exists() {
+            "screenshot_contact_sheet_image_unreadable"
+        } else {
+            "screenshot_contact_sheet_frame_missing"
+        },
+        Some(path),
+        &format!("failed to read sequence frame image: {error}"),
+        json!("readable frame image from manifest path"),
+        json!(path),
+    )
+}
+
+fn decode_thumbnail(frame: &ContactFrame) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>, CommandResult> {
+    let mut reader = image::ImageReader::open(&frame.source_path)
+        .map_err(|error| frame_read_failure(&frame.source_path, error))?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_DIMENSION);
+    limits.max_image_height = Some(MAX_DIMENSION);
+    limits.max_alloc = Some(MAX_DECODE_BYTES);
+    reader.limits(limits);
+    let image = reader
+        .decode()
+        .map_err(|error| frame_read_failure(&frame.source_path, error))?;
+    if image.dimensions() != (frame.source_width, frame.source_height) {
+        return Err(contact_failure(
+            "screenshot_contact_sheet_invalid_dimensions",
+            Some(&frame.source_path),
+            "image dimensions changed after preparation",
+            json!({"width": frame.source_width, "height": frame.source_height}),
+            json!({"width": image.width(), "height": image.height()}),
+        ));
+    }
+    let pixels = image.into_rgba8();
+    Ok(resize(
+        &pixels,
+        frame.thumb_width,
+        frame.thumb_height,
+        FilterType::Triangle,
+    ))
+}
+
+fn resource_failure(path: Option<&Path>, message: &str, actual: Value) -> CommandResult {
+    contact_failure(
+        "screenshot_contact_sheet_resource_limit",
+        path,
+        message,
+        json!({"max_manifest_bytes":MAX_MANIFEST_BYTES,"max_frames":MAX_FRAMES,"max_dimension":MAX_DIMENSION,"max_pixels":MAX_PIXELS,"max_decode_bytes":MAX_DECODE_BYTES}),
+        actual,
+    )
 }
 
 fn div_ceil(value: u32, divisor: u32) -> u32 {
@@ -822,5 +942,92 @@ mod tests {
             unreadable.failures[0].kind,
             "screenshot_contact_sheet_image_unreadable"
         );
+    }
+    fn options() -> ScreenshotContactSheetOptions {
+        ScreenshotContactSheetOptions {
+            sequence_dir: "seq".to_string(),
+            columns: 2,
+            thumb_width: 40,
+            out: "out/contact.png".to_string(),
+        }
+    }
+
+    #[test]
+    fn contact_sheet_rejects_wrapping_and_excessive_geometry_without_outputs() {
+        let root = temp_dir("contact-sheet-bounds");
+        let mut opts = options();
+        opts.columns = 4_294_967_296;
+        let result = build_contact_sheet(&test_config(&root), opts);
+        assert!(!result.ok);
+        assert_eq!(
+            result.failures[0].kind,
+            "screenshot_contact_sheet_args_invalid"
+        );
+        save_png(&root.join("seq/a.png"), (10, 10), [1, 2, 3, 255]);
+        write_manifest(&root.join("seq"), json!([{"path":"a.png"}]));
+        let mut opts = options();
+        opts.columns = i64::from(u32::MAX);
+        let result = build_contact_sheet(&test_config(&root), opts);
+        assert_eq!(
+            result.failures[0].kind,
+            "screenshot_contact_sheet_resource_limit"
+        );
+        let mut opts = options();
+        opts.thumb_width = 16_384;
+        let result = build_contact_sheet(&test_config(&root), opts);
+        assert_eq!(
+            result.failures[0].kind,
+            "screenshot_contact_sheet_resource_limit"
+        );
+        assert!(!root.join("out").exists());
+    }
+
+    #[test]
+    fn contact_sheet_bounds_manifest_and_frame_count_before_loading_images() {
+        let root = temp_dir("contact-sheet-manifest-bounds");
+        let dir = root.join("seq");
+        fs::create_dir_all(&dir).unwrap();
+        write_manifest(
+            &dir,
+            Value::Array(vec![json!({"path":"missing.png"}); super::MAX_FRAMES + 1]),
+        );
+        let result = build_contact_sheet(&test_config(&root), options());
+        assert_eq!(
+            result.failures[0].kind,
+            "screenshot_contact_sheet_resource_limit"
+        );
+        let file = fs::File::create(dir.join("manifest.json")).unwrap();
+        file.set_len(super::MAX_MANIFEST_BYTES + 1).unwrap();
+        let result = build_contact_sheet(&test_config(&root), options());
+        assert_eq!(
+            result.failures[0].kind,
+            "screenshot_contact_sheet_resource_limit"
+        );
+        assert!(!root.join("out").exists());
+    }
+
+    #[test]
+    fn contact_sheet_prepares_later_images_before_writing_output() {
+        let root = temp_dir("contact-sheet-preparation");
+        save_png(&root.join("seq/a.png"), (10, 10), [1, 2, 3, 255]);
+        write_manifest(
+            &root.join("seq"),
+            json!([{"path":"a.png"},{"path":"missing.png"}]),
+        );
+        let result = build_contact_sheet(&test_config(&root), options());
+        assert_eq!(
+            result.failures[0].kind,
+            "screenshot_contact_sheet_frame_missing"
+        );
+        assert!(!root.join("out").exists());
+    }
+
+    #[test]
+    fn contact_sheet_checks_source_and_thumbnail_pixel_budgets() {
+        let path = Path::new("fixture.png");
+        assert!(super::validate_dimensions(path, 7680, 4320).is_ok());
+        assert!(super::validate_dimensions(path, 16_384, 16_384).is_err());
+        assert!(super::validate_dimensions(path, 1, 16_385).is_err());
+        assert!(super::sheet_extent(u32::MAX, u32::MAX).is_none());
     }
 }

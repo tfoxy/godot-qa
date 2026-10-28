@@ -7,7 +7,7 @@ use godot_qa_core::results::{CommandResult, FailureDetail};
 use godot_qa_runtime as runtime;
 use godot_qa_scenario::{
     artifact_query, artifact_summary,
-    audio::{AudioAnalysisOptions, analyze_wav_file_with_options, write_spectrogram_artifact},
+    audio::{AudioAnalysisOptions, DecodedWav},
     bundle as scenario_bundle, check as scenario_check, contact_sheet as scenario_contact_sheet,
     edit as scenario_edit, init as scenario_init, lint as scenario_lint, live_gate,
     record as scenario_record, review as scenario_review, run as scenario_run, scenario_doc,
@@ -33,8 +33,9 @@ pub(crate) fn audio_analyze_result(args: &AudioAnalyzeArgs) -> CommandResult {
         window_seconds: args.window_seconds.unwrap_or(1.0),
         hop_seconds: args.hop_seconds.unwrap_or(0.5),
     };
-    match analyze_wav_file_with_options(&args.wav, options) {
-        Ok(analysis) => {
+    let decoded = DecodedWav::read(&args.wav);
+    match decoded.and_then(|wav| wav.analyze(options).map(|analysis| (wav, analysis))) {
+        Ok((wav, analysis)) => {
             let warnings = analysis
                 .get("warnings")
                 .and_then(Value::as_array)
@@ -64,7 +65,7 @@ pub(crate) fn audio_analyze_result(args: &AudioAnalyzeArgs) -> CommandResult {
             };
             let mut artifacts = json!({ "wav": args.wav });
             if let Some(png) = &args.spectrogram {
-                match render_analyze_spectrogram(command, &args.wav, png) {
+                match render_analyze_spectrogram(command, &wav, png) {
                     Ok(()) => artifacts["spectrogram"] = json!(png),
                     Err(failure) => failures.push(failure),
                 }
@@ -119,7 +120,11 @@ pub(crate) fn audio_analyze_result(args: &AudioAnalyzeArgs) -> CommandResult {
     }
 }
 
-fn render_analyze_spectrogram(command: &str, wav: &Path, png: &Path) -> Result<(), FailureDetail> {
+fn render_analyze_spectrogram(
+    command: &str,
+    wav: &DecodedWav,
+    png: &Path,
+) -> Result<(), FailureDetail> {
     if png.extension().and_then(|ext| ext.to_str()) != Some("png") {
         return Err(FailureDetail {
             kind: "invalid_params".to_string(),
@@ -131,7 +136,7 @@ fn render_analyze_spectrogram(command: &str, wav: &Path, png: &Path) -> Result<(
             ..FailureDetail::default()
         });
     }
-    write_spectrogram_artifact(wav, png).map_err(|error| FailureDetail {
+    wav.write_spectrogram(png).map_err(|error| FailureDetail {
         kind: error.code.to_string(),
         command: Some(command.to_string()),
         message: Some(error.message),

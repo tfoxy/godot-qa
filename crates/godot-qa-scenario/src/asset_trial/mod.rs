@@ -442,12 +442,17 @@ fn execute_trial(
                 let spectrogram = j
                     .evidence_root
                     .join(format!("{}-{phase}-spectrogram.png", binding.id));
-                crate::audio::write_spectrogram_artifact(&wav, &spectrogram).map_err(|e| {
+                let decoded = crate::audio::DecodedWav::read(&wav).map_err(|e| {
                     fail("asset_trial_comparison_failed", &binding.id, &e.to_string())
                 })?;
-                let analysis = crate::audio::analyze_wav_file(&wav).map_err(|e| {
+                decoded.write_spectrogram(&spectrogram).map_err(|e| {
                     fail("asset_trial_comparison_failed", &binding.id, &e.to_string())
                 })?;
+                let analysis = decoded
+                    .analyze(crate::audio::AudioAnalysisOptions::default())
+                    .map_err(|e| {
+                        fail("asset_trial_comparison_failed", &binding.id, &e.to_string())
+                    })?;
                 audio_review.push(json!({"phase":phase,"wav":wav,"spectrogram":spectrogram,"analysis":analysis,"attribution":"Playback overlap on a recorded bus does not prove isolated attribution or aesthetic quality."}));
             }
             comparisons.push(json!({"binding":binding.id,"audio":audio_review}));

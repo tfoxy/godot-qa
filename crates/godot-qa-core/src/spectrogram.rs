@@ -51,10 +51,12 @@ fn draw_waveform(image: &mut [[u8; 3]], samples: &[f64]) {
         }
         let y_high = (center - high * amplitude).round() as isize;
         let y_low = (center - low * amplitude).round() as isize;
-        for y in y_high.min(y_low)..=y_high.max(y_low) {
-            if (0..WAVEFORM_HEIGHT as isize).contains(&y) {
-                image[y as usize * WIDTH + x] = WAVEFORM_COLOR;
-            }
+        // Intersect before iterating: valid float WAV amplitudes can exceed
+        // [-1, 1] by many orders of magnitude. Work stays bounded by image size.
+        let first_y = y_high.min(y_low).max(0);
+        let last_y = y_high.max(y_low).min(WAVEFORM_HEIGHT as isize - 1);
+        for y in first_y..=last_y {
+            image[y as usize * WIDTH + x] = WAVEFORM_COLOR;
         }
     }
 }
@@ -272,6 +274,30 @@ mod tests {
         assert!(bytes.windows(4).any(|window| window == b"IDAT"));
         assert!(bytes.windows(4).any(|window| window == b"IEND"));
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn waveform_clips_large_amplitudes_before_iterating() {
+        let mut image = vec![BACKGROUND; WIDTH * HEIGHT];
+        let samples: Vec<_> = (0..WIDTH * 2)
+            .map(|index| if index % 2 == 0 { 1e12 } else { -1e12 })
+            .collect();
+        draw_waveform(&mut image, &samples);
+        assert!(
+            image[..WIDTH * WAVEFORM_HEIGHT]
+                .iter()
+                .all(|pixel| *pixel == WAVEFORM_COLOR)
+        );
+        assert!(
+            image[WIDTH * WAVEFORM_HEIGHT..]
+                .iter()
+                .all(|pixel| *pixel == BACKGROUND)
+        );
+        for amplitude in [1e12, -1e12] {
+            let mut image = vec![BACKGROUND; WIDTH * HEIGHT];
+            draw_waveform(&mut image, &[amplitude]);
+            assert!(image.iter().all(|pixel| *pixel == BACKGROUND));
+        }
     }
 
     #[test]
