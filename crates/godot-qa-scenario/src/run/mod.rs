@@ -1265,6 +1265,7 @@ fn execute_runtime_run(
     let preparation_started = Instant::now();
     let scenario_godot_args = scenario_godot_args(scenario);
     let scenario_project_args = scenario_project_args(scenario);
+    let installed_addon_identity = addon_provenance(config, artifacts);
     let godot_args = merged_launch_args(&config.godot_args, &scenario_godot_args);
     let project_args = merged_launch_args(&config.godot_project_args, &scenario_project_args);
     // Frame pacing (the scenario's `determinism.fixed_fps` / project timestep) is applied
@@ -1336,6 +1337,7 @@ fn execute_runtime_run(
         ),
         ("artifacts".to_string(), artifacts.to_json()),
     ]);
+    base_data.insert("addon_identity".to_string(), installed_addon_identity);
     base_data.insert("godot_args".to_string(), json!(godot_args));
     if let Some(frame_pacing) = &frame_pacing {
         base_data.insert("frame_pacing".to_string(), frame_pacing.to_json());
@@ -1846,3 +1848,4 @@ include!("audio.rs");
 include!("warm.rs");
 include!("android.rs");
 include!("tests.rs");
+include!("addon_provenance.rs");

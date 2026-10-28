@@ -354,6 +354,10 @@ fn android_base_data(
         ),
         ("artifacts".to_string(), artifacts.to_json()),
     ]);
+    base_data.insert(
+        "addon_identity".to_string(),
+        addon_provenance(config, artifacts),
+    );
     base_data.insert("godot_args".to_string(), json!(godot_args));
     base_data.insert(
         "project_args".to_string(),

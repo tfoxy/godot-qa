@@ -411,6 +411,8 @@ pub(crate) fn prepare_bundle_run(
     options: &ScenarioBundleRunOptions,
     preparation: &mut BundlePreparation,
 ) -> Result<PreparedBundleRun, CommandResult> {
+    // Freeze installed-content provenance before any warm pool or child starts.
+    config.installed_addon_identity();
     let command = "scenario bundle run";
     // The bundle wall clock starts here, before discovery: a bundle that spends
     // seconds resolving 101 manifests has to be able to say so.
@@ -677,6 +679,10 @@ where
     );
     warnings.extend(bundle_retention_warning(config, retention.as_ref()));
     let mut data = serde_json::Map::new();
+    data.insert(
+        "addon_identity".to_string(),
+        json!(config.installed_addon_identity()),
+    );
     if let Some(retention) = retention {
         data.insert("retention".to_string(), retention);
     }
@@ -1589,7 +1595,7 @@ fn prepare_bundle_artifacts(
         // deliberately absent: they are byte-for-byte duplicates of what `summary.json` and
         // `artifact-index.json` already hold, and on a 100-scenario gate that duplication
         // cost megabytes per run.
-        let meta = json!({"bundle": bundle.name, "bundle_path": bundle.path, "command": options.command_line, "parallelism": parallelism, "selection": annotations.selection, "required_bundles": bundle.required_bundles, "required_scenarios": bundle.required_scenarios, "optional_scenarios": bundle.optional_scenarios, "recommended_manual_checks": bundle.recommended_manual_checks});
+        let meta = json!({"bundle": bundle.name, "bundle_path": bundle.path, "command": options.command_line, "parallelism": parallelism, "selection": annotations.selection, "required_bundles": bundle.required_bundles, "required_scenarios": bundle.required_scenarios, "optional_scenarios": bundle.optional_scenarios, "recommended_manual_checks": bundle.recommended_manual_checks, "addon_identity": config.installed_addon_identity()});
         let summary = json!({
             "bundle": bundle.name,
             "bundle_path": bundle.path,

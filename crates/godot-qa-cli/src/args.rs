@@ -132,6 +132,8 @@ pub(crate) struct DoctorArgs {
     pub(crate) strict_binary_surface: bool,
     #[arg(long = "strict-addon-version", action = ArgAction::SetTrue)]
     pub(crate) strict_addon_version: bool,
+    #[arg(long = "strict-addon-identity", action = ArgAction::SetTrue)]
+    pub(crate) strict_addon_identity: bool,
 }
 
 #[derive(Debug, Args)]

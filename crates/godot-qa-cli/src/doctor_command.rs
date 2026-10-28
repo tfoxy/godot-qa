@@ -78,6 +78,7 @@ pub(crate) fn doctor_result(cli: &Cli, args: &DoctorArgs) -> CommandResult {
     let cli_version = env!("CARGO_PKG_VERSION");
     let installed_addon_version = read_plugin_cfg_version(&config.addon_dir.join("plugin.cfg"));
     let source_addon_version = read_plugin_cfg_version(&config.repo_addon_dir.join("plugin.cfg"));
+    let addon_identity = config.installed_addon_identity();
 
     let artifact_failure = if project_exists {
         ensure_writable_artifact_dir(&config.artifacts_dir, command)
@@ -108,6 +109,7 @@ pub(crate) fn doctor_result(cli: &Cli, args: &DoctorArgs) -> CommandResult {
             "source_path": config.repo_addon_dir,
             "version": installed_addon_version,
             "source_version": source_addon_version,
+            "identity": addon_identity,
         }),
     );
     data.insert(
@@ -149,6 +151,28 @@ pub(crate) fn doctor_result(cli: &Cli, args: &DoctorArgs) -> CommandResult {
                 installed_version,
                 cli_version,
             ));
+        }
+    }
+    if addon_identity.status != "match" {
+        warnings.push(json!({
+            "type": "addon_identity_mismatch",
+            "severity": "warning",
+            "message": "installed godot_qa addon content could not be matched to the addon embedded in this CLI build",
+            "addon_path": config.addon_dir,
+            "actual": addon_identity.status,
+            "identity": addon_identity,
+            "remediation": "install addons/godot_qa from the same build as this CLI; equal version labels alone do not establish content identity",
+        }));
+        if args.strict_addon_identity {
+            failures.push(FailureDetail {
+                kind: "addon_identity_mismatch".to_string(),
+                command: Some(command.to_string()),
+                path: Some(config.addon_dir.to_string_lossy().into_owned()),
+                message: Some("installed godot_qa addon content does not match the CLI build, or could not be read".to_string()),
+                expected: Some(json!(addon_identity.expected)),
+                actual: Some(json!(addon_identity)),
+                ..FailureDetail::default()
+            });
         }
     }
     // Unsupported `qa/config.*` spellings are a warning, never a failure: they keep

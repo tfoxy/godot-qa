@@ -210,7 +210,9 @@ fn doctor_binary_surface_reports_current_and_path_binaries() {
             .is_empty()
     );
     assert!(candidates[0]["probe_errors"].as_array().unwrap().is_empty());
-    assert!(warning_types(&body).is_empty());
+    // The minimal addon fixture has a matching version but lacks runtime scripts;
+    // content identity diagnoses that independently of this clean binary surface.
+    assert_eq!(warning_types(&body), vec!["addon_identity_mismatch"]);
 }
 
 #[test]

@@ -896,6 +896,10 @@ fn warm_base_data(
         ),
         ("artifacts".to_string(), artifacts.to_json()),
     ]);
+    base_data.insert(
+        "addon_identity".to_string(),
+        addon_provenance(config, artifacts),
+    );
     base_data.insert("godot_args".to_string(), json!(godot_args));
     if let Some(frame_pacing) = &frame_pacing {
         base_data.insert("frame_pacing".to_string(), frame_pacing.to_json());

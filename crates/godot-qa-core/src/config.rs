@@ -3,6 +3,7 @@ use serde_json::json;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 use yaml_serde::Value as YamlValue;
 
 #[derive(Debug, Clone)]
@@ -16,6 +17,8 @@ pub struct ProjectConfig {
     pub scenarios_dir: PathBuf,
     pub addon_dir: PathBuf,
     pub repo_addon_dir: PathBuf,
+    /// Shared by invocation clones so parallel bundle children hash installed files once.
+    pub addon_identity_cache: Arc<OnceLock<crate::addon_identity::AddonIdentityComparison>>,
     pub godot_launch_prefix: Vec<String>,
     pub godot_windowed_launch_prefix: Vec<String>,
     pub godot_args: Vec<String>,
@@ -96,6 +99,11 @@ impl std::str::FromStr for ScenarioSchedule {
 }
 
 impl ProjectConfig {
+    pub fn installed_addon_identity(&self) -> &crate::addon_identity::AddonIdentityComparison {
+        self.addon_identity_cache
+            .get_or_init(|| crate::addon_identity::compare_installed(&self.addon_dir))
+    }
+
     pub fn project_config_failure_for_command(&self, command: &str) -> Option<FailureDetail> {
         self.project_config_failure.clone().map(|mut failure| {
             failure.command = Some(command.to_string());
@@ -201,6 +209,7 @@ pub fn load_project_config(
         scenarios_dir: qa_dir.join("scenarios"),
         addon_dir: project_root.join("addons").join("godot_qa"),
         repo_addon_dir: repo_root.join("addons").join("godot_qa"),
+        addon_identity_cache: Default::default(),
         godot_launch_prefix: project_config
             .as_ref()
             .map(|config| config.godot_launch_prefix.clone())
