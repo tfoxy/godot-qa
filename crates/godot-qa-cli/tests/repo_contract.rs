@@ -13,6 +13,51 @@ fn read(relative_path: &str) -> String {
 }
 
 #[test]
+fn native_process_and_cold_timing_evidence_are_documented() {
+    let cli = read("docs/cli-spec.md");
+    let artifacts = read("docs/artifact-format.md");
+    for field in [
+        "data.process.termination",
+        "data.process.timing",
+        "direct_child",
+        "artifact_prepare_ms",
+        "request_prepare_ms",
+        "cli_finalize_ms",
+    ] {
+        assert!(cli.contains(field), "CLI contract missing {field}");
+        assert!(
+            artifacts.contains(field),
+            "artifact contract missing {field}"
+        );
+    }
+    assert!(artifacts.contains("runtime_started_observed_ms"));
+    assert!(artifacts.contains("tool_initiated"));
+    assert!(cli.contains("dispatch_wait_ms"));
+    assert!(artifacts.contains("dispatch_wait_ms"));
+}
+
+#[test]
+fn scaled_input_and_visual_cleanup_have_documented_runtime_limits() {
+    let cli = read("docs/cli-spec.md");
+    let protocol = read("docs/runtime-bridge-protocol.md");
+    let scenario = read("docs/scenario-format.md");
+    assert!(protocol.contains("input.click_target"));
+    for contract in [&protocol, &scenario] {
+        assert!(contract.contains("letterbox"));
+        assert!(contract.contains("SubViewport"));
+        assert!(contract.contains("target_not_clickable"));
+    }
+    assert!(cli.contains("visual_isolation_cleanup_failed"));
+    assert!(cli.contains("_relay_payload(...)"));
+    for fixture in [
+        "examples/sample_project/qa/tests/scaled_locator_click_test.gd",
+        "examples/sample_project/qa/tests/snapshot_image_equivalence.gd",
+    ] {
+        assert!(repo_root().join(fixture).is_file(), "missing {fixture}");
+    }
+}
+
+#[test]
 fn android_live_session_contract_is_documented() {
     let readme = read("docs/workflows.md");
     let cli = read("docs/cli-spec.md");

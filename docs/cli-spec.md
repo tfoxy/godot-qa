@@ -2360,6 +2360,17 @@ godot-qa telemetry record --project . --target qa:hud --method qa_pacing_metrics
 Unlike `doctor`, an addon status of `installable` is not enough for `scenario run`: the selected target project must already contain `addons/godot_qa`, because Godot executes `res://addons/godot_qa/qa_runner.gd` from that project.
 
 When `scenario run` has already prepared an artifact directory, CLI-owned failures such as launch errors, missing `result.json`, or invalid `result.json` also include `failure.artifacts` so the relevant paths stay attached to the failure object itself. If `result.json` is missing, `scenario_result_missing.actual` includes the missing result path, log path, last relevant Godot log lines, and any detected crash signal or script backtrace from `logs.txt`. Runtime failures that already carry snapshot-local artifact paths keep those snapshot keys, and the CLI merges in the prepared run-level paths (`run_root`, `result_path`, `logs_path`, `screenshot_paths`, and `diagnostic_paths`) so one failure object still points at both the specific snapshot evidence and the enclosing run context. `scenario_result_invalid` covers malformed JSON, structurally invalid payloads such as a non-object `result.json` root, non-boolean `ok`, non-array `snapshots`, non-string `snapshots` entries, non-integer `duration_ms`, non-object `artifacts`, `artifacts` values that are not strings, non-object `snapshot_artifacts`, `snapshot_artifacts` entries that are not objects of string paths, `failures` arrays that contain non-object entries, failure objects whose `type`/`message`/`path`/`target`/`severity` fields are not strings, failure `artifacts` payloads that are not objects of string paths, and failed runtime payloads that do not include actionable failure objects.
+
+Process diagnostics additionally expose `data.process.termination` and
+`data.process.timing`, including native Unix signals and monotonic observations
+of process startup, matching-result publication, exit, and cleanup. The
+termination scope is `direct_child`: a configured wrapper's status is not proof
+of its Godot child's status. Existing exit fields and timeout behavior stay
+compatible. Cold runs add `data.cold_timing` with `artifact_prepare_ms`,
+`request_prepare_ms`, and, when completed, `cli_finalize_ms`. Imports also expose
+`data.process`, including termination evidence on `godot_import_failed`.
+See [process and timing artifacts](artifact-format.md) for field definitions and
+the distinction between observed offsets, durations, and engine timing.
 Process-layer failure payloads quote their Godot launch commands as needed, so `godot_launch_failed`, `godot_run_failed`, and `artifact_write_failed` remain actionable when binary or path arguments contain spaces.
 The recorded `meta.json.command` and `request.json.run.command` fields include the effective CLI overrides used for that run, quoted as needed so the stored invocation remains reproducible when paths contain spaces.
 Auto-generated run IDs are UTC timestamp-based; if the same scenario is prepared again within the same second, `scenario run` appends a numeric suffix to keep artifact roots distinct instead of reusing the earlier directory.
@@ -2649,6 +2660,16 @@ Default thresholds are conservative review thresholds: `min_pixel_area: 256`, `m
 Required warning IDs are `visual_audit.target_missing`, `visual_audit.target_offscreen`, `visual_audit.target_too_small`, `visual_audit.low_luminance_contrast`, `visual_audit.low_color_distance`, `visual_audit.low_edge_contrast`, `visual_audit.target_bounds_unavailable`, `visual_audit.sequence_target_missing_frames`, and `visual_audit.annotated_artifact_failed`. Optional `--annotate-out <path.png>` writes an annotated PNG artifact with target boxes and warning marks outside or over the artifact image; it does not draw into the running game.
 
 `visual isolate` is a screenshot-diff workflow for project-owned visual layer providers. The project supplies a registered state provider that enumerates named render contributors and a registered fixture driver/action that can set `normal`, `only <layer>`, and `without <layer>` modes without adding visible debug UI. The CLI captures a baseline, per-layer isolated screenshots, per-layer disabled screenshots, and diff images from the same prepared live state, then writes a contact sheet and manifest with changed-pixel bounds plus straight-edge/rectangular-region warnings.
+
+Once fixture mode changes begin, the command always attempts to restore `normal`
+mode, including after a failed fixture call, screenshot capture, or diff. The
+original failure remains first. A failed restoration adds
+`visual_isolation_cleanup_failed`, with the expected normal mode and the cleanup
+command's failure evidence; successful captures with failed restoration also fail.
+Unchanged images report zero changed pixels, zero changed-pixel ratio, and null
+bounds. Captures are
+sequential, so projects should prepare a stable visual state when animation would
+otherwise contaminate their differences.
 
 ```bash
 godot-qa visual isolate --project <project> --setup-script qa/review-scripts/prepare_race.yaml --provider race_visual_layers --driver race_review --action set_visual_layer_mode --out .qa/artifacts/manual/race_visual_isolation --json
@@ -3005,6 +3026,13 @@ or, when it fell back to cold:
 `mode` is `"headless"` or `"windowed"` when the scenario ran warm, else `null`. `reason` is one of `execution_isolation_cold`, `godot_args`, `screenshot_match`, `windowed_media` (the media reason for a windowed-warm scenario, including a single-viewport `layout_audit`), `multi_viewport`, `fixed_fps_mismatch`, `frame_pacing_invalid`, `warm_transport_failure` (the warm session round-trip failed mid-bundle), `windowed_session_unavailable` (the windowed warm session could not start, so a windowed-warm scenario ran cold), or `warm_session_unavailable` (no pooled headless session could be acquired before the wait deadline — start failures exhausted the budget, or every live session stayed checked out). A bundle that skipped warm below parallelism adds one more reason, `warm_skipped_below_parallelism`: a scenario that would have run warm on a smaller host ran cold instead, while a truly-cold scenario in the same skipped bundle still reports its own reason. `declared` is `true` only for `execution_isolation_cold` — an intentional, author-declared opt-out. Bundle summaries (`data.runs[].warm`) surface the same per-scenario status, and each scenario's persisted `result.json` carries the same `data.warm` annotation (plus any strict failure) so the on-disk artifact matches the summary.
 
 A scenario that actually ran warm additionally carries `data.warm.timing` — advisory wall-clock spans (ms floats) attributing where the warm run's time went on the CLI side: `artifact_prep_ms` (request/metadata writes before dispatch), `dispatch_ms` (the blocking `scenario.run` round-trip, which contains all engine work), `engine_ms` (the engine's own in-scenario wall clock, mirroring `duration_ms`), `finalize_ms` (result read-back, validation, and compares), `lane_held_ms` (how long the pooled session was checked out for this scenario), and `acquire_wait_ms` (how long the scenario waited to check a pooled session out, including any lazy boot it had to perform). These spans are in-memory bundle metadata for performance attribution; they are advisory, never part of equivalence comparison, and their exact set may evolve.
+
+Bundle discovery and normalized scenario documents are prepared once per
+invocation and shared by warm eligibility and execution. Bundle timing adds
+`dispatch_wait_ms` for pool startup or earlier-bundle execution between
+preparation and dispatch. The actual preparation start anchors `started_at_ms`
+and `wall_ms`; multi-bundle wall spans can overlap. No persistent discovery cache
+is used, and scenario selection, strictness, and result ordering are unchanged.
 
 A scenario that actually ran warm also gets the SAME engine-log reporting a cold run gets. A pooled warm session appends every scenario's engine output to one long-lived `logs.txt` under `.qa/artifacts/live/<session-id>/`, so the addon brackets each warm scenario with `[godot-qa] scenario-log begin|end <run-id>` marker lines on stderr and the CLI materializes that window as the run's own `<run_root>/logs.txt` before finalizing. `data.logs` (`status`, `error_count`, `warning_count`) and the `godot_log_error` / `godot_log_warning` failures are therefore produced by exactly the same code as cold, from exactly the same ignore list; each such failure additionally carries `warm_log_window` (`session_id`, `begin_offset`, `end_offset`) pointing at the session-log bytes it was read from. Every warm run records `data.warm.session_id` and `data.warm.log_slice` (`source`, `session_id`, `status`, `begin_offset`, `end_offset`), where `status` is `sliced` (window found and written), `markers_missing` (the project's addon predates the markers — no `logs.txt` is written, `data.logs.status` stays `"missing"` exactly as before, and the bundle gains one `warm_log_markers_missing` warning), or `unavailable` (the session had no readable host-side log). Engine output emitted outside a window — after a scenario's `end` marker and before the next scenario's `begin` — is unattributed and stays only in the session log, which the CLI never truncates, rotates or reopens. Those gap lines are not lost, though: after the pool shuts down the bundle scans every session log it started for `ERROR:`/`WARNING:` lines outside all windows — through the same ignore list the cold scan uses, plus the session's own `resources still in use at exit` shutdown noise — and reports them as `data.warm.session_log_noise` (`sessions_scanned`, `line_count`, `by_message[]` of `line`/`count`/`sessions`, and `phase: "outside_scenario_windows"`). When `line_count` is above zero the bundle also gains ONE `warm_session_log_noise` warning. This is advisory evidence about session start, idle time and shutdown, never a failure: no scenario can be blamed for it, so neither `--strict` nor `--warm-strict` promotes it. That shared ignore list includes the project's own `logs.ignore` patterns: one list configured once in `qa/config.yaml` is applied identically by cold runs, warm runs, and the warm session-noise scan, so a pattern never has to be configured twice and a line silenced for cold can never reappear as warm-only noise. Each run reports what the list did through `data.logs.ignored_count` and `data.logs.ignore_patterns_applied`. Because there is no warm special-casing anywhere downstream, an engine error that appears only under warm is a genuine `--equivalence-check` divergence, not a tolerated difference.
 
@@ -3514,7 +3542,11 @@ Trial evidence lives under the configured artifact root in
 audit independently of ordinary artifact pruning. Media destinations must be
 new paths with existing parent directories. Discard retains changed or possibly
 referenced media with an explicit warning; those paths cannot be reused until
-the user resolves them or chooses new destinations. The sample manifest and validation scenario are
+the user resolves them or chooses new destinations. The conservative source scan
+recognizes whole loader identifiers: unrelated helper calls such as
+`_relay_payload(...)` do not prevent cleanup. Dynamic loader calls, direct resource
+references, and native extensions still retain possibly referenced media; comments
+and string contents are scanned conservatively. The sample manifest and validation scenario are
 `examples/sample_project/qa/asset-trials/coin.yaml` and
 `examples/sample_project/qa/scenarios/examples/asset_coin_pickup.yaml`.
 

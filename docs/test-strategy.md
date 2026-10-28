@@ -679,3 +679,31 @@ Downstream tool-improvement hardening validation guidance (S77):
 # External-wrapper verdict regression
 
 `artifact_verdict_cli.rs` exercises a wrapper that reports zero around a failing child, a matching successful pair of receipts, stale/malformed/missing receipts, a signal receipt, child and wrapper timeouts, and exclusive run creation. The owned-process fixture writes a completed result, leaves an inherited output handle in a descendant, and stalls during teardown; the runner must stop the owned process group after three seconds and keep its output evidence. These are local fake-child tests and do not require a rendered display.
+
+## Consumer regression and screenshot performance checks
+
+The scaled locator-click fixture creates its UI through Godot APIs and asserts
+actual `Button.pressed` signals at 720p, scaled 1080p, with letterboxing, resizing,
+and a transformed CanvasLayer. The opt-in Cargo test stages an isolated project.
+For a Linux display large enough to exercise each requested window size:
+
+```bash
+xvfb-run -a -s '-screen 0 2560x1440x24' env GODOT_QA_VISUAL_TESTS=1 GODOT_BIN="$(command -v godot)" cargo test -p godot-qa-cli --test scaled_locator_click_runtime -- --nocapture
+godot --headless --path examples/sample_project --script res://qa/tests/snapshot_image_equivalence.gd
+cargo test -p godot-qa-scenario --release screenshot_analysis_repeated_targets_benchmark -- --ignored --nocapture
+```
+
+Run `cargo xtask prepare-sample` first. The image-equivalence fixture compares
+decoded fallback PNG pixels with the former algorithm at 14 sizes, including
+overlapping borders, irregular tiles, 720p, 1080p, and 4K, and prints separate
+image-generation timings. The ignored Rust benchmark checks identical repeated
+target evidence and measures shared analysis at 720p, 1080p, and 4K. Keep machine
+load and build profile with reported numbers; these microbenchmarks do not
+establish whole-suite speedups and impose no timing threshold on normal CI.
+
+Process regressions cover native signals separately from tool timeouts,
+nonce-bound stale/partial completion, and the existing full shutdown grace.
+Bundle regressions reuse prepared inputs after their source files disappear,
+check fresh-invocation invalidation, and preserve selection/strict failure behavior.
+Visual isolation tests inject errors at every capture phase and during cleanup,
+and compare unchanged as well as changed image bounds and pixels.

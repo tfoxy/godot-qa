@@ -603,11 +603,61 @@ The redaction contract preserves argument count, order, and enough shape to debu
 `artifacts` remains the flat run-level path map owned by the CLI handoff: `run_root`, `request_path`, `result_path`, `logs_path`, `screenshot_paths`, and `diagnostic_paths`.
 
 Scenario results also carry an always-on advisory `timing` object — coarse engine-side phase spans in fractional milliseconds: `scene_load_ms` (PackedScene load + instantiate + `add_child`, i.e. the game's `_ready`), `first_frame_ms`, `steps_ms`, `asserts_ms`, `teardown_ms` (scene free + settle frame), and `engine_total_ms` (mirrors `duration_ms`). It exists for performance attribution (where a scenario's wall clock goes), is independent of the `scenario profile` gate, is never validated or compared for equivalence, and its exact key set may evolve.
+
+Cold scenario command summaries add `cold_timing`: `artifact_prepare_ms` (nullable
+when the caller prepared artifacts outside the measured path),
+`request_prepare_ms` (launch preflight/request preparation), and
+`cli_finalize_ms` (result validation and CLI post-processing, when completed).
+These are monotonic millisecond durations, separate from Godot's `timing`.
+
+`data.process.termination` records the native status of the CLI's directly
+launched child: `scope: "direct_child"`, nullable `exit_code`, nullable Unix
+`signal` and `core_dumped`, platform-native `native_status`, and `tool_initiated`.
+With a launch prefix this describes the wrapper, which may hide its Godot child's
+status. Existing `data.process.exit_code` remains compatible, including `-1`
+for signals/timeouts. Unknown or synthetic process evidence is null.
+`import --json` exposes the same `data.process` evidence, and failed imports
+include `termination` alongside their existing scalar failure `actual`.
+
+`data.process.timing` contains monotonic millisecond observations: `spawn_ms`
+(process preparation through spawn), nullable `runtime_started_observed_ms`
+and `result_observed_ms` (offsets from process preparation start), nullable
+`post_result_exit_ms` (from observing a matching result until observed child exit),
+`cleanup_ms`, and `total_ms`. Runtime-start observations require the nonce-bound
+progress marker; missing observations stay null. `total_ms` includes captured
+output collection. These overlapping spans are diagnostic and do not sum to
+scenario wall time: launcher/project-lock waits, wrapper work, and final artifact
+writes may fall outside individual spans. They do not change deadlines, verdicts,
+or cold/warm equivalence.
+
+For example, a directly launched child terminated by Unix signal 15 can report:
+
+```json
+{
+  "exit_code": -1,
+  "termination": {
+    "scope": "direct_child",
+    "exit_code": null,
+    "signal": 15,
+    "core_dumped": false,
+    "native_status": "signal: 15 (SIGTERM)",
+    "tool_initiated": false
+  }
+}
+```
+
+The platform formats `native_status`; consumers should use the structured signal
+and exit fields. A signal identifies termination without establishing its cause.
 `godot_args` and `project_args` remain separate top-level arrays in runtime `result.json`; runtime results report the effective values seen by the Godot runner. Persisted command summaries and bundle metadata apply redaction to secret-looking `project_args`, but the runtime result remains the Godot-owned execution payload.
 `frame_pacing` is optional CLI-owned metadata in command JSON and persisted `result.json` for fastest automated runs. It contains `mode`, `fixed_fps`, `source`, `project_setting`, and `generated_godot_args`. It documents launch pacing such as generated `--fixed-fps` and `--disable-vsync`; it is not runtime Engine state.
 `time_control` is optional additive runtime evidence in `result.json` and command JSON. When present, it must be an object with the field names `original`, `requested`, `effective`, `restored`, `restored_matches_original`, `restoration_status`, and `warnings`. These fields document the Godot-owned Engine state transition around `Engine.time_scale`, `Engine.physics_ticks_per_second`, and `Engine.max_physics_steps_per_frame`; `restoration_status` should be `restored` when `restored` matches `original`.
 `snapshot_artifacts` is a separate top-level object keyed by snapshot name. Each snapshot entry must itself be an object of string paths, typically including `root`, `screenshot`, `tree`, `ui`, `focus`, and `errors`.
 `screenshot_quality` is a CLI-owned object keyed by snapshot name when a scenario saves screenshots. It records dimensions, exact dominant RGBA colors, non-background pixel counts, and `low_information` reasons. Low-information screenshots fail by default with `type: "screenshot_low_information"`; `snapshots.fail_on_low_information` remains accepted only for compatibility.
+Screenshot quality, saved-pixel assertions, and comparisons share analysis within
+one finalization. The cache retains at most two decoded images; a comparison can
+also decode its baseline. No image cache survives the run. This optimization
+preserves evidence, thresholds, original PNGs,
+comparison metrics, and required diff artifacts.
 `visual_risk` is a CLI-owned object present only when `scenario run` is invoked with `--visual-risk` or `--visual-risk-strict`. It contains `strict` and `findings`. Each finding uses a stable `visual-risk.*` rule ID, warning severity unless strict mode converts it to an error, measured facts under `actual`, and artifact path references under `artifacts` when available. Current rule IDs are `visual-risk.low_visual_diversity`, `visual-risk.huge_flat_shape`, `visual-risk.debug_primary_colors`, and `visual-risk.missing_visible_target_pixels`.
 Visual-risk measured facts are specific to the rule. Screenshot-wide findings can include `width`, `height`, `pixel_count`, `unique_color_count`, `dominant_color_ratio`, `largest_flat_region_pixel_count`, `largest_flat_region_ratio`, `largest_flat_region_rgba`, `debug_primary_pixel_count`, and `debug_primary_ratio`. Missing-target-pixel findings can include `target`, `snapshot`, `screenshot`, `target_rect`, `visible_pixel_count`, `visible_pixel_ratio`, `useful_pixel_count`, and `useful_pixel_ratio`.
 Visual-risk findings are screenshot artifact-backed risk signals only. They do not duplicate screenshot files, judge art quality, approve or reject baselines, or replace screenshot comparison and visual assertions. They are also distinct from `screenshot_quality`: screenshots classified as low-information still fail as `screenshot_low_information` and are not reclassified as `visual-risk.*`.
@@ -630,6 +680,16 @@ Bundle artifacts preserve the existing run-level child artifact paths. A bundle 
 Bundle `meta.json` and `summary.json` split by role rather than duplicating one another. `meta.json` is bundle identity and invocation only: `bundle`, `bundle_path`, `command`, `parallelism`, `selection`, `required_bundles`, `required_scenarios`, `optional_scenarios`, and `recommended_manual_checks`. `summary.json` owns the per-run evidence: `runs`, `warnings`, `failures`, and `artifact_index`, alongside the same identity fields plus `selection` and `scheduling`. `artifact-index.json` holds the standalone concise index. `meta.json` no longer repeats `runs` or `artifact_index`; consumers that need child run details read `summary.json` or `artifact-index.json`.
 
 Bundle `summary.json` also carries `timing` and `failure_clusters`, the same two objects the command JSON publishes as `data.timing` and `data.failure_clusters`. `timing` is the run's wall-clock account (`started_at_ms`, `finished_at_ms`, `wall_ms`, `prepare_ms`, `execute_ms`, `artifacts_ms`, `sum_child_duration_ms`, `parallel_efficiency`, `slowest[]`, `pool_seed_ms`, `pool_shutdown_ms`), and each `runs[]` entry carries its own `duration_ms`, `timing` (the child's engine phase breakdown, verbatim), `started_at_ms`, `finished_at_ms`, `lane`, and `queue_wait_ms`, with `duration_ms`, `timing`, `started_at_ms`, and `finished_at_ms` repeated per attempt. The copy in `summary.json` is necessarily a snapshot taken before that file was written — `artifacts_ms` is `0` and `wall_ms` stops short of the summary write — while the command JSON carries the final numbers. `failure_clusters[]` indexes repeated child failures by (`type`, `provider` else `target`) once a group spans at least three scenarios; `failures[]` itself is unchanged except that every child failure now names the `scenario` and `run_root` it came from. Both are additive evidence: they never change `ok`, `failures`, or the exit code.
+
+Bundle preparation is invocation-scoped: manifest discovery, the scenario index,
+and normalized selected documents are reused by warm eligibility and dispatch,
+including across named bundles. It is a snapshot of those inputs; a subsequent
+invocation reads them afresh. `timing.dispatch_wait_ms` records the interval after
+preparation and before dispatch, such as pool startup or execution of an earlier
+bundle. `started_at_ms` is the actual preparation start, and `wall_ms` includes
+that wait; `prepare_ms` contains preparation and scheduling work. Bundle wall
+times can therefore overlap in a multi-bundle invocation and must not be summed
+as exclusive execution durations.
 
 Bundle command JSON, `meta.json`, and `summary.json` also record `parallelism` for the child process scheduler: `raw_jobs`, `resolved_jobs`, `source`, `available_parallelism`, `reserved_count`, `runnable_count`, and `complete_queued`. This metadata is bundle-level scheduling evidence only; child artifacts remain direct `scenario run` artifacts with isolated run roots.
 

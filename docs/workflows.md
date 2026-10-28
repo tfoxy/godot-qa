@@ -365,6 +365,41 @@ godot-qa scenario bundle run composed_regression_gate --project examples/sample_
 godot-qa scenario bundle run screenshot_heavy_regression_gate --project examples/sample_project --json
 ```
 
+### Measure and reduce regression overhead
+
+Use bundle `data.timing` together with each child's start/finish timestamps,
+worker lane, engine `timing`, and warm `timing` when available. Engine duration
+excludes CLI preparation, process startup, and artifact finalization. In parallel
+runs, subtracting summed engine durations from bundle wall time does not measure
+startup overhead because child spans overlap. External import, dependency-hash,
+and compositor setup performed by a project wrapper need their own measurements.
+
+For repeated compatible cases, evaluate `check --tests --batch` or a warm bundle:
+
+```bash
+godot-qa check --tests --batch --tag smoke --project <project> --json
+godot-qa scenario bundle run <gate> --warm --warm-strict --equivalence-check --project <project> --json
+```
+
+Batching is opt-in and rejects selected manifest entries requiring isolation.
+Warm adoption also requires project initialization to read the current scenario's
+arguments: `OS.get_cmdline_user_args()` stays fixed for the process, while
+`qa_args.gd`'s `effective_user_args()` understands warm overrides. Projects that
+exclude the addon from release builds can use a QA-only adapter. Validate changed
+argument sets, reset behavior, and cold/warm equivalence before changing defaults.
+Preserve explicit cold declarations and the project's bounded job count; rendered
+performance measurements need serialized GPU work.
+
+Repeated dependency validation or import can move to suite preparation only when
+the checked inputs remain fixed throughout the suite. Keep CLI/addon revision
+identity checks and renderer checks. Treat long gameplay waits separately from
+launch overhead and retain the behavior those waits assert.
+
+Custom fixture actions that capture media must declare their media requirements
+through the scenario's ordinary screenshot/audio steps. Prefer built-in snapshots
+and `record_state` to custom files or state dumps in logs: these retain run-local
+artifacts, require rendered-frame evidence, and fail when pixels are unavailable.
+
 ## Verify a texture and sound asset trial
 
 An asset trial binds source media into an existing saved scene temporarily,
