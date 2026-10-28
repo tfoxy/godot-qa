@@ -190,10 +190,10 @@ pub(crate) enum DiagnosticsCommands {
 
 #[derive(Debug, Args)]
 pub(crate) struct EditorDiagnosticsArgs {
-    #[arg(long = "strict-warnings", action = ArgAction::SetTrue)]
-    pub(crate) strict_warnings: bool,
     #[arg(long, value_enum, default_value_t = EditorDiagnosticsSource::Combined)]
     pub(crate) source: EditorDiagnosticsSource,
+    #[arg(long = "strict-warnings", action = ArgAction::SetTrue)]
+    pub(crate) strict_warnings: bool,
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -1688,6 +1688,15 @@ pub(crate) struct ScreenshotCompareArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct ScreenshotSequenceArgs {
+    /// Capture serially, or sample rendered frames in one bounded runtime burst.
+    #[arg(long = "capture-mode", default_value = "serial", value_parser = ["serial", "burst"])]
+    pub(crate) capture_mode: String,
+    /// Burst RGBA budget in bytes (default 536870912; maximum 1073741824).
+    #[arg(long = "max-bytes")]
+    pub(crate) max_bytes: Option<u64>,
+    /// Burst capture deadline in seconds (default 3; maximum 10).
+    #[arg(long = "max-seconds")]
+    pub(crate) max_seconds: Option<f64>,
     #[arg(long)]
     pub(crate) frames: Option<i64>,
     #[arg(long)]
@@ -1706,8 +1715,8 @@ pub(crate) struct ScreenshotSequenceArgs {
     pub(crate) require_hidden: Vec<String>,
     #[arg(long = "require-state")]
     pub(crate) require_state: Option<String>,
-    /// Stop the sequence early once this state_matches predicate holds. Unlike the post-hoc
-    /// `--require-state` guard, this ends capture as soon as the predicate matches.
+    /// Stop the sequence early once this state_matches predicate holds. Unlike the
+    /// pre-capture `--require-state` guard, this ends capture as soon as the predicate matches.
     #[arg(long = "stop-after-state")]
     pub(crate) stop_after_state: Option<String>,
     #[arg(long)]

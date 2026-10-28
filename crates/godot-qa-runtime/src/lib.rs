@@ -39,6 +39,7 @@ pub const SESSION_SOAK_STATUS: &str = "session.profile.soak_status";
 pub const SESSION_SOAK_STOP: &str = "session.profile.soak_stop";
 pub const SNAPSHOT_CAPTURE: &str = "snapshot.capture";
 pub const SCREENSHOT_CAPTURE: &str = "screenshot.capture";
+pub const SCREENSHOT_BURST: &str = "screenshot.burst";
 pub const RECORD_EXPORT: &str = "record.export";
 pub const AUDIO_CAPTURE: &str = "audio.capture";
 pub const AUDIO_EXPORT: &str = "audio.export";

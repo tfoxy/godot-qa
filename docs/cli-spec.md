@@ -2628,6 +2628,15 @@ Linux headless Gamescope and `gamescopectl` are required. The command owns a new
 
 `screenshot sequence` captures bounded live-session screenshot series for review:
 
+`--capture-mode serial|burst` defaults to `serial`. Burst uses one authenticated runtime command to retain actual post-draw root-viewport images, then encode them after collection; it neither forces drawing nor permits fallback images. Burst-only `--max-bytes` defaults to 536870912 (512 MiB), with a 1073741824-byte hard maximum. `--max-seconds` defaults to 3 capture seconds, with a 10-second hard maximum; at most 96 images are retained. Serial mode rejects these burst budget flags.
+
+Burst frame schedules count observed draw ordinals; seconds schedules use monotonic sampling deadlines, without assuming 60 FPS. Frame entries retain existing fields and add actual draw ordinal, elapsed time, and requested sampling time. The manifest/result add mode, completeness, stop reason, effective limits, retained bytes, capture/encoding timings, and observed pacing. Guards and stop predicates execute inside the runtime between selected frames. Budget exhaustion, resizing, or failed capture returns nonzero with retained partial evidence and a partial manifest where possible. Encoding has a separate 30-second deadline checked between image writes, plus 10 seconds transport grace. Collection and encoding keep the session busy; other live commands remain serialized. Process crashes can lose in-memory frames, and capture is not overhead-free or responsively cancellable.
+
+```bash
+godot-qa screenshot sequence --project <project> --capture-mode burst --frames 12 --every 2 --out .qa/artifacts/manual/burst --json
+godot-qa screenshot sequence --project <project> --capture-mode burst --seconds 2 --fps 10 --out .qa/artifacts/manual/burst_timed --json
+```
+
 ```bash
 godot-qa screenshot sequence --project <project> --frames 300 --every 15 --out .qa/artifacts/manual/race_sequence --json
 godot-qa screenshot sequence --project <project> --seconds 20 --fps 2 --out .qa/artifacts/manual/review_sequence --json

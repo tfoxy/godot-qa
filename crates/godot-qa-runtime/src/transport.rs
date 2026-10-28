@@ -91,6 +91,15 @@ fn send_live_request_with_metadata_path(
 }
 
 fn live_request_timeout(protocol_command: &str, params: &Map<String, Value>) -> Duration {
+    if protocol_command == SCREENSHOT_BURST {
+        let seconds = params
+            .get("max_seconds")
+            .and_then(Value::as_f64)
+            .filter(|value| value.is_finite())
+            .unwrap_or(3.0)
+            .clamp(0.0, 10.0);
+        return Duration::from_secs_f64(seconds + 30.0 + 10.0);
+    }
     if protocol_command == TRACE_RECORD {
         let frames = params
             .get("frames")
@@ -514,16 +523,29 @@ pub fn probe_live_session_startup(
     ))
 }
 
-
-
 #[cfg(test)]
 mod transport_tests {
     use super::{
-        INPUT_TEXT, PROTOCOL_VERSION, SCENARIO_RUN, SessionRecord, SessionTarget,
+        INPUT_TEXT, PROTOCOL_VERSION, SCENARIO_RUN, SCREENSHOT_BURST, SessionRecord, SessionTarget,
         file_live_transport_allowed, live_request_timeout, startup_probe_backoff,
     };
     use serde_json::{Map, json};
     use std::time::Duration;
+
+    #[test]
+    fn burst_timeout_includes_capture_encoding_and_transport_budgets() {
+        assert_eq!(
+            live_request_timeout(SCREENSHOT_BURST, &Map::new()),
+            Duration::from_secs(43)
+        );
+        assert_eq!(
+            live_request_timeout(
+                SCREENSHOT_BURST,
+                &Map::from_iter([("max_seconds".to_string(), json!(10.0))])
+            ),
+            Duration::from_secs(50)
+        );
+    }
 
     #[test]
     fn android_disables_token_bearing_file_transport_fallback() {
@@ -552,15 +574,17 @@ mod transport_tests {
     #[test]
     fn input_text_timeout_scales_with_text_length() {
         // 10 chars = 20 frames: ceil(20/30) + 5 = 6s.
-        let params: Map<String, serde_json::Value> =
-            [("text".to_string(), json!("0123456789"))].into_iter().collect();
+        let params: Map<String, serde_json::Value> = [("text".to_string(), json!("0123456789"))]
+            .into_iter()
+            .collect();
         assert_eq!(
             live_request_timeout(INPUT_TEXT, &params),
             Duration::from_secs_f64(6.0)
         );
         // Max-length 900-char text: ceil(1800/30) + 5 = 65s, under the 120s cap.
-        let params: Map<String, serde_json::Value> =
-            [("text".to_string(), json!("x".repeat(900)))].into_iter().collect();
+        let params: Map<String, serde_json::Value> = [("text".to_string(), json!("x".repeat(900)))]
+            .into_iter()
+            .collect();
         assert_eq!(
             live_request_timeout(INPUT_TEXT, &params),
             Duration::from_secs_f64(65.0)
@@ -583,7 +607,9 @@ mod transport_tests {
         assert_eq!(schedule, vec![10, 20, 40, 80, 100, 100]);
     }
 
-    fn scenario_run_params(entries: &[(&str, serde_json::Value)]) -> Map<String, serde_json::Value> {
+    fn scenario_run_params(
+        entries: &[(&str, serde_json::Value)],
+    ) -> Map<String, serde_json::Value> {
         entries
             .iter()
             .map(|(key, value)| (key.to_string(), value.clone()))

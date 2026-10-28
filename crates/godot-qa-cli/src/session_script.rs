@@ -508,6 +508,9 @@ pub(crate) fn run_session_script_step(
             let result = scenario_screenshots::capture_sequence(
                 config,
                 scenario_screenshots::ScreenshotSequenceOptions {
+                    capture_mode: args.capture_mode,
+                    max_bytes: args.max_bytes,
+                    max_seconds: args.max_seconds,
                     frames: args.frames,
                     every: args.every,
                     seconds: args.seconds,
@@ -1336,6 +1339,21 @@ pub(crate) fn session_script_screenshot_sequence_args(
     let op = "screenshot_sequence";
     let object = session_script_object(value, index, op)?;
     Ok(ScreenshotSequenceArgs {
+        capture_mode: session_script_optional_string(object, index, op, "capture_mode")?
+            .unwrap_or_else(|| "serial".to_owned()),
+        max_bytes: session_script_optional_i64(object, index, op, "max_bytes")?
+            .map(|value| {
+                u64::try_from(value).map_err(|_| {
+                    invalid_session_script_step(
+                        index,
+                        "max_bytes must be nonnegative",
+                        json!("nonnegative bytes"),
+                        json!(value),
+                    )
+                })
+            })
+            .transpose()?,
+        max_seconds: session_script_optional_f64(object, index, op, "max_seconds")?,
         frames: session_script_optional_i64(object, index, op, "frames")?,
         every: session_script_optional_i64(object, index, op, "every")?,
         seconds: session_script_optional_f64(object, index, op, "seconds")?,

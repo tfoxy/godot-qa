@@ -1233,6 +1233,9 @@ pub(crate) fn screenshot_result(cli: &Cli, args: &ScreenshotArgs) -> CommandResu
             let result = scenario_screenshots::capture_sequence(
                 &config,
                 scenario_screenshots::ScreenshotSequenceOptions {
+                    capture_mode: args.capture_mode.clone(),
+                    max_bytes: args.max_bytes,
+                    max_seconds: args.max_seconds,
                     frames: args.frames,
                     every: args.every,
                     seconds: args.seconds,

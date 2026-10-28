@@ -11,6 +11,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::visual_risk::{self, ScreenshotArtifact, VisualRiskOptions};
 
+#[path = "screenshots/burst.rs"]
+mod burst;
+
 const DEFAULT_SEQUENCE_ENGINE_FPS: f64 = 60.0;
 const MAX_SEQUENCE_REQUESTED_FRAMES: u64 = 100_000;
 const MAX_SEQUENCE_CAPTURED_FRAMES: usize = 1_000;
@@ -89,6 +92,9 @@ pub fn capture_screenshot(
 
 #[derive(Debug, Clone)]
 pub struct ScreenshotSequenceOptions {
+    pub capture_mode: String,
+    pub max_bytes: Option<u64>,
+    pub max_seconds: Option<f64>,
     pub frames: Option<i64>,
     pub every: Option<i64>,
     pub seconds: Option<f64>,
@@ -248,12 +254,32 @@ fn capture_screenshot_sequence(
         return sequence_artifact_write_failure(command, &frames_dir, error);
     }
 
+    let burst = if options.capture_mode == "burst" {
+        match burst::capture(config, command, &options, &plan) {
+            Ok(capture) => Some(capture),
+            Err(result) => return result,
+        }
+    } else {
+        None
+    };
     let mut frames = Vec::new();
-    let mut failures = Vec::new();
+    let mut failures = burst
+        .as_ref()
+        .map(|capture| capture.failures.clone())
+        .unwrap_or_default();
     let mut low_information_frame_count = 0_u64;
-    let mut failed_capture_count = 0_u64;
+    let mut failed_capture_count = burst
+        .as_ref()
+        .map_or(0, |capture| u64::from(!capture.failures.is_empty()));
     let mut visual_risk_warning_count = 0_u64;
-    let mut first_failed_frame = Value::Null;
+    let mut first_failed_frame = burst
+        .as_ref()
+        .and_then(|capture| {
+            capture.failures.first().map(
+                |failure| json!({"sequence_index": capture.frames.len(), "type": failure.kind}),
+            )
+        })
+        .unwrap_or(Value::Null);
     // `--stop-after-state` ends the sequence early once a `state_matches` predicate holds,
     // mirroring `audio capture`. Unlike the post-hoc `--require-state` guard it is polled
     // per captured frame while the sequence is still running.
@@ -263,11 +289,23 @@ fn capture_screenshot_sequence(
     let mut stop_condition_last_error = Value::Null;
 
     for (sequence_index, requested_frame) in plan.capture_frames.iter().copied().enumerate() {
+        if burst
+            .as_ref()
+            .is_some_and(|capture| sequence_index >= capture.frames.len())
+        {
+            break;
+        }
         let frame_name = format!("frame_{requested_frame:04}.png");
         let relative_path = format!("frames/{frame_name}");
         let output_path = frames_dir.join(&frame_name);
 
-        let guard_report =
+        let guard_report = if let Some(burst) = &burst {
+            burst.frames[sequence_index]
+                .metadata
+                .get("state_guards")
+                .cloned()
+                .unwrap_or(Value::Null)
+        } else {
             match evaluate_screenshot_state_guards(config, command, &options.state_guards) {
                 Ok(report) => report,
                 Err(result) => {
@@ -282,13 +320,15 @@ fn capture_screenshot_sequence(
                     failures.extend(result.failures);
                     break;
                 }
-            };
+            }
+        };
 
-        let capture = match capture_live_screenshot(
-            config,
-            command,
-            format!("sequence_{requested_frame:04}"),
-        ) {
+        let capture = if let Some(burst) = &burst {
+            Ok(burst.frames[sequence_index].clone())
+        } else {
+            capture_live_screenshot(config, command, format!("sequence_{requested_frame:04}"))
+        };
+        let capture = match capture {
             Ok(capture) => capture,
             Err(result) => {
                 failed_capture_count += 1;
@@ -405,7 +445,11 @@ fn capture_screenshot_sequence(
         }
 
         let quality_data = screenshot_sequence_quality_data(&quality, &visual_risk_warnings);
-        let target_evidence = screenshot_sequence_target_evidence(config, command);
+        let target_evidence = if burst.is_some() {
+            None
+        } else {
+            screenshot_sequence_target_evidence(config, command)
+        };
         let mut frame = Map::from_iter([
             ("index".to_string(), json!(requested_frame)),
             (
@@ -435,7 +479,26 @@ fn capture_screenshot_sequence(
         if !guard_report.is_null() {
             frame.insert("state_guards".to_string(), guard_report);
         }
+        if burst.is_some() {
+            for key in [
+                "draw_ordinal",
+                "elapsed_msec",
+                "elapsed_usec",
+                "requested_time_usec",
+                "requested_time_msec",
+                "capture_source",
+                "draw_forced",
+            ] {
+                if let Some(value) = capture.metadata.get(key) {
+                    frame.insert(key.to_string(), value.clone());
+                }
+            }
+        }
         frames.push(Value::Object(frame));
+
+        if burst.is_some() {
+            continue;
+        }
 
         if let Some(predicate) = options.stop_after_state.as_ref().and_then(Value::as_object) {
             stop_condition_sample_count += 1;
@@ -497,7 +560,35 @@ fn capture_screenshot_sequence(
         }
     }
 
-    let manifest = screenshot_sequence_manifest(&options, &plan, frames);
+    if let Some(capture) = &burst {
+        stop_condition_matched = capture
+            .metadata
+            .get("stop_condition_matched")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        stop_condition_sample_count = capture
+            .metadata
+            .get("stop_condition_sample_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        stop_condition_stopped_at = capture
+            .metadata
+            .get("stop_condition_stopped_at")
+            .cloned()
+            .unwrap_or(Value::Null);
+        stop_condition_last_error = capture
+            .metadata
+            .get("stop_condition_last_error")
+            .cloned()
+            .unwrap_or(Value::Null);
+    }
+    let mut manifest = screenshot_sequence_manifest(&options, &plan, frames);
+    if let Some(capture) = &burst {
+        manifest
+            .as_object_mut()
+            .unwrap()
+            .extend(capture.metadata.clone());
+    }
     if let Err(error) = write_json_file(&manifest_path, &manifest) {
         return CommandResult {
             ok: false,
@@ -514,11 +605,14 @@ fn capture_screenshot_sequence(
                 visual_risk_warning_count,
                 first_failed_frame,
             ),
-            failures: vec![sequence_artifact_write_failure_detail(
-                command,
-                &manifest_path,
-                error,
-            )],
+            failures: {
+                failures.push(sequence_artifact_write_failure_detail(
+                    command,
+                    &manifest_path,
+                    error,
+                ));
+                failures
+            },
             exit_code: 1,
         };
     }
@@ -561,6 +655,9 @@ fn capture_screenshot_sequence(
         visual_risk_warning_count,
         first_failed_frame,
     );
+    if let Some(capture) = &burst {
+        data.extend(capture.metadata.clone());
+    }
     if let Some(requested) = options.stop_after_state.as_ref() {
         data.insert(
             "stop_after_state".to_string(),
@@ -1457,7 +1554,7 @@ fn threshold_string(threshold: f64) -> String {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LiveScreenshotCapture {
     pub screenshot_path: PathBuf,
     pub engine_frame: Option<u64>,
@@ -2045,12 +2142,35 @@ fn screenshot_sequence_plan(
     options: &ScreenshotSequenceOptions,
 ) -> Result<ScreenshotSequencePlan, CommandResult> {
     validate_sequence_options(command, options)?;
+    burst::validate(command, options)?;
     if let (Some(frames), Some(every)) = (options.frames, options.every) {
         return bounded_sequence_plan(command, "frames", frames as u64, every as u64, None, None);
     }
 
     let seconds = options.seconds.unwrap_or_default();
     let fps = options.fps.unwrap_or_default();
+    if options.capture_mode == "burst" {
+        let samples = (seconds * fps).floor();
+        if !samples.is_finite() || samples >= MAX_SEQUENCE_CAPTURED_FRAMES as f64 {
+            return Err(screenshot_args_invalid(
+                command,
+                "screenshot sequence failed",
+                "screenshot_sequence_args_invalid",
+                "burst capture plan exceeds supported capture count",
+                json!({"seconds": seconds, "fps": fps}),
+                json!(MAX_SEQUENCE_CAPTURED_FRAMES),
+            ));
+        }
+        let count = samples as u64 + 1;
+        return Ok(ScreenshotSequencePlan {
+            mode: "seconds",
+            frame_count_requested: (seconds * DEFAULT_SEQUENCE_ENGINE_FPS).ceil() as u64,
+            capture_every_frames: 1,
+            capture_frames: (0..count).collect(),
+            seconds: Some(seconds),
+            fps: Some(fps),
+        });
+    }
     let frame_count_requested = (seconds * DEFAULT_SEQUENCE_ENGINE_FPS).ceil() as u64;
     let capture_every_frames = (DEFAULT_SEQUENCE_ENGINE_FPS / fps).ceil().max(1.0) as u64;
     bounded_sequence_plan(
@@ -2512,8 +2632,11 @@ mod tests {
         }
     }
 
-    fn sequence_options() -> ScreenshotSequenceOptions {
+    pub(super) fn sequence_options() -> ScreenshotSequenceOptions {
         ScreenshotSequenceOptions {
+            capture_mode: "serial".to_string(),
+            max_bytes: None,
+            max_seconds: None,
             frames: Some(30),
             every: Some(15),
             seconds: None,

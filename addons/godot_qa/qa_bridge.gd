@@ -7,6 +7,7 @@ const QaRuntime = preload("res://addons/godot_qa/qa_runtime.gd")
 const QaLiveEdit = preload("res://addons/godot_qa/qa_live_edit.gd")
 const QaRecorder = preload("res://addons/godot_qa/qa_recorder.gd")
 const QaSnapshot = preload("res://addons/godot_qa/qa_snapshot.gd")
+const QaScreenshotBurst = preload("res://addons/godot_qa/qa_screenshot_burst.gd")
 const QaProfiler = preload("res://addons/godot_qa/qa_profiler.gd")
 const QaSoak = preload("res://addons/godot_qa/qa_soak.gd")
 const QaScenarioExecutor = preload("res://addons/godot_qa/qa_scenario_executor.gd")
@@ -694,6 +695,14 @@ func _dispatch_authenticated_command(command: Dictionary, request_id: String, co
 			first_failure,
 			request_id,
 		)
+	if live_session_enabled and command_name == "screenshot.burst":
+		var burst_name := _sanitize_capture_name(str(params.get("name", "burst")))
+		var burst_root := str(_live_session.get("screenshots_dir", ""))
+		if burst_root.is_empty():
+			return QaProtocol.error("screenshot_burst.artifact_root_missing", "live session has no controlled screenshot artifact directory", {}, request_id)
+		var burst_dir := "%s/%s" % [burst_root, burst_name]
+		var burst_result: Dictionary = await QaScreenshotBurst.new().capture(get_tree().get_root(), runtime, params, burst_dir)
+		return QaProtocol.ok(burst_result, request_id)
 	if live_session_enabled and command_name == "screenshot.capture":
 		var screenshot_name := _sanitize_capture_name(str(params.get("name", "current")))
 		var screenshots_dir := str(_live_session.get("screenshots_dir", ""))
