@@ -494,6 +494,29 @@ pub(crate) fn check_result(cli: &Cli) -> CommandResult {
         }
     };
 
+    let import_scan = godot_qa_core::godot_logs::scan_output(
+        &artifacts.import_logs_path,
+        &import_run.stdout,
+        &import_run.stderr,
+        &config.log_ignore_patterns,
+    );
+    let mut import_warnings = Vec::new();
+    let mut import_failed = false;
+    for mut diagnostic in import_scan.diagnostics(command, &artifacts.import_logs_path, None) {
+        diagnostic.artifacts = value_as_object_map(artifacts.to_json());
+        diagnostic
+            .details
+            .insert("phase".to_string(), json!("import"));
+        if diagnostic.severity.as_deref() == Some("warning") {
+            import_warnings.push(diagnostic);
+        } else {
+            import_failed = true;
+            failures.push(diagnostic);
+        }
+    }
+    let import_summary = json!({"ok": !import_failed, "warnings": import_warnings,
+        "logs": {"ignored_count": import_scan.ignored_count, "ignore_patterns_applied": config.log_ignore_patterns.len()},
+        "artifacts": {"logs": artifacts.import_logs_path}});
     let mut scene_payloads = Vec::new();
     for scene in &scenes {
         let (scene_data, scene_failures) = run_scene_check(&config, scene, &artifacts, command);
@@ -505,10 +528,7 @@ pub(crate) fn check_result(cli: &Cli) -> CommandResult {
         ("project_root".to_string(), json!(config.project_root)),
         ("mode".to_string(), json!(mode)),
         ("artifacts".to_string(), artifacts.to_json()),
-        (
-            "import".to_string(),
-            json!({"ok": true, "artifacts": {"logs": artifacts.import_logs_path}}),
-        ),
+        ("import".to_string(), import_summary),
         (
             "checked_scene_count".to_string(),
             json!(scene_payloads.len()),
@@ -1185,7 +1205,13 @@ pub(crate) fn run_scene_check(
             );
         }
     };
-    validate_runtime_result(scene, runtime_result, &scene_artifacts, &process_result)
+    validate_runtime_result(
+        scene,
+        runtime_result,
+        &scene_artifacts,
+        &process_result,
+        &config.log_ignore_patterns,
+    )
 }
 
 pub(crate) fn run_script_compile_check(
@@ -1263,7 +1289,13 @@ pub(crate) fn run_script_compile_check(
             );
         }
     };
-    validate_script_compile_result(script, runtime_result, &script_artifacts, &process_result)
+    validate_script_compile_result(
+        script,
+        runtime_result,
+        &script_artifacts,
+        &process_result,
+        &config.log_ignore_patterns,
+    )
 }
 
 pub(crate) fn prepare_scene_artifacts(
@@ -1371,6 +1403,7 @@ pub(crate) fn validate_runtime_result(
     runtime_result: serde_json::Value,
     artifacts: &CheckSceneArtifacts,
     process_result: &godot_qa_process::GodotRunResult,
+    log_ignore_patterns: &[String],
 ) -> (serde_json::Value, Vec<FailureDetail>) {
     let object = runtime_result.as_object().unwrap();
     let mut failures = Vec::new();
@@ -1485,6 +1518,34 @@ pub(crate) fn validate_runtime_result(
             ..FailureDetail::default()
         });
     }
+    let log_scan = godot_qa_core::godot_logs::scan_output(
+        &artifacts.logs_path,
+        &process_result.stdout,
+        &process_result.stderr,
+        log_ignore_patterns,
+    );
+    let mut log_warnings = Vec::new();
+    for mut diagnostic in log_scan.diagnostics("check", &artifacts.logs_path, Some(scene)) {
+        diagnostic.artifacts = value_as_object_map(artifacts.to_json());
+        if diagnostic.severity.as_deref() == Some("warning") {
+            log_warnings.push(diagnostic);
+        } else if !normalized_failures.iter().any(|failure| {
+            failure.kind == "script_diagnostics_present"
+                && failure
+                    .actual
+                    .as_ref()
+                    .and_then(Value::as_str)
+                    .is_some_and(|excerpt| {
+                        diagnostic
+                            .actual
+                            .as_ref()
+                            .and_then(Value::as_str)
+                            .is_some_and(|line| excerpt.contains(line))
+                    })
+        }) {
+            normalized_failures.push(diagnostic);
+        }
+    }
     if process_result.returncode != 0 && normalized_failures.is_empty() {
         normalized_failures.push(FailureDetail {
             kind: "godot_run_failed".to_string(),
@@ -1508,6 +1569,8 @@ pub(crate) fn validate_runtime_result(
             "duration_ms": duration_ms,
             "startup_frames": startup_frames,
             "runtime_errors": runtime_errors,
+            "warnings": log_warnings,
+            "logs": {"ignored_count": log_scan.ignored_count, "ignore_patterns_applied": log_ignore_patterns.len()},
             "artifacts": artifacts.to_json(),
             "failures": normalized_failures,
         }),
@@ -1520,6 +1583,7 @@ pub(crate) fn validate_script_compile_result(
     runtime_result: serde_json::Value,
     artifacts: &CheckSceneArtifacts,
     process_result: &godot_qa_process::GodotRunResult,
+    log_ignore_patterns: &[String],
 ) -> (serde_json::Value, Vec<FailureDetail>) {
     let object = runtime_result.as_object().unwrap();
     let mut failures = Vec::new();
@@ -1649,6 +1713,34 @@ pub(crate) fn validate_script_compile_result(
             ..FailureDetail::default()
         });
     }
+    let log_scan = godot_qa_core::godot_logs::scan_output(
+        &artifacts.logs_path,
+        &process_result.stdout,
+        &process_result.stderr,
+        log_ignore_patterns,
+    );
+    let mut log_warnings = Vec::new();
+    for mut diagnostic in log_scan.diagnostics("check", &artifacts.logs_path, Some(script)) {
+        diagnostic.artifacts = value_as_object_map(artifacts.to_json());
+        if diagnostic.severity.as_deref() == Some("warning") {
+            log_warnings.push(diagnostic);
+        } else if !normalized_failures.iter().any(|failure| {
+            failure.kind == "script_diagnostics_present"
+                && failure
+                    .actual
+                    .as_ref()
+                    .and_then(Value::as_str)
+                    .is_some_and(|excerpt| {
+                        diagnostic
+                            .actual
+                            .as_ref()
+                            .and_then(Value::as_str)
+                            .is_some_and(|line| excerpt.contains(line))
+                    })
+        }) {
+            normalized_failures.push(diagnostic);
+        }
+    }
     if process_result.returncode != 0 && normalized_failures.is_empty() {
         normalized_failures.push(FailureDetail {
             kind: "godot_run_failed".to_string(),
@@ -1677,6 +1769,8 @@ pub(crate) fn validate_script_compile_result(
             "status": status,
             "duration_ms": duration_ms,
             "runtime_errors": runtime_errors,
+            "warnings": log_warnings,
+            "logs": {"ignored_count": log_scan.ignored_count, "ignore_patterns_applied": log_ignore_patterns.len()},
             "artifacts": artifacts.to_json(),
             "failures": normalized_failures,
         }),
@@ -1984,10 +2078,69 @@ run/main_scene="res://ui/menu\"quoted.tscn"
             runtime_result,
             &script_artifacts,
             &process_result,
+            &[],
         );
         assert!(failures.is_empty());
         assert_eq!(payload["target"], json!("res://src/main.gd"));
         assert_eq!(payload["status"], json!("passed"));
         assert_eq!(payload["ok"], json!(true));
+        let runtime_result = load_runtime_result("res://src/main.gd", &script_artifacts).unwrap();
+        for prefix in ["ERROR:", "SCRIPT ERROR:", "WARNING:", "SCRIPT WARNING:"] {
+            fs::write(
+                &script_artifacts.logs_path,
+                format!("{prefix} raw fixture diagnostic\n"),
+            )
+            .unwrap();
+            let warning = prefix.contains("WARNING");
+            let (script_payload, script_failures) = validate_script_compile_result(
+                "res://src/main.gd",
+                runtime_result.clone(),
+                &script_artifacts,
+                &process_result,
+                &[],
+            );
+            assert_eq!(script_payload["ok"], warning, "{prefix}: {script_payload}");
+            assert_eq!(script_failures.len(), usize::from(!warning));
+            assert_eq!(
+                script_payload["warnings"].as_array().unwrap().len(),
+                usize::from(warning)
+            );
+            let mut scene_result = runtime_result.clone();
+            scene_result["scene"] = json!("res://main.tscn");
+            let (scene_payload, scene_failures) = validate_runtime_result(
+                "res://main.tscn",
+                scene_result,
+                &script_artifacts,
+                &process_result,
+                &[],
+            );
+            assert_eq!(scene_payload["ok"], warning, "{prefix}: {scene_payload}");
+            assert_eq!(scene_failures.len(), usize::from(!warning));
+            let (ignored_payload, ignored_failures) = validate_script_compile_result(
+                "res://src/main.gd",
+                runtime_result.clone(),
+                &script_artifacts,
+                &process_result,
+                &["raw fixture diagnostic".to_string()],
+            );
+            assert!(ignored_failures.is_empty());
+            assert_eq!(ignored_payload["logs"]["ignored_count"], 1);
+        }
+        // Compilation excerpts retain their established failure kind without a duplicate raw headline.
+        fs::write(
+            &script_artifacts.logs_path,
+            "SCRIPT ERROR: Parse Error: fixture\n",
+        )
+        .unwrap();
+        let (_, failures) = validate_script_compile_result(
+            "res://src/main.gd",
+            runtime_result,
+            &script_artifacts,
+            &process_result,
+            &[],
+        );
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].kind, "script_diagnostics_present");
+        fs::remove_dir_all(root).unwrap();
     }
 }

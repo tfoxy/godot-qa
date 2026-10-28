@@ -1510,14 +1510,16 @@ fn run_godot_command_with_completion_path(
                     display.virtual_display_exit_code = Some(status_code);
                 }
             }
-            fs::write(logs_path, format!("{stdout}{stderr}")).map_err(|error| FailureDetail {
-                kind: "artifact_write_failed".to_string(),
-                command: Some(format_command(command)),
-                path: Some(logs_path.to_string_lossy().into_owned()),
-                message: Some(error.to_string()),
-                expected: Some(json!("Godot logs written to the artifact path")),
-                actual: Some(json!("OSError")),
-                ..FailureDetail::default()
+            fs::write(logs_path, combined_output(&stdout, &stderr)).map_err(|error| {
+                FailureDetail {
+                    kind: "artifact_write_failed".to_string(),
+                    command: Some(format_command(command)),
+                    path: Some(logs_path.to_string_lossy().into_owned()),
+                    message: Some(error.to_string()),
+                    expected: Some(json!("Godot logs written to the artifact path")),
+                    actual: Some(json!("OSError")),
+                    ..FailureDetail::default()
+                }
             })?;
             if status_code == 0
                 && !timed_out
@@ -1570,6 +1572,29 @@ fn run_godot_command_with_completion_path(
             })
         }
     }
+}
+
+#[test]
+fn combined_output_preserves_stream_line_boundaries() {
+    assert_eq!(
+        combined_output("out", "SCRIPT ERROR: fault\n"),
+        "out\nSCRIPT ERROR: fault\n"
+    );
+    assert_eq!(
+        combined_output("out\n", "ERROR: fault"),
+        "out\nERROR: fault"
+    );
+    assert_eq!(combined_output("", "WARNING: fault"), "WARNING: fault");
+    assert_eq!(combined_output("out", ""), "out");
+}
+
+fn combined_output(stdout: &str, stderr: &str) -> String {
+    let boundary = if !stdout.is_empty() && !stdout.ends_with('\n') && !stderr.is_empty() {
+        "\n"
+    } else {
+        ""
+    };
+    format!("{stdout}{boundary}{stderr}")
 }
 
 fn effective_godot_command(launch_prefix: &[String], binary: &str, args: &[String]) -> Vec<String> {

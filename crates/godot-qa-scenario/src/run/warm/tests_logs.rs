@@ -495,3 +495,19 @@
         assert_eq!(noise["by_message"], json!([]));
         assert!(post_run.warnings.is_empty());
     }
+
+    #[test]
+    fn script_diagnostics_keep_cold_warm_window_and_gap_attribution() {
+        let dir = warm_temp_dir("script-diagnostic-parity");
+        let logs_path = dir.join("logs.txt");
+        let window = format!("{}\n  SCRIPT ERROR: scenario fault\r\nSCRIPT WARNING: ignored fixture\n{}\n", begin_marker(MARKER_RUN), end_marker(MARKER_RUN));
+        std::fs::write(&logs_path, &window).unwrap();
+        let ignore = vec!["ignored fixture".to_string()];
+        let (failures, ignored) = runtime_log_failures("scenario run", &logs_path, &Map::new(), &ignore);
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].kind, "godot_log_error");
+        assert_eq!(ignored, 1);
+        let full = format!("SCRIPT ERROR: startup fault\n{window}SCRIPT WARNING: idle warning\n");
+        assert_eq!(session_log_noise_lines(full.as_bytes(), &ignore), vec!["SCRIPT ERROR: startup fault", "SCRIPT WARNING: idle warning"]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }

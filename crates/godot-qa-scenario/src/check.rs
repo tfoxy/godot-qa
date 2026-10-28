@@ -727,6 +727,19 @@ pub fn run_check_tests(
         }
     };
 
+    let (mut import_failures, import_warnings, import_ignored_count) = check_log_diagnostics(
+        &artifacts.import_logs_path,
+        &import_run,
+        &config.log_ignore_patterns,
+        None,
+        json!({"logs": artifacts.import_logs_path}),
+    );
+    for failure in &mut import_failures {
+        failure.details.insert("phase".to_string(), json!("import"));
+    }
+    let import_summary = json!({"ok": import_failures.is_empty(), "warnings": import_warnings,
+        "logs": {"ignored_count": import_ignored_count, "ignore_patterns_applied": config.log_ignore_patterns.len()},
+        "artifacts": {"logs": artifacts.import_logs_path}});
     let (test_payloads, failures) = match execution_mode {
         CheckTestExecutionMode::Isolated => {
             let mut failures = Vec::new();
@@ -751,6 +764,7 @@ pub fn run_check_tests(
     };
 
     let mut failures = failures;
+    failures.extend(import_failures);
     let mut exit_code = if failures.is_empty() { 0 } else { 1 };
     let mut artifacts_json = artifacts.to_json();
     let slow_summary = slow_check_summary_json(
@@ -824,15 +838,7 @@ pub fn run_check_tests(
             json!(manifest_path.canonicalize().unwrap_or(manifest_path)),
         ),
         ("artifacts".to_string(), artifacts_json),
-        (
-            "import".to_string(),
-            json!({
-                "ok": true,
-                "artifacts": {
-                    "logs": artifacts.import_logs_path,
-                }
-            }),
-        ),
+        ("import".to_string(), import_summary),
         ("checked_test_count".to_string(), json!(test_payloads.len())),
         (
             "selected_test_count".to_string(),
@@ -1071,7 +1077,7 @@ fn run_manifest_test(
         }
     };
 
-    let (payload, failures) = validate_runtime_test_result_with_evidence(
+    let (mut payload, mut failures) = validate_runtime_test_result_with_evidence(
         test_entry,
         runtime_result,
         &artifacts,
@@ -1079,6 +1085,18 @@ fn run_manifest_test(
         None,
         options,
     );
+    let (log_failures, log_warnings, ignored_count) = check_log_diagnostics(
+        &artifacts.logs_path,
+        &process_result,
+        &config.log_ignore_patterns,
+        Some(&test_entry.id),
+        artifacts.to_json(),
+    );
+    failures.extend(log_failures);
+    payload["ok"] = json!(payload["ok"] == true && failures.is_empty());
+    payload["failures"] = json!(failures);
+    payload["warnings"] = json!(log_warnings);
+    payload["logs"] = json!({"ignored_count": ignored_count, "ignore_patterns_applied": config.log_ignore_patterns.len()});
     let _ = append_check_progress_event(
         &check_artifacts.progress_path,
         Some(&artifacts.progress_path),
@@ -1091,6 +1109,30 @@ fn run_manifest_test(
         &artifacts,
     );
     (payload, failures)
+}
+
+fn check_log_diagnostics(
+    logs: &Path,
+    process: &godot_qa_process::GodotRunResult,
+    ignore_patterns: &[String],
+    target: Option<&str>,
+    artifacts: Value,
+) -> (Vec<FailureDetail>, Vec<FailureDetail>, usize) {
+    let scan = godot_qa_core::godot_logs::scan_output(
+        logs,
+        &process.stdout,
+        &process.stderr,
+        ignore_patterns,
+    );
+    let (warnings, failures) = scan
+        .diagnostics("check", logs, target)
+        .into_iter()
+        .map(|mut diagnostic| {
+            diagnostic.artifacts = value_as_object_map(artifacts.clone());
+            diagnostic
+        })
+        .partition(|diagnostic| diagnostic.severity.as_deref() == Some("warning"));
+    (failures, warnings, scan.ignored_count)
 }
 
 fn run_manifest_tests_batch(
@@ -1130,7 +1172,7 @@ fn run_manifest_tests_batch(
             payloads.extend(group_payloads);
             failures.extend(group_failures);
         }
-        let _ = write_batch_summary_artifact(check_artifacts, &payloads, &failures, None);
+        let _ = write_batch_summary_artifact(check_artifacts, &payloads, &failures, None, None);
         return (payloads, failures);
     }
 
@@ -1192,7 +1234,7 @@ fn run_manifest_tests_batch(
     }
 
     if prepared.is_empty() {
-        let _ = write_batch_summary_artifact(check_artifacts, &payloads, &failures, None);
+        let _ = write_batch_summary_artifact(check_artifacts, &payloads, &failures, None, None);
         return (payloads, failures);
     }
 
@@ -1222,7 +1264,7 @@ fn run_manifest_tests_batch(
             ));
             failures.push(normalized);
         }
-        let _ = write_batch_summary_artifact(check_artifacts, &payloads, &failures, None);
+        let _ = write_batch_summary_artifact(check_artifacts, &payloads, &failures, None, None);
         return (payloads, failures);
     }
 
@@ -1259,7 +1301,7 @@ fn run_manifest_tests_batch(
                 ));
                 failures.push(normalized);
             }
-            let _ = write_batch_summary_artifact(check_artifacts, &payloads, &failures, None);
+            let _ = write_batch_summary_artifact(check_artifacts, &payloads, &failures, None, None);
             return (payloads, failures);
         }
     };
@@ -1290,9 +1332,23 @@ fn run_manifest_tests_batch(
             &payloads,
             &failures,
             Some(&process_result),
+            None,
         );
         return (payloads, failures);
     }
+    let (log_failures, log_warnings, log_ignored_count) = check_log_diagnostics(
+        &check_artifacts.batch_logs_path,
+        &process_result,
+        &config.log_ignore_patterns,
+        None,
+        check_artifacts.batch_json(),
+    );
+    failures.extend(log_failures);
+    let batch_log_evidence = json!({
+        "warnings": log_warnings,
+        "ignored_count": log_ignored_count,
+        "ignore_patterns_applied": config.log_ignore_patterns.len(),
+    });
     let mut validation_process_result = process_result.clone();
     validation_process_result.returncode = 0;
     for (test_entry, artifacts, _) in &prepared {
@@ -1348,8 +1404,13 @@ fn run_manifest_tests_batch(
             failures.push(failure);
         }
     }
-    let _ =
-        write_batch_summary_artifact(check_artifacts, &payloads, &failures, Some(&process_result));
+    let _ = write_batch_summary_artifact(
+        check_artifacts,
+        &payloads,
+        &failures,
+        Some(&process_result),
+        Some(&batch_log_evidence),
+    );
     (payloads, failures)
 }
 
@@ -1445,6 +1506,7 @@ fn write_batch_summary_artifact(
     payloads: &[Value],
     failures: &[FailureDetail],
     process_result: Option<&godot_qa_process::GodotRunResult>,
+    logs: Option<&Value>,
 ) -> std::io::Result<()> {
     let slow_summary = slow_check_summary_json(
         payloads,
@@ -1474,6 +1536,7 @@ fn write_batch_summary_artifact(
             "failure_count": failures.len(),
             "failures": failures,
             "process": process,
+            "logs": logs,
             "artifacts": check_artifacts.batch_json(),
             "slow_summary": slow_summary,
         }),

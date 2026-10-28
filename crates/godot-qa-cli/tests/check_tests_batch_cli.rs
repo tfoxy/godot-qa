@@ -439,3 +439,179 @@ fn check_tests_profile_failure_contract() {
 
     fs::remove_dir_all(project).unwrap();
 }
+
+#[test]
+fn raw_runtime_diagnostics_cannot_hide_behind_successful_manifest_results() {
+    let project = temp_project_root("raw-log-verdict");
+    write(
+        &project.join("qa/tests/manifest.json"),
+        r#"{"version":1,"tests":[{"id":"a","kind":"script","target":"res://qa/tests/a.gd"},{"id":"b","kind":"script","target":"res://qa/tests/b.gd"}]}"#,
+    );
+    for id in ["a", "b"] {
+        write(
+            &project.join(format!("qa/tests/{id}.gd")),
+            "extends RefCounted\n",
+        );
+    }
+    for batch in [false, true] {
+        for prefix in ["ERROR:", "SCRIPT ERROR:", "WARNING:", "SCRIPT WARNING:"] {
+            let mut options = vec![
+                ("version".to_string(), "4.3.test".to_string()),
+                (
+                    "request_prefix".to_string(),
+                    "--qa-check-request=".to_string(),
+                ),
+                ("stdout".to_string(), "unterminated stdout".to_string()),
+                (
+                    "stderr".to_string(),
+                    format!("{prefix} fixture raw diagnostic\n"),
+                ),
+            ];
+            for id in ["a", "b"] {
+                let result = json!({"id":id,"kind":"script","target":format!("res://qa/tests/{id}.gd"),"ok":true,"duration_ms":1,"runtime_errors":[],"failures":[]}).to_string();
+                options.push((
+                    if batch {
+                        format!("write:../tests/{id}/result.json")
+                    } else {
+                        format!("write_match:{id}:result.json")
+                    },
+                    result,
+                ));
+            }
+            let refs = options
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.as_str()))
+                .collect::<Vec<_>>();
+            let fake = godot_qa_test_support::fixture(&project.join("fake-godot"), &refs);
+            let mut args = vec![
+                "check",
+                "--tests",
+                "--project",
+                project.to_str().unwrap(),
+                "--godot-bin",
+                fake.to_str().unwrap(),
+                "--json",
+            ];
+            if batch {
+                args.push("--batch");
+            }
+            let (status, body) = run_godot_qa(&args);
+            let warning = prefix.contains("WARNING");
+            assert_eq!(
+                status.success(),
+                warning,
+                "batch={batch}, {prefix}: {body:#}"
+            );
+            let tests = body["data"]["tests"].as_array().unwrap();
+            assert_eq!(tests.len(), 2);
+            if batch {
+                assert!(
+                    tests.iter().all(|test| test["ok"] == true),
+                    "batch diagnostics must not fabricate child attribution: {body:#}"
+                );
+                let failures = body["failures"].as_array().unwrap();
+                assert_eq!(failures.len(), usize::from(!warning));
+                assert!(
+                    failures
+                        .iter()
+                        .all(|failure| failure.get("target").is_none())
+                );
+                let summary: Value = serde_json::from_slice(
+                    &fs::read(body["data"]["artifacts"]["batch_summary"].as_str().unwrap())
+                        .unwrap(),
+                )
+                .unwrap();
+                assert_eq!(
+                    summary["logs"]["warnings"].as_array().unwrap().len(),
+                    usize::from(warning)
+                );
+            } else {
+                assert!(tests.iter().all(|test| test["ok"] == warning));
+                assert!(
+                    tests
+                        .iter()
+                        .all(|test| test["warnings"].as_array().unwrap().len()
+                            == usize::from(warning))
+                );
+            }
+            write(
+                &project.join("qa/config.yaml"),
+                "logs:\n  ignore: [fixture raw diagnostic]\n",
+            );
+            let (status, ignored) = run_godot_qa(&args);
+            assert!(
+                status.success(),
+                "ignored diagnostic changed verdict: {ignored:#}"
+            );
+            fs::remove_file(project.join("qa/config.yaml")).unwrap();
+        }
+    }
+    fs::remove_dir_all(project).unwrap();
+}
+
+#[test]
+fn godot_script_error_fails_even_when_script_test_returns_success() {
+    fn copy_tree(source: &Path, destination: &Path) {
+        fs::create_dir_all(destination).unwrap();
+        for entry in fs::read_dir(source).unwrap() {
+            let entry = entry.unwrap();
+            let target = destination.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_tree(&entry.path(), &target);
+            } else {
+                fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+    let project = temp_project_root("real-script-error");
+    copy_tree(
+        &repo_root().join("addons/godot_qa"),
+        &project.join("addons/godot_qa"),
+    );
+    write(
+        &project.join("project.godot"),
+        "config_version=5\n[application]\nconfig/name=\"Raw script error regression\"\n[rendering]\nrenderer/rendering_method=\"gl_compatibility\"\n",
+    );
+    write(
+        &project.join("qa/tests/manifest.json"),
+        r#"{"version":1,"tests":[{"id":"raw_error","kind":"script","target":"res://qa/tests/raw_error.gd"}]}"#,
+    );
+    write(
+        &project.join("qa/tests/raw_error.gd"),
+        "extends RefCounted\n\nfunc run_qa_test() -> Dictionary:\n\t_emit_error()\n\treturn {\"ok\": true, \"failures\": [], \"data\": {\"returned_success\": true}}\n\nfunc _emit_error() -> void:\n\tvar missing: Variant = null\n\tmissing.call_a_method_on_null()\n",
+    );
+    for batch in [false, true] {
+        let mut args = vec![
+            "check",
+            "--tests",
+            "--project",
+            project.to_str().unwrap(),
+            "--json",
+        ];
+        if batch {
+            args.push("--batch");
+        }
+        let (status, body) = run_godot_qa(&args);
+        assert!(
+            !status.success(),
+            "raw Godot script error escaped check: {body:#}"
+        );
+        let test = &body["data"]["tests"][0];
+        assert_eq!(
+            test["data"]["returned_success"], true,
+            "fixture must reach its successful return: {body:#}"
+        );
+        assert!(
+            body["failures"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|failure| failure["type"] == "godot_log_error"
+                    && failure["actual"]
+                        .as_str()
+                        .is_some_and(|line| line.starts_with("SCRIPT ERROR:"))),
+            "raw script diagnostic must be retained: {body:#}"
+        );
+    }
+    fs::remove_dir_all(project).unwrap();
+}

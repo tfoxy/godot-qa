@@ -2726,7 +2726,10 @@ fn bundle_schedule_and_log_ignore_docs_contract() {
 
     for required in [
         "`scenario.schedule` selects the bundle dispatch order (default `longest-first`); `manifest` keeps bundle expansion order.",
-        "`logs.ignore` lists substrings that silence engine `ERROR:`/`WARNING:` lines in every log scan (cold, warm, and the warm session-noise scan); it is project-owned and silences real errors, so fix the game first.",
+        "`logs.ignore` lists substrings that silence `ERROR:`, `WARNING:`, `SCRIPT ERROR:`, and `SCRIPT WARNING:` lines",
+        "cold, warm, warm-session-noise, and check scans",
+        "project-owned and silences real errors",
+        "Unattributed batch process errors fail the aggregate check",
     ] {
         assert!(
             cli_spec.contains(required),

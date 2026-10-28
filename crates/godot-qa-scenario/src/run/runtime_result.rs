@@ -1276,100 +1276,22 @@ fn runtime_log_failures(
     artifacts: &Map<String, Value>,
     log_ignore_patterns: &[String],
 ) -> (Vec<FailureDetail>, usize) {
-    let Ok(log_text) = fs::read_to_string(logs_path) else {
-        return (Vec::new(), 0);
-    };
-    let mut failures: Vec<FailureDetail> = Vec::new();
-    let mut ignored_count = 0usize;
-    for line in log_text.lines() {
-        let stripped = line.trim();
-        if stripped.is_empty() {
-            continue;
-        }
-        if stripped.starts_with("ERROR:") {
-            if is_ignored_godot_log_error(stripped, log_ignore_patterns) {
-                ignored_count += 1;
-                continue;
-            }
-            failures.push(failure_with_artifacts(
-                FailureDetail {
-                    kind: "godot_log_error".to_string(),
-                    command: Some(command.to_string()),
-                    path: Some(logs_path.to_string_lossy().into_owned()),
-                    message: Some(
-                        "Godot runtime emitted engine log noise during scenario run".to_string(),
-                    ),
-                    expected: Some(json!("scenario logs with no WARNING:/ERROR: engine lines")),
-                    actual: Some(json!(stripped)),
-                    ..FailureDetail::default()
-                },
-                artifacts,
-            ));
-            continue;
-        }
-        if stripped.starts_with("WARNING:") {
-            if is_ignored_godot_log_warning(stripped, log_ignore_patterns) {
-                ignored_count += 1;
-                continue;
-            }
-            failures.push(failure_with_artifacts(
-                FailureDetail {
-                    kind: "godot_log_warning".to_string(),
-                    command: Some(command.to_string()),
-                    path: Some(logs_path.to_string_lossy().into_owned()),
-                    message: Some(
-                        "Godot runtime emitted engine log noise during scenario run".to_string(),
-                    ),
-                    expected: Some(json!("scenario logs with no WARNING:/ERROR: engine lines")),
-                    actual: Some(json!(stripped)),
-                    ..FailureDetail::default()
-                },
-                artifacts,
-            ));
-        }
-    }
-    (failures, ignored_count)
-}
-
-/// Project-owned engine-log ignore patterns (`logs.ignore` in `qa/config.yaml`).
-///
-/// A line is silenced when it CONTAINS any pattern — the same substring test the
-/// built-in lists use — so a project can quiet known engine noise without a tool
-/// change. This is a real-error silencer, so the project owns the consequences:
-/// fix the game first, ignore only what the game cannot fix. The same slice is
-/// applied by the cold scan, the warm per-scenario scan (literally this code) and
-/// the warm session-noise scan, so warm and cold never disagree about what counts
-/// as noise.
-fn matches_project_log_ignore(line: &str, ignore_patterns: &[String]) -> bool {
-    ignore_patterns
-        .iter()
-        .any(|pattern| line.contains(pattern.as_str()))
-}
-
-fn is_ignored_godot_log_warning(line: &str, ignore_patterns: &[String]) -> bool {
-    matches_project_log_ignore(line, ignore_patterns)
-        || line.contains("Can't obtain the XDG decoration manager")
-        || line.contains("xdg-toplevel-icon protocol not found")
-        || line.contains("FIFO protocol not found! Frame pacing will be degraded")
-        || line.contains(
-            "The requested V-Sync mode Disabled is not available. Falling back to V-Sync mode Enabled",
-        )
-        || line.contains(
-            "Your video card drivers seem not to support the required Vulkan version, switching to OpenGL 3",
-        )
-        || line.contains(
-            "Could not set V-Sync mode, as changing V-Sync mode is not supported by the graphics driver",
-        )
-        || line.contains("XCreateIC couldn't create wd.xic")
-        || line.contains("All audio drivers failed, falling back to the dummy driver")
-        || line.contains("ObjectDB instances leaked at exit")
-}
-
-fn is_ignored_godot_log_error(line: &str, ignore_patterns: &[String]) -> bool {
-    matches_project_log_ignore(line, ignore_patterns)
-        || line.contains("Required extension VK_KHR_surface not found")
-        || line.contains("Condition \"err != OK\" is true. Returning: err")
-        || line.contains("Condition \"status < 0\" is true. Returning: ERR_CANT_OPEN")
+    let scan = godot_qa_core::godot_logs::scan_output(logs_path, "", "", log_ignore_patterns);
+    let failures = scan.entries.iter().map(|(severity, line)| {
+        failure_with_artifacts(FailureDetail {
+            kind: match severity {
+                godot_qa_core::godot_logs::Severity::Error => "godot_log_error",
+                godot_qa_core::godot_logs::Severity::Warning => "godot_log_warning",
+            }.to_string(),
+            command: Some(command.to_string()),
+            path: Some(logs_path.to_string_lossy().into_owned()),
+            message: Some("Godot runtime emitted engine log noise during scenario run".to_string()),
+            expected: Some(json!("scenario logs with no engine or script WARNING:/ERROR: lines")),
+            actual: Some(json!(line)),
+            ..FailureDetail::default()
+        }, artifacts)
+    }).collect();
+    (failures, scan.ignored_count)
 }
 
 fn invalid_result(

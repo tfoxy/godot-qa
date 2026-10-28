@@ -1,6 +1,7 @@
 pub mod audio;
 pub mod config;
 pub mod hash;
+pub mod godot_logs;
 pub mod profile;
 pub mod project_file;
 pub mod results;

@@ -252,13 +252,10 @@ fn session_log_noise_lines(bytes: &[u8], ignore_patterns: &[String]) -> Vec<Stri
             continue;
         }
         let stripped = line.trim();
-        let ignored = if stripped.starts_with("ERROR:") {
-            is_ignored_godot_log_error(stripped, ignore_patterns)
-        } else if stripped.starts_with("WARNING:") {
-            is_ignored_godot_log_warning(stripped, ignore_patterns)
-        } else {
+        let Some(severity) = godot_qa_core::godot_logs::classify(stripped) else {
             continue;
         };
+        let ignored = godot_qa_core::godot_logs::is_ignored(stripped, severity, ignore_patterns);
         if ignored || is_warm_session_exit_noise(stripped) {
             continue;
         }
