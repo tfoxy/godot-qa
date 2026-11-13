@@ -97,6 +97,7 @@
             repo_addon_dir: PathBuf::from("/nonexistent-warm-pool-test/addons/godot_qa"),
             addon_identity_cache: Default::default(),
             godot_launch_prefix: Vec::new(),
+            godot_joypad_isolation: false,
             godot_windowed_launch_prefix: Vec::new(),
             godot_args: Vec::new(),
             godot_project_args: Vec::new(),

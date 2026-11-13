@@ -428,6 +428,7 @@ pub fn run_visual_preflight(
             &config.godot_launch_prefix,
             &config.godot_windowed_launch_prefix,
             headless,
+            config.godot_joypad_isolation,
         );
     let mut data = Map::from_iter([
         (
@@ -1356,6 +1357,7 @@ fn execute_runtime_run(
             &config.godot_launch_prefix,
             &config.godot_windowed_launch_prefix,
             headless,
+            config.godot_joypad_isolation,
         );
     base_data.insert(
         "launch_display".to_string(),
@@ -1447,6 +1449,7 @@ fn execute_runtime_run(
         match godot_qa_process::launch_godot_one_shot(godot_qa_process::GodotOneShotLaunch {
             binary: config.godot_binary.as_deref().unwrap_or_default(),
             launch_prefix: &config.godot_launch_prefix,
+            joypad_isolation: config.godot_joypad_isolation,
             windowed_launch_prefix: &config.godot_windowed_launch_prefix,
             default_godot_args: &config.godot_args,
             extra_godot_args: &scenario_godot_args,

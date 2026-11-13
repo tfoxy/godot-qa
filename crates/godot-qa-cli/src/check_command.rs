@@ -440,6 +440,7 @@ pub(crate) fn check_result(cli: &Cli) -> CommandResult {
     let import_run = match godot_qa_process::launch_godot_import(
         config.godot_binary.as_deref().unwrap_or_default(),
         &config.godot_launch_prefix,
+        config.godot_joypad_isolation,
         &config.project_root,
         &artifacts.import_logs_path,
     ) {
@@ -1166,6 +1167,7 @@ pub(crate) fn run_scene_check(
     let process_result = match godot_qa_process::launch_godot_check(
         config.godot_binary.as_deref().unwrap_or_default(),
         &config.godot_launch_prefix,
+        config.godot_joypad_isolation,
         &config.godot_args,
         &config.godot_project_args,
         &config.project_root,
@@ -1234,6 +1236,7 @@ pub(crate) fn run_script_compile_check(
     let process_result = match godot_qa_process::launch_godot_check_with_timeout(
         config.godot_binary.as_deref().unwrap_or_default(),
         &config.godot_launch_prefix,
+        config.godot_joypad_isolation,
         &config.godot_args,
         &config.godot_project_args,
         &config.project_root,
@@ -2034,6 +2037,7 @@ run/main_scene="res://ui/menu\"quoted.tscn"
             repo_addon_dir: root.join("addons/godot_qa"),
             addon_identity_cache: Default::default(),
             godot_launch_prefix: Vec::new(),
+            godot_joypad_isolation: false,
             godot_windowed_launch_prefix: Vec::new(),
             godot_args: Vec::new(),
             godot_project_args: Vec::new(),

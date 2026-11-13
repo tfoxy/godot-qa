@@ -405,6 +405,7 @@ fn display_launch_metadata_json(display: &godot_qa_process::DisplayLaunchMetadat
         "virtual_display_command": display.virtual_display_command,
         "fallback_reason": display.fallback_reason,
         "launch_prefix_used": display.launch_prefix_used,
+        "joypad_isolation": display.joypad_isolation,
         "windowed_launch_prefix_used": display.windowed_launch_prefix_used,
         "effective_command_prefix": display.effective_command_prefix,
         "display_backend_available": display.display_backend_available,

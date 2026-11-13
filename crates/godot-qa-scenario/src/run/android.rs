@@ -296,6 +296,7 @@ fn android_display_metadata() -> godot_qa_process::DisplayLaunchMetadata {
         virtual_display_command: None,
         fallback_reason: None,
         launch_prefix_used: false,
+        joypad_isolation: false,
         windowed_launch_prefix_used: false,
         effective_command_prefix: Vec::new(),
         display_backend_available: true,

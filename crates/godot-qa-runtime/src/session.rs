@@ -1760,6 +1760,7 @@ pub fn session_start_result(
     let launch = match godot_qa_process::launch_godot_session(
         binary,
         &config.godot_launch_prefix,
+        config.godot_joypad_isolation,
         &config.godot_windowed_launch_prefix,
         &config.project_root,
         &prepared.request_path,

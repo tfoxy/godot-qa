@@ -97,6 +97,10 @@ pub(crate) fn doctor_result(cli: &Cli, args: &DoctorArgs) -> CommandResult {
     let mut godot_data = serde_json::Map::new();
     godot_data.insert("binary".to_string(), json!(config.godot_binary));
     godot_data.insert("version".to_string(), json!(version));
+    godot_data.insert(
+        "joypad_isolation".to_string(),
+        json!(config.godot_joypad_isolation),
+    );
     if let Some(probe) = version_probe {
         godot_data.insert("version_probe".to_string(), probe);
     }

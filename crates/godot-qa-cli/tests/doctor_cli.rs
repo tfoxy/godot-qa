@@ -101,6 +101,23 @@ fn warning_types(body: &Value) -> Vec<&str> {
 }
 
 #[test]
+fn doctor_reports_effective_joypad_isolation() {
+    let project_root = make_project_root("doctor-joypad-isolation");
+    let godot = fake_godot(&project_root);
+    for (config, expected) in [
+        ("godot: {}\n", false),
+        ("godot:\n  joypad_isolation: true\n", true),
+        ("godot:\n  joypad_isolation: false\n", false),
+    ] {
+        write(&project_root.join("qa/config.yaml"), config);
+        let (status, body) = run_doctor(&project_root, &godot);
+        assert!(status.success(), "{body}");
+        assert_eq!(body["data"]["godot"]["joypad_isolation"], expected);
+    }
+    fs::remove_dir_all(project_root).unwrap();
+}
+
+#[test]
 fn doctor_json_succeeds_with_version_probe_direct_fallback() {
     let project_root = make_project_root("doctor-cli-fallback");
     let wrapper =

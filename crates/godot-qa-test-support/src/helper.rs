@@ -90,6 +90,11 @@ fn main() {
     if !get("argv_file").is_empty() {
         fs::write(get("argv_file"), args.join("\n") + "\n").unwrap();
     }
+    for (key, path) in &values {
+        if let Some(name) = key.strip_prefix("env_file:") {
+            fs::write(path, env::var(name).unwrap_or_else(|_| "<unset>".into())).unwrap();
+        }
+    }
     let arg_value = |flag: &str| {
         args.windows(2)
             .find(|pair| pair[0] == flag)

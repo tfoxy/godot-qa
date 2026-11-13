@@ -289,6 +289,7 @@ fn execute_trial(
     let import = godot_qa_process::launch_godot_import_with_args(
         config.godot_binary.as_deref().unwrap_or_default(),
         &config.godot_launch_prefix,
+        config.godot_joypad_isolation,
         &config.godot_args,
         &j.project,
         &j.dir().join("import.log"),
@@ -529,6 +530,7 @@ fn offline(
         godot_qa_process::launch_godot_asset_trial_runner(godot_qa_process::GodotOneShotLaunch {
             binary: config.godot_binary.as_deref().unwrap_or_default(),
             launch_prefix: &config.godot_launch_prefix,
+            joypad_isolation: config.godot_joypad_isolation,
             windowed_launch_prefix: &config.godot_windowed_launch_prefix,
             default_godot_args: &config.godot_args,
             extra_godot_args: &args,
@@ -1065,7 +1067,7 @@ fn clear_terminal_reservation(j: &Journal) -> Result<(), FailureDetail> {
 }
 
 fn execution_config(config: &ProjectConfig) -> Value {
-    json!({"godot_binary":config.godot_binary,"godot_binary_identity":binary_identity(config),"artifacts_dir":config.artifacts_dir,"godot_args":config.godot_args,"project_args":config.godot_project_args,"launch_prefix":config.godot_launch_prefix,"windowed_launch_prefix":config.godot_windowed_launch_prefix,"headless":config.launch_mode_headless_override(),"audio":config.audio_mode_override(),"log_ignore_patterns":config.log_ignore_patterns})
+    json!({"godot_binary":config.godot_binary,"godot_binary_identity":binary_identity(config),"artifacts_dir":config.artifacts_dir,"godot_args":config.godot_args,"project_args":config.godot_project_args,"launch_prefix":config.godot_launch_prefix,"windowed_launch_prefix":config.godot_windowed_launch_prefix,"headless":config.launch_mode_headless_override(),"audio":config.audio_mode_override(),"joypad_isolation":config.godot_joypad_isolation,"log_ignore_patterns":config.log_ignore_patterns})
 }
 fn has_dynamic_load(text: &str) -> bool {
     // Match whole identifiers before allowing call whitespace. Compacting the

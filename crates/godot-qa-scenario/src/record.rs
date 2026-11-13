@@ -363,6 +363,7 @@ pub fn run_scenario_record(
     let launch = godot_qa_process::launch_godot_session(
         binary,
         &config.godot_launch_prefix,
+        config.godot_joypad_isolation,
         &config.godot_windowed_launch_prefix,
         &config.project_root,
         &artifacts.request_path,
@@ -2772,6 +2773,7 @@ mod tests {
             repo_addon_dir: root.join("addons/godot_qa"),
             addon_identity_cache: Default::default(),
             godot_launch_prefix: Vec::new(),
+            godot_joypad_isolation: false,
             godot_windowed_launch_prefix: Vec::new(),
             godot_args: Vec::new(),
             godot_project_args: Vec::new(),

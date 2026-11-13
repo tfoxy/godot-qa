@@ -77,6 +77,7 @@ pub struct GodotRunResult {
 pub struct GodotOneShotLaunch<'a> {
     pub binary: &'a str,
     pub launch_prefix: &'a [String],
+    pub joypad_isolation: bool,
     pub windowed_launch_prefix: &'a [String],
     pub default_godot_args: &'a [String],
     pub extra_godot_args: &'a [String],
@@ -115,6 +116,7 @@ pub struct DisplayLaunchMetadata {
     pub virtual_display_command: Option<Vec<String>>,
     pub fallback_reason: Option<String>,
     pub launch_prefix_used: bool,
+    pub joypad_isolation: bool,
     pub windowed_launch_prefix_used: bool,
     pub effective_command_prefix: Vec<String>,
     pub display_backend_available: bool,
@@ -705,15 +707,24 @@ fn stop_process_with_identity(
 pub fn launch_godot_import(
     binary: &str,
     launch_prefix: &[String],
+    joypad_isolation: bool,
     project_root: &Path,
     logs_path: &Path,
 ) -> Result<GodotRunResult, FailureDetail> {
-    launch_godot_import_with_args(binary, launch_prefix, &[], project_root, logs_path)
+    launch_godot_import_with_args(
+        binary,
+        launch_prefix,
+        joypad_isolation,
+        &[],
+        project_root,
+        logs_path,
+    )
 }
 
 pub fn launch_godot_import_with_args(
     binary: &str,
     launch_prefix: &[String],
+    joypad_isolation: bool,
     default_godot_args: &[String],
     project_root: &Path,
     logs_path: &Path,
@@ -735,12 +746,14 @@ pub fn launch_godot_import_with_args(
         "--import".to_string(),
     ]);
     let command = effective_godot_command(launch_prefix, binary, &args);
-    run_godot_command(&command, logs_path, display)
+    run_godot_command(&command, joypad_isolation, logs_path, display)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn launch_godot_check(
     binary: &str,
     launch_prefix: &[String],
+    joypad_isolation: bool,
     default_godot_args: &[String],
     default_project_args: &[String],
     project_root: &Path,
@@ -750,6 +763,7 @@ pub fn launch_godot_check(
     launch_godot_check_with_timeout(
         binary,
         launch_prefix,
+        joypad_isolation,
         default_godot_args,
         default_project_args,
         project_root,
@@ -763,6 +777,7 @@ pub fn launch_godot_check(
 pub fn launch_godot_check_with_timeout(
     binary: &str,
     launch_prefix: &[String],
+    joypad_isolation: bool,
     default_godot_args: &[String],
     default_project_args: &[String],
     project_root: &Path,
@@ -773,6 +788,7 @@ pub fn launch_godot_check_with_timeout(
     launch_godot_check_with_timeout_and_fixed_fps(
         binary,
         launch_prefix,
+        joypad_isolation,
         default_godot_args,
         default_project_args,
         project_root,
@@ -787,6 +803,7 @@ pub fn launch_godot_check_with_timeout(
 pub fn launch_godot_check_with_timeout_and_fixed_fps(
     binary: &str,
     launch_prefix: &[String],
+    joypad_isolation: bool,
     default_godot_args: &[String],
     default_project_args: &[String],
     project_root: &Path,
@@ -818,7 +835,7 @@ pub fn launch_godot_check_with_timeout_and_fixed_fps(
     ]);
     args.extend(default_project_args.iter().cloned());
     let command = effective_godot_command(launch_prefix, binary, &args);
-    run_godot_command_with_timeout(&command, logs_path, display, timeout)
+    run_godot_command_with_timeout(&command, joypad_isolation, logs_path, display, timeout)
 }
 
 pub fn launch_godot_one_shot(
@@ -870,6 +887,7 @@ pub fn launch_godot_one_shot(
         .map(|parent| parent.join("result.json"));
     run_godot_command_with_completion_path(
         &command,
+        options.joypad_isolation,
         options.logs_path,
         display,
         options.timeout,
@@ -927,7 +945,13 @@ pub fn launch_godot_asset_trial_runner(
         options.request_path.to_string_lossy().into_owned(),
     ]);
     let command = effective_godot_command(&display.effective_command_prefix, options.binary, &args);
-    run_godot_command_with_timeout(&command, options.logs_path, display, options.timeout)
+    run_godot_command_with_timeout(
+        &command,
+        options.joypad_isolation,
+        options.logs_path,
+        display,
+        options.timeout,
+    )
 }
 
 fn append_fixed_fps_args(args: &mut Vec<String>, fixed_fps: Option<i64>) {
@@ -992,18 +1016,22 @@ pub fn resolve_project_display_launch_metadata_with_windowed_prefix(
     launch_prefix: &[String],
     windowed_launch_prefix: &[String],
     headless: bool,
+    joypad_isolation: bool,
 ) -> DisplayLaunchMetadata {
-    build_project_display_launch_metadata_with_windowed_prefix(
+    let mut display = build_project_display_launch_metadata_with_windowed_prefix(
         project_root,
         headless,
         launch_prefix,
         windowed_launch_prefix,
-    )
+    );
+    display.joypad_isolation = joypad_isolation;
+    display
 }
 
 pub fn launch_godot_patch_runner(
     binary: &str,
     launch_prefix: &[String],
+    joypad_isolation: bool,
     default_godot_args: &[String],
     project_root: &Path,
     request_path: &Path,
@@ -1030,13 +1058,14 @@ pub fn launch_godot_patch_runner(
         format!("--qa-patch-request={}", request_path.to_string_lossy()),
     ]);
     let command = effective_godot_command(launch_prefix, binary, &args);
-    run_godot_command(&command, logs_path, display)
+    run_godot_command(&command, joypad_isolation, logs_path, display)
 }
 
 #[allow(clippy::too_many_arguments)]
 pub fn launch_godot_session(
     binary: &str,
     launch_prefix: &[String],
+    joypad_isolation: bool,
     windowed_launch_prefix: &[String],
     project_root: &Path,
     request_path: &Path,
@@ -1128,6 +1157,7 @@ pub fn launch_godot_session(
         ..FailureDetail::default()
     })?;
     let mut child_command = Command::new(command.first().cloned().unwrap_or_default());
+    apply_joypad_isolation(&mut child_command, joypad_isolation);
     child_command
         .args(command.iter().skip(1))
         .stdout(Stdio::from(log_file))
@@ -1168,7 +1198,10 @@ pub fn launch_godot_session(
         command,
         pid: child.id() as i64,
         logs_path: logs_path.to_string_lossy().into_owned(),
-        display,
+        display: DisplayLaunchMetadata {
+            joypad_isolation,
+            ..display
+        },
     })
 }
 
@@ -1360,6 +1393,7 @@ fn build_project_display_launch_metadata_with_env(
         virtual_display_command: auto_virtual_display_command,
         fallback_reason,
         launch_prefix_used,
+        joypad_isolation: false,
         windowed_launch_prefix_used,
         effective_command_prefix,
         display_backend_available,
@@ -1437,31 +1471,43 @@ fn linuxbsd_target() -> bool {
 
 fn run_godot_command(
     command: &[String],
+    joypad_isolation: bool,
     logs_path: &Path,
     display: DisplayLaunchMetadata,
 ) -> Result<GodotRunResult, FailureDetail> {
-    run_godot_command_with_timeout(command, logs_path, display, None)
+    run_godot_command_with_timeout(command, joypad_isolation, logs_path, display, None)
 }
 
 fn run_godot_command_with_timeout(
     command: &[String],
+    joypad_isolation: bool,
     logs_path: &Path,
     display: DisplayLaunchMetadata,
     timeout: Option<Duration>,
 ) -> Result<GodotRunResult, FailureDetail> {
-    run_godot_command_with_completion_path(command, logs_path, display, timeout, None)
+    run_godot_command_with_completion_path(
+        command,
+        joypad_isolation,
+        logs_path,
+        display,
+        timeout,
+        None,
+    )
 }
 
 fn run_godot_command_with_completion_path(
     command: &[String],
+    joypad_isolation: bool,
     logs_path: &Path,
     mut display: DisplayLaunchMetadata,
     timeout: Option<Duration>,
     completion_path: Option<&Path>,
 ) -> Result<GodotRunResult, FailureDetail> {
     ensure_log_parent(logs_path, command)?;
+    display.joypad_isolation = joypad_isolation;
     match run_owned_child_output(
         command,
+        joypad_isolation,
         timeout,
         completion_path,
         completion_path.map(|_| logs_path),
@@ -1619,8 +1665,17 @@ struct OwnedChildOutput {
     output_truncation: Option<OutputTruncation>,
 }
 
+/// Override SDL's physical-controller allowlist only for opted-in desktop children.
+/// Leaving the command environment untouched preserves caller values when disabled.
+fn apply_joypad_isolation(command: &mut Command, enabled: bool) {
+    if enabled {
+        command.env("SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT", "0xffff/0xffff");
+    }
+}
+
 fn run_owned_child_output(
     command: &[String],
+    joypad_isolation: bool,
     timeout: Option<Duration>,
     completion_path: Option<&Path>,
     file_capture_path: Option<&Path>,
@@ -1634,6 +1689,7 @@ fn run_owned_child_output(
         ));
     };
     let mut child_command = Command::new(executable);
+    apply_joypad_isolation(&mut child_command, joypad_isolation);
     child_command.args(command.iter().skip(1));
     let file_paths = if let Some(path) = file_capture_path {
         let stdout_path = path.with_extension("stdout.txt");
@@ -2175,6 +2231,7 @@ fn display_launch_metadata_value(display: &DisplayLaunchMetadata) -> serde_json:
         "virtual_display_command": display.virtual_display_command,
         "fallback_reason": display.fallback_reason,
         "launch_prefix_used": display.launch_prefix_used,
+        "joypad_isolation": display.joypad_isolation,
         "windowed_launch_prefix_used": display.windowed_launch_prefix_used,
         "effective_command_prefix": display.effective_command_prefix,
         "display_backend_available": display.display_backend_available,
@@ -2410,6 +2467,7 @@ mod tests {
             )
             .to_string_lossy()
             .into_owned()],
+            false,
             None,
             None,
             Some(&temp_dir.join("capture.txt")),
@@ -2622,6 +2680,7 @@ mod tests {
         let result = launch_godot_one_shot(GodotOneShotLaunch {
             binary: binary_path.to_str().expect("binary path"),
             launch_prefix: &[],
+            joypad_isolation: false,
             windowed_launch_prefix: &[],
             default_godot_args: &[],
             extra_godot_args: &[],
@@ -2670,6 +2729,7 @@ mod tests {
         let result = launch_godot_one_shot(GodotOneShotLaunch {
             binary: binary_path.to_str().expect("binary path"),
             launch_prefix: &[],
+            joypad_isolation: false,
             windowed_launch_prefix: &[],
             default_godot_args: &[],
             extra_godot_args: &[],
@@ -2726,6 +2786,7 @@ mod tests {
         let result = launch_godot_one_shot(GodotOneShotLaunch {
             binary: binary_path.to_str().expect("binary path"),
             launch_prefix: &[],
+            joypad_isolation: false,
             windowed_launch_prefix: &[],
             default_godot_args: &[],
             extra_godot_args: &[],
@@ -2803,6 +2864,7 @@ mod tests {
         let result = launch_godot_one_shot(GodotOneShotLaunch {
             binary: binary_path.to_str().expect("binary path"),
             launch_prefix: &prefix,
+            joypad_isolation: false,
             windowed_launch_prefix: &[],
             default_godot_args: &[],
             extra_godot_args: &[],
@@ -2848,6 +2910,7 @@ mod tests {
         let result = launch_godot_one_shot(GodotOneShotLaunch {
             binary: binary_path.to_str().expect("binary path"),
             launch_prefix: &launch_prefix,
+            joypad_isolation: false,
             windowed_launch_prefix: &windowed_launch_prefix,
             default_godot_args: &[],
             extra_godot_args: &[],
@@ -2896,6 +2959,7 @@ mod tests {
         let result = launch_godot_one_shot(GodotOneShotLaunch {
             binary: binary_path.to_str().expect("binary path"),
             launch_prefix: &launch_prefix,
+            joypad_isolation: false,
             windowed_launch_prefix: &windowed_launch_prefix,
             default_godot_args: &[],
             extra_godot_args: &[],
@@ -2942,6 +3006,7 @@ mod tests {
         let result = launch_godot_one_shot(GodotOneShotLaunch {
             binary: binary_path.to_str().expect("binary path"),
             launch_prefix: &[],
+            joypad_isolation: false,
             windowed_launch_prefix: &[],
             default_godot_args: &[],
             extra_godot_args: &extra_godot_args,
@@ -2995,6 +3060,7 @@ mod tests {
         let result = launch_godot_one_shot(GodotOneShotLaunch {
             binary: binary_path.to_str().expect("binary path"),
             launch_prefix: &[],
+            joypad_isolation: false,
             windowed_launch_prefix: &[],
             default_godot_args: &[],
             extra_godot_args: &[],
@@ -3055,6 +3121,7 @@ mod tests {
         let result = launch_godot_one_shot(GodotOneShotLaunch {
             binary: binary_path.to_str().expect("binary path"),
             launch_prefix: &launch_prefix,
+            joypad_isolation: false,
             windowed_launch_prefix: &[],
             default_godot_args: &[],
             extra_godot_args: &extra_godot_args,
@@ -3134,6 +3201,7 @@ mod tests {
         let result = launch_godot_one_shot(GodotOneShotLaunch {
             binary: binary_path.to_str().expect("binary path"),
             launch_prefix: &[],
+            joypad_isolation: false,
             windowed_launch_prefix: &[],
             default_godot_args: &default_godot_args,
             extra_godot_args: &extra_godot_args,
@@ -3505,6 +3573,7 @@ mod tests {
         );
         let result = run_godot_command(
             &[display_fail.to_string_lossy().into_owned()],
+            false,
             &logs_path,
             display,
         )
@@ -3543,6 +3612,7 @@ mod tests {
                     .to_string_lossy()
                     .into_owned(),
             ],
+            false,
             &logs_path,
             virtual_display,
         )
@@ -3561,6 +3631,7 @@ mod tests {
                 .join("missing-godot")
                 .to_string_lossy()
                 .into_owned()],
+            false,
             &logs_path,
             append_project_display_driver_args_with_env(
                 &mut vec!["godot".to_string()],
@@ -3592,6 +3663,7 @@ mod tests {
             &[fixture(&temp_dir.join("true"), &[])
                 .to_string_lossy()
                 .into_owned()],
+            false,
             &logs_path,
             append_project_display_driver_args_with_env(
                 &mut vec!["godot".to_string()],
@@ -3643,6 +3715,7 @@ mod tests {
 
         let result = run_godot_command_with_timeout(
             &[child.to_string_lossy().into_owned()],
+            false,
             &logs_path,
             append_project_display_driver_args_with_env(
                 &mut vec!["godot".to_string()],
@@ -3702,6 +3775,7 @@ mod tests {
         );
         let result = run_godot_command_with_completion_path(
             &["/bin/sh".to_string(), script.to_string_lossy().into_owned()],
+            false,
             &logs_path,
             append_project_display_driver_args_with_env(
                 &mut vec!["godot".to_string()],
@@ -3747,6 +3821,7 @@ mod tests {
         let started = std::time::Instant::now();
         let result = run_godot_command_with_completion_path(
             &["/bin/sh".into(), script.to_string_lossy().into_owned()],
+            false,
             &temp_dir.join("logs.txt"),
             append_project_display_driver_args_with_env(
                 &mut vec!["godot".into()],
@@ -3797,6 +3872,7 @@ mod tests {
         let started = std::time::Instant::now();
         let result = run_godot_command_with_completion_path(
             &["/bin/sh".into(), script.to_string_lossy().into_owned()],
+            false,
             &temp_dir.join("logs.txt"),
             append_project_display_driver_args_with_env(
                 &mut vec!["godot".into()],
@@ -3879,6 +3955,7 @@ mod tests {
         let _signal_guard = PROCESS_SIGNAL_LOCK.lock().unwrap();
         let natural = super::run_owned_child_output(
             &["/bin/sh".into(), "-c".into(), "kill -TERM $$".into()],
+            false,
             None,
             None,
             None,
@@ -3896,6 +3973,7 @@ mod tests {
 
         let timeout = super::run_owned_child_output(
             &["/bin/sh".into(), "-c".into(), "sleep 30".into()],
+            false,
             Some(Duration::from_millis(50)),
             None,
             None,
@@ -3934,6 +4012,7 @@ mod tests {
             let started = std::time::Instant::now();
             let output = super::run_owned_child_output(
                 &["/bin/sh".into(), "-c".into(), "sleep 30".into()],
+                false,
                 Some(Duration::from_millis(50)),
                 Some(&result_path),
                 Some(&temp_dir.join("logs.txt")),
@@ -3996,6 +4075,7 @@ mod tests {
         );
         let result = run_godot_command_with_completion_path(
             &["/bin/sh".into(), script.to_string_lossy().into_owned()],
+            false,
             &logs_path,
             append_project_display_driver_args_with_env(
                 &mut vec!["godot".into()],
@@ -4041,6 +4121,7 @@ mod tests {
 
         let result = run_godot_command_with_timeout(
             &[child.to_string_lossy().into_owned()],
+            false,
             &logs_path,
             append_project_display_driver_args_with_env(
                 &mut vec!["godot".to_string()],
@@ -4119,6 +4200,216 @@ mod tests {
     }
 
     #[test]
+    fn joypad_isolation_overrides_existing_command_env_only_when_enabled() {
+        const NAME: &str = "SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT";
+        let mut command = std::process::Command::new("godot");
+        super::apply_joypad_isolation(&mut command, false);
+        assert_eq!(command.get_envs().count(), 0);
+        command.env(NAME, "caller-value");
+        super::apply_joypad_isolation(&mut command, false);
+        assert_eq!(
+            command.get_envs().find(|(key, _)| *key == NAME).unwrap().1,
+            Some(std::ffi::OsStr::new("caller-value"))
+        );
+        super::apply_joypad_isolation(&mut command, true);
+        assert_eq!(
+            command.get_envs().find(|(key, _)| *key == NAME).unwrap().1,
+            Some(std::ffi::OsStr::new("0xffff/0xffff"))
+        );
+    }
+
+    #[test]
+    fn desktop_launches_apply_joypad_isolation_to_spawned_children() {
+        const NAME: &str = "SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT";
+        for enabled in [true, false] {
+            for mode in [
+                "check",
+                "check_timeout",
+                "check_fixed_fps",
+                "scenario",
+                "session",
+                "import",
+                "import_args",
+                "patch",
+                "asset_trial",
+            ] {
+                let temp_dir = unique_temp_dir().join("project with spaces");
+                fs::create_dir_all(&temp_dir).expect("create temp dir");
+                let env_path = temp_dir.join("env.txt");
+                let binary_path = fixture(
+                    &temp_dir.join("fake godot"),
+                    &[(
+                        "env_file:SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT",
+                        env_path.to_str().unwrap(),
+                    )],
+                );
+                let binary = binary_path.to_str().unwrap();
+                let request = temp_dir.join("request.json");
+                fs::write(&request, "{}\n").unwrap();
+                let logs = temp_dir.join("logs.txt");
+                // Exercise a native launch prefix as well as direct launches.
+                let wrapper = fixture(&temp_dir.join("wrapper"), &[("mode", "wrapper")]);
+                let prefix = if enabled {
+                    vec![wrapper.to_string_lossy().into_owned()]
+                } else {
+                    vec![]
+                };
+                let result = match mode {
+                    "check" => launch_godot_check(
+                        binary,
+                        &prefix,
+                        enabled,
+                        &[],
+                        &[],
+                        &temp_dir,
+                        &request,
+                        &logs,
+                    ),
+                    "check_timeout" => super::launch_godot_check_with_timeout(
+                        binary,
+                        &prefix,
+                        enabled,
+                        &[],
+                        &[],
+                        &temp_dir,
+                        &request,
+                        &logs,
+                        Some(Duration::from_secs(5)),
+                    ),
+                    "check_fixed_fps" => super::launch_godot_check_with_timeout_and_fixed_fps(
+                        binary,
+                        &prefix,
+                        enabled,
+                        &[],
+                        &[],
+                        &temp_dir,
+                        &request,
+                        &logs,
+                        None,
+                        Some(60),
+                    ),
+                    "import" => launch_godot_import(binary, &prefix, enabled, &temp_dir, &logs),
+                    "import_args" => super::launch_godot_import_with_args(
+                        binary,
+                        &prefix,
+                        enabled,
+                        &[],
+                        &temp_dir,
+                        &logs,
+                    ),
+                    "patch" => launch_godot_patch_runner(
+                        binary,
+                        &prefix,
+                        enabled,
+                        &[],
+                        &temp_dir,
+                        &request,
+                        &logs,
+                    ),
+                    "scenario" | "asset_trial" => {
+                        let options = GodotOneShotLaunch {
+                            binary,
+                            launch_prefix: &prefix,
+                            joypad_isolation: enabled,
+                            windowed_launch_prefix: &[],
+                            default_godot_args: &[],
+                            extra_godot_args: &[],
+                            default_project_args: &[],
+                            extra_project_args: &[],
+                            project_root: &temp_dir,
+                            request_path: &request,
+                            logs_path: &logs,
+                            headless: true,
+                            audio: false,
+                            viewport: None,
+                            timeout: Some(Duration::from_secs(5)),
+                            fixed_fps: None,
+                        };
+                        if mode == "scenario" {
+                            launch_godot_one_shot(options)
+                        } else {
+                            let _lease = super::project_access::ProjectLease::exclusive(&temp_dir)
+                                .expect("coordinator lease");
+                            let _scope = super::project_access::CoordinatorScope::enter(&temp_dir);
+                            super::launch_godot_asset_trial_runner(options)
+                        }
+                    }
+                    "session" => {
+                        let launch = launch_godot_session(
+                            binary,
+                            &prefix,
+                            enabled,
+                            &[],
+                            &temp_dir,
+                            &request,
+                            &logs,
+                            43124,
+                            "session-token",
+                            true,
+                            false,
+                            None,
+                            None,
+                            &[],
+                            &[],
+                            &[],
+                            None,
+                        )
+                        .expect("launch fake session");
+                        assert_eq!(launch.display.joypad_isolation, enabled);
+                        #[cfg(unix)]
+                        {
+                            let mut status = 0;
+                            // Session launches detach their Child; reap this test's child.
+                            assert_eq!(
+                                unsafe { libc::waitpid(launch.pid as libc::pid_t, &mut status, 0) },
+                                launch.pid as libc::pid_t
+                            );
+                            assert!(libc::WIFEXITED(status));
+                            assert_eq!(libc::WEXITSTATUS(status), 0);
+                        }
+                        #[cfg(not(unix))]
+                        assert!(
+                            super::wait_for_godot_process_exit(launch.pid, 5.0),
+                            "session fixture exits"
+                        );
+                        // Detached session launch returns before the child writes its file.
+                        assert_eq!(
+                            fs::read_to_string(&env_path).expect("child env file"),
+                            if enabled {
+                                "0xffff/0xffff".to_owned()
+                            } else {
+                                env::var(NAME).unwrap_or_else(|_| "<unset>".into())
+                            },
+                            "mode={mode}, isolation={enabled}"
+                        );
+                        let _ = fs::remove_dir_all(temp_dir.parent().unwrap());
+                        continue;
+                    }
+                    _ => unreachable!(),
+                }
+                .expect("run fake Godot");
+                assert_eq!(result.returncode, 0, "mode={mode}");
+                assert_eq!(result.display.joypad_isolation, enabled, "mode={mode}");
+                assert_eq!(
+                    super::display_launch_metadata_value(&result.display)["joypad_isolation"],
+                    enabled,
+                    "mode={mode}"
+                );
+                assert_eq!(
+                    fs::read_to_string(&env_path).expect("child env file"),
+                    if enabled {
+                        "0xffff/0xffff".to_owned()
+                    } else {
+                        env::var(NAME).unwrap_or_else(|_| "<unset>".into())
+                    },
+                    "mode={mode}, isolation={enabled}"
+                );
+                let _ = fs::remove_dir_all(temp_dir.parent().unwrap());
+            }
+        }
+    }
+
+    #[test]
     fn launch_godot_import_includes_artifact_log_file() {
         let temp_dir = unique_temp_dir();
         let binary_path = fixture(&temp_dir.join("true"), &[]);
@@ -4127,6 +4418,7 @@ mod tests {
         let result = launch_godot_import(
             binary_path.to_str().expect("binary path"),
             &[],
+            false,
             &temp_dir,
             &logs_path,
         )
@@ -4158,6 +4450,7 @@ mod tests {
         let result = launch_godot_check(
             binary_path.to_str().expect("binary path"),
             &[],
+            false,
             &[],
             &[],
             &temp_dir,
@@ -4196,6 +4489,7 @@ mod tests {
         let result = launch_godot_patch_runner(
             binary_path.to_str().expect("binary path"),
             &[],
+            false,
             &[],
             &temp_dir,
             &request_path,
@@ -4245,6 +4539,7 @@ mod tests {
         let launch = launch_godot_session(
             binary_path.to_str().expect("binary path"),
             &[],
+            false,
             &[],
             &temp_dir,
             &request_path,
@@ -4303,6 +4598,7 @@ mod tests {
         let launch = launch_godot_session(
             binary_path.to_str().expect("binary path"),
             &[],
+            false,
             &[],
             &temp_dir,
             &request_path,
@@ -4359,6 +4655,7 @@ mod tests {
         let launch = launch_godot_session(
             binary_path.to_str().expect("binary path"),
             &[],
+            false,
             &[],
             &temp_dir,
             &request_path,
@@ -4432,6 +4729,7 @@ mod tests {
         );
         let output = super::run_owned_child_output(
             &[wrapper.to_string_lossy().into_owned()],
+            false,
             Some(Duration::from_secs(5)),
             None,
             None,

@@ -530,6 +530,7 @@ fn display_launch_metadata_json(display: &godot_qa_process::DisplayLaunchMetadat
         "virtual_display_command": display.virtual_display_command,
         "fallback_reason": display.fallback_reason,
         "launch_prefix_used": display.launch_prefix_used,
+        "joypad_isolation": display.joypad_isolation,
         "display_backend_available": display.display_backend_available,
         "startup_attempted": display.startup_attempted,
         "virtual_display_exit_code": display.virtual_display_exit_code,
@@ -537,6 +538,20 @@ fn display_launch_metadata_json(display: &godot_qa_process::DisplayLaunchMetadat
         "startup_failure_retryable": display.startup_failure_retryable,
         "startup_failure_guidance": display.startup_failure_guidance,
     })
+}
+
+#[cfg(test)]
+#[test]
+fn session_launch_metadata_reports_joypad_isolation() {
+    let mut display =
+        godot_qa_process::resolve_project_display_launch_metadata(Path::new("."), &[], true);
+    for enabled in [false, true] {
+        display.joypad_isolation = enabled;
+        assert_eq!(
+            display_launch_metadata_json(&display)["joypad_isolation"],
+            json!(enabled)
+        );
+    }
 }
 
 pub fn headless_screenshot_unsupported(command: &str, record: &SessionRecord) -> FailureDetail {

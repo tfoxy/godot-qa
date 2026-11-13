@@ -33,6 +33,9 @@
 // the K sessions never collide. Windowed-media scenarios share a single serialized
 // windowed session (running many windowed Godot processes at once is display-risky
 // and these scenarios are rare), started lazily only if one appears.
+// Pools live only for this invocation and share its immutable ProjectConfig,
+// including joypad isolation. The post-run hook shuts them down before returning;
+// pooled handles are never rediscovered or reused by another CLI invocation.
 //
 // Cold stays authoritative: any truly-cold scenario falls back to the exact cold
 // path, and if a warm session cannot start or a scenario.run round-trip fails the

@@ -41,6 +41,14 @@ mod android_tests {
     // --- Option validation ------------------------------------------------
 
     #[test]
+    fn android_launch_metadata_does_not_apply_desktop_joypad_isolation() {
+        assert_eq!(
+            display_launch_metadata_json(&android_display_metadata())["joypad_isolation"],
+            false
+        );
+    }
+
+    #[test]
     fn option_rejection_table() {
         // Each rejected display/audio/visual flag maps to android_option_unsupported.
         let rejected: [(&str, fn(&mut ScenarioRunAndroidOptions)); 5] = [
@@ -463,6 +471,7 @@ mod android_tests {
             repo_addon_dir: root.join("addons/godot_qa"),
             addon_identity_cache: Default::default(),
             godot_launch_prefix: Vec::new(),
+            godot_joypad_isolation: false,
             godot_windowed_launch_prefix: Vec::new(),
             godot_args: Vec::new(),
             godot_project_args: Vec::new(),

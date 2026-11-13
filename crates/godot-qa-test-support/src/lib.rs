@@ -8,6 +8,7 @@ use std::sync::OnceLock;
 /// `request_prefix` selects a request argv value. `write:relative-output` writes beside
 /// that request; `write_match:component:relative-output` overrides the default when
 /// the request's parent path contains that exact component.
+/// `env_file:NAME` writes the inherited environment variable (or `<unset>`) to a file.
 /// `remove_file` deletes a fixture before argument dispatch, tolerating absent files.
 /// `scenario_proof=passed` explicitly models a current addon finishing all requested
 /// runtime assertions; malformed results and supplied identity/proof fields are preserved.

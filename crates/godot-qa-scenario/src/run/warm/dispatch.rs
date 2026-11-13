@@ -839,6 +839,7 @@ fn warm_finalize_scenario(
         &config.godot_launch_prefix,
         &config.godot_windowed_launch_prefix,
         headless,
+        config.godot_joypad_isolation,
     );
     let process_result = synth_warm_process_result(display);
     let finalize_started = Instant::now();
@@ -931,6 +932,7 @@ fn warm_base_data(
             &config.godot_launch_prefix,
             &config.godot_windowed_launch_prefix,
             headless,
+            config.godot_joypad_isolation,
         );
     base_data.insert(
         "launch_display".to_string(),

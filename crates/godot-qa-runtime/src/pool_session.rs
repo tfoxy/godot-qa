@@ -120,6 +120,7 @@ pub fn start_pooled_session(
     let launch = godot_qa_process::launch_godot_session(
         binary,
         &config.godot_launch_prefix,
+        config.godot_joypad_isolation,
         &config.godot_windowed_launch_prefix,
         &config.project_root,
         &prepared.request_path,
@@ -212,7 +213,8 @@ pub fn stop_pooled_session(config: &ProjectConfig, handle: &PooledSessionHandle)
     let command = "session stop";
     let _ = pooled_session_command(handle, command, SESSION_STOP, Map::new());
     let record = &handle.record;
-    if godot_qa_process::wait_for_godot_process_exit(record.pid, PROCESS_STOP_WAIT_TIMEOUT_SECONDS) {
+    if godot_qa_process::wait_for_godot_process_exit(record.pid, PROCESS_STOP_WAIT_TIMEOUT_SECONDS)
+    {
         return CommandResult {
             ok: true,
             command: command.to_string(),

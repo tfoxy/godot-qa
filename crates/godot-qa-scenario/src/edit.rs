@@ -180,6 +180,7 @@ pub fn run_apply_patch(config: &ProjectConfig, patch: &str, command_line: &str) 
     let run = match godot_qa_process::launch_godot_patch_runner(
         binary,
         &config.godot_launch_prefix,
+        config.godot_joypad_isolation,
         &config.godot_args,
         &config.project_root,
         &artifacts.request_path,

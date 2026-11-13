@@ -25,6 +25,7 @@ pub struct ProjectConfig {
     pub godot_project_args: Vec<String>,
     pub godot_launch_mode: GodotLaunchMode,
     pub godot_audio_mode: GodotAudioMode,
+    pub godot_joypad_isolation: bool,
     pub scenario_warm_default: bool,
     pub scenario_warm_strict_default: bool,
     pub scenario_jobs_default: Option<i64>,
@@ -234,6 +235,10 @@ pub fn load_project_config(
             .as_ref()
             .map(|config| config.godot_audio_mode)
             .unwrap_or_default(),
+        godot_joypad_isolation: project_config
+            .as_ref()
+            .map(|config| config.godot_joypad_isolation)
+            .unwrap_or_default(),
         scenario_warm_default: project_config
             .as_ref()
             .map(|config| config.scenario_warm_default)
@@ -274,6 +279,7 @@ struct GodotQaConfig {
     godot_project_args: Vec<String>,
     godot_launch_mode: GodotLaunchMode,
     godot_audio_mode: GodotAudioMode,
+    godot_joypad_isolation: bool,
     scenario_warm_default: bool,
     scenario_warm_strict_default: bool,
     scenario_jobs_default: Option<i64>,
@@ -291,6 +297,7 @@ struct GodotQaConfigOverlay {
     godot_project_args: Option<Vec<String>>,
     godot_launch_mode: Option<GodotLaunchMode>,
     godot_audio_mode: Option<GodotAudioMode>,
+    godot_joypad_isolation: Option<bool>,
     scenario_warm_default: Option<bool>,
     scenario_warm_strict_default: Option<bool>,
     scenario_jobs_default: Option<i64>,
@@ -322,6 +329,9 @@ impl GodotQaConfig {
         }
         if let Some(godot_audio_mode) = overlay.godot_audio_mode {
             self.godot_audio_mode = godot_audio_mode;
+        }
+        if let Some(godot_joypad_isolation) = overlay.godot_joypad_isolation {
+            self.godot_joypad_isolation = godot_joypad_isolation;
         }
         if let Some(scenario_warm_default) = overlay.scenario_warm_default {
             self.scenario_warm_default = scenario_warm_default;
@@ -404,6 +414,7 @@ const GODOT_CONFIG_KEYS: &[&str] = &[
     "project_args",
     "launch_mode",
     "audio_mode",
+    "joypad_isolation",
 ];
 const SCENARIO_CONFIG_KEYS: &[&str] = &["warm", "warm_strict", "jobs", "schedule"];
 const ARTIFACTS_CONFIG_KEYS: &[&str] = &["keep_runs"];
@@ -482,8 +493,9 @@ fn load_godot_qa_config_file(
         godot_project_args,
         godot_launch_mode,
         godot_audio_mode,
+        godot_joypad_isolation,
     ) = match root.get("godot") {
-        None => (None, None, None, None, None, None),
+        None => (None, None, None, None, None, None, None),
         Some(godot) => {
             let Some(godot) = godot.as_mapping() else {
                 return Err(project_config_failure(
@@ -527,6 +539,12 @@ fn load_godot_qa_config_file(
             let godot_launch_mode =
                 parse_optional_launch_mode(godot.get("launch_mode"), config_path)?;
             let godot_audio_mode = parse_optional_audio_mode(godot.get("audio_mode"), config_path)?;
+            let godot_joypad_isolation = parse_optional_bool(
+                godot.get("joypad_isolation"),
+                "godot.joypad_isolation",
+                config_path,
+                display_path,
+            )?;
             (
                 godot_launch_prefix,
                 godot_windowed_launch_prefix,
@@ -534,6 +552,7 @@ fn load_godot_qa_config_file(
                 godot_project_args,
                 godot_launch_mode,
                 godot_audio_mode,
+                godot_joypad_isolation,
             )
         }
     };
@@ -640,6 +659,7 @@ fn load_godot_qa_config_file(
         godot_project_args,
         godot_launch_mode,
         godot_audio_mode,
+        godot_joypad_isolation,
         scenario_warm_default,
         scenario_warm_strict_default,
         scenario_jobs_default,
@@ -889,6 +909,7 @@ fn value_type(value: &YamlValue) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{GodotAudioMode, GodotLaunchMode, ScenarioSchedule, load_project_config};
+    use serde_json::json;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -927,6 +948,7 @@ mod tests {
         assert!(config.godot_args.is_empty());
         assert!(config.godot_project_args.is_empty());
         assert_eq!(config.godot_launch_mode, GodotLaunchMode::Auto);
+        assert!(!config.godot_joypad_isolation);
         assert_eq!(config.godot_audio_mode, GodotAudioMode::Auto);
         assert_eq!(config.audio_mode_override(), None);
         assert_eq!(config.qa_dir, temp_dir.join("qa"));
@@ -1102,6 +1124,95 @@ mod tests {
                 .map(|failure| failure.kind.as_str()),
             Some("invalid_project_config")
         );
+    }
+
+    #[test]
+    fn project_config_loads_joypad_isolation() {
+        for enabled in [true, false] {
+            let temp_dir = unique_temp_dir();
+            fs::create_dir_all(temp_dir.join("qa")).expect("create qa dir");
+            fs::write(
+                temp_dir.join("qa/config.yaml"),
+                format!("godot:\n  joypad_isolation: {enabled}\n"),
+            )
+            .expect("write config");
+
+            let config = load_project_config(Some(&temp_dir), None, None, false, None);
+
+            let _ = fs::remove_dir_all(&temp_dir);
+            assert_eq!(config.godot_joypad_isolation, enabled);
+            assert!(config.project_config_failure.is_none());
+            assert!(config.config_warnings.is_empty());
+        }
+    }
+
+    #[test]
+    fn project_config_local_overlay_replaces_joypad_isolation() {
+        for enabled in [true, false] {
+            let temp_dir = unique_temp_dir();
+            fs::create_dir_all(temp_dir.join("qa")).expect("create qa dir");
+            fs::write(
+                temp_dir.join("qa/config.yaml"),
+                format!("godot:\n  joypad_isolation: {}\n", !enabled),
+            )
+            .expect("write base config");
+            fs::write(
+                temp_dir.join("qa/config.local.yaml"),
+                format!("godot:\n  joypad_isolation: {enabled}\n"),
+            )
+            .expect("write local config");
+
+            let config = load_project_config(Some(&temp_dir), None, None, false, None);
+
+            let _ = fs::remove_dir_all(&temp_dir);
+            assert_eq!(config.godot_joypad_isolation, enabled);
+            assert!(config.project_config_failure.is_none());
+        }
+    }
+
+    #[test]
+    fn project_config_rejects_non_boolean_joypad_isolation() {
+        for (value, actual) in [
+            ("\"true\"", "string"),
+            ("on", "string"),
+            ("1", "number"),
+            ("[]", "array"),
+            ("{}", "object"),
+            ("null", "null"),
+        ] {
+            let temp_dir = unique_temp_dir();
+            fs::create_dir_all(temp_dir.join("qa")).expect("create qa dir");
+            fs::write(
+                temp_dir.join("qa/config.local.yaml"),
+                format!("godot:\n  joypad_isolation: {value}\n"),
+            )
+            .expect("write config");
+
+            let config = load_project_config(Some(&temp_dir), None, None, false, None);
+
+            let _ = fs::remove_dir_all(&temp_dir);
+            assert!(!config.godot_joypad_isolation);
+            let failure = config.project_config_failure.expect("invalid config");
+            assert_eq!(failure.kind, "invalid_project_config");
+            assert_eq!(
+                failure.expected,
+                Some(json!("godot.joypad_isolation boolean"))
+            );
+            assert_eq!(failure.actual, Some(json!(actual)));
+            assert_eq!(
+                failure.path,
+                Some(
+                    temp_dir
+                        .join("qa/config.local.yaml")
+                        .to_string_lossy()
+                        .into_owned()
+                )
+            );
+            assert_eq!(
+                failure.message.as_deref(),
+                Some("qa/config.local.yaml godot.joypad_isolation must be a boolean")
+            );
+        }
     }
 
     #[test]

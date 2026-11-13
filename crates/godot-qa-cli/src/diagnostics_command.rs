@@ -82,6 +82,7 @@ pub(crate) fn editor_diagnostics_result(cli: &Cli, args: &EditorDiagnosticsArgs)
         let completed = godot_qa_process::launch_godot_import_with_args(
             config.godot_binary.as_deref().unwrap_or_default(),
             &config.godot_launch_prefix,
+            config.godot_joypad_isolation,
             &config.godot_args,
             &config.project_root,
             &artifacts.logs_path,

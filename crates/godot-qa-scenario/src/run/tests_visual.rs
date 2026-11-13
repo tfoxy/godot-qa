@@ -594,6 +594,23 @@
     }
 
     #[test]
+    fn visual_preflight_reports_joypad_isolation() {
+        let root = temp_dir("visual-preflight-joypad-isolation");
+        write(&root.join("project.godot"), "config_version=5\n");
+        for enabled in [false, true] {
+            let mut config = test_config(&root);
+            config.godot_joypad_isolation = enabled;
+            let result = super::run_visual_preflight(&config, "visual preflight --headless", true);
+            assert!(result.ok);
+            assert_eq!(
+                result.data["launch_display"]["joypad_isolation"],
+                json!(enabled)
+            );
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn visual_preflight_windowed_display_available_reports_visual_support() {
         let _guard = ENV_LOCK.lock().unwrap();
         let old_display = std::env::var_os("DISPLAY");

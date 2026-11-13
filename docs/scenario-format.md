@@ -968,6 +968,19 @@ The step polls the predicate immediately and then every `poll_every_frames` fram
 - Cleanup: the QA-announced set lives in a process-global tracking dictionary that survives a scene reload, so at scenario finalize, on `input.reset`, and on scene change (`session.change_scene`) the tool fires a matching *disconnect* signal for every still-announced device and clears the set. Warm sessions run through the same shared executor finalize and the same `reset_input()` path, so a faked connection never leaks into the next scenario sharing the process.
 - Lint: `joy_connect`/`joy_disconnect` are setup, not player input — like `spawn_scene`/`fixture_call` they are neither the interactive marker nor a mutation for `GQA-LINT-001`. Connecting pads normally happens before input, but placing a `joy_disconnect` *after* input is the canonical mid-match controller-drop scenario, and it is deliberately NOT flagged: `GQA-LINT-001` only flags the four state-mutation steps (`fixture_teleport`, `teleport_node`, `set_property`, `call_method`) after player input, and these joypad-connection steps are intentionally excluded from that set.
 
+### Avoiding physical controller id collisions
+
+`joy_connect` refuses device ids already occupied by real controllers. For low virtual ids such as `0..5`, enable isolation in the selected project's `qa/config.yaml` or ignored `qa/config.local.yaml`:
+
+```yaml
+godot:
+  joypad_isolation: true
+```
+
+This sets `SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT=0xffff/0xffff` on every desktop Godot process launched by godot-qa, hiding physical gamepads. It defaults to `false`; when off, any caller value for the variable is inherited unchanged. Android/adb is unaffected. The applied flag appears as `launch_display.joypad_isolation` in scenario/session launch JSON and the configured value as `data.godot.joypad_isolation` in `doctor --json`. Restart an existing live session after changing it. For example, run `godot-qa scenario run joy_connect_demo --project examples/sample_project --json` with this local override to exercise devices `0..5`.
+
+Alternatively, use high virtual ids such as `40+` to avoid real controller slots (see `examples/sample_project/qa/tests/joy_lifecycle_test.gd`). Isolation does not change the signal-only synthetic roster limitation below.
+
 ### Engine roster limitation: signal-only synthetic connections
 
 The addon emits the `Input.joy_connection_changed` **signal**: the roster-mutating C++ entry point `Input::joy_connection_changed(device, connected, name, guid)` is not exposed to GDScript (`Input.has_method("joy_connection_changed")` is `false`, and `ClassDB.class_has_method("Input", "joy_connection_changed")` is `false`), and the signal itself carries only `(device, connected)`. Consequences:

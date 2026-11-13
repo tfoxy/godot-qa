@@ -578,6 +578,18 @@ fn test_config(root: &Path) -> ProjectConfig {
     godot_qa_core::config::load_project_config(Some(root), None, None, false, None)
 }
 #[test]
+fn execution_config_distinguishes_joypad_isolation() {
+    let root = root();
+    let mut config = test_config(&root);
+    let original = execution_config(&config);
+    assert_eq!(original["joypad_isolation"], false);
+    config.godot_joypad_isolation = true;
+    let isolated = execution_config(&config);
+    assert_eq!(isolated["joypad_isolation"], true);
+    assert_ne!(original, isolated);
+    fs::remove_dir_all(root).unwrap();
+}
+#[test]
 fn journal_integrity_rejects_redirect_to_identical_unrelated_scene() {
     let root = root();
     let config = test_config(&root);

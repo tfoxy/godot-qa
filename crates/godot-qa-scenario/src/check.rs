@@ -633,6 +633,7 @@ pub fn run_check_tests(
     let import_run = match godot_qa_process::launch_godot_import(
         config.godot_binary.as_deref().unwrap_or_default(),
         &config.godot_launch_prefix,
+        config.godot_joypad_isolation,
         &config.project_root,
         &artifacts.import_logs_path,
     ) {
@@ -978,6 +979,7 @@ fn run_manifest_test(
     let process_result = match godot_qa_process::launch_godot_check_with_timeout_and_fixed_fps(
         config.godot_binary.as_deref().unwrap_or_default(),
         &config.godot_launch_prefix,
+        config.godot_joypad_isolation,
         &config.godot_args,
         &config.godot_project_args,
         &config.project_root,
@@ -1282,6 +1284,7 @@ fn run_manifest_tests_batch(
     let process_result = match godot_qa_process::launch_godot_check_with_timeout_and_fixed_fps(
         config.godot_binary.as_deref().unwrap_or_default(),
         &config.godot_launch_prefix,
+        config.godot_joypad_isolation,
         &config.godot_args,
         &config.godot_project_args,
         &config.project_root,
@@ -3552,6 +3555,7 @@ mod tests {
             repo_addon_dir: project_root.join("addons/godot_qa"),
             addon_identity_cache: Default::default(),
             godot_launch_prefix: Vec::new(),
+            godot_joypad_isolation: false,
             godot_windowed_launch_prefix: Vec::new(),
             godot_args: Vec::new(),
             godot_project_args: Vec::new(),
@@ -3618,6 +3622,7 @@ mod tests {
             repo_addon_dir: project_root.join("addons/godot_qa"),
             addon_identity_cache: Default::default(),
             godot_launch_prefix: Vec::new(),
+            godot_joypad_isolation: false,
             godot_windowed_launch_prefix: Vec::new(),
             godot_args: Vec::new(),
             godot_project_args: Vec::new(),
@@ -5410,6 +5415,7 @@ mod tests {
             repo_addon_dir: project_root.join("addons/godot_qa"),
             addon_identity_cache: Default::default(),
             godot_launch_prefix: Vec::new(),
+            godot_joypad_isolation: false,
             godot_windowed_launch_prefix: Vec::new(),
             godot_args: Vec::new(),
             godot_project_args: Vec::new(),
