@@ -74,6 +74,17 @@ fn fastest_frame_pacing_demo_cli_contract() {
     let command = body["data"]["process"]["command"].as_array().unwrap();
     assert!(command.iter().any(|arg| arg == "--fixed-fps"));
     assert!(command.iter().any(|arg| arg == "--disable-vsync"));
+
+    let temporal_path = Path::new(body["data"]["artifacts"]["run_root"].as_str().unwrap())
+        .join("temporal/observe_until_qa_main_menu.json");
+    let temporal: Value = serde_json::from_str(&fs::read_to_string(&temporal_path).unwrap())
+        .expect("temporal evidence JSON");
+    assert_eq!(temporal["window"]["seconds"], 3.0);
+    assert_eq!(
+        temporal["first_matching_sample"]["actual"]["matched"][0]["actual"],
+        "complete"
+    );
+    assert_eq!(temporal["first_matching_sample"]["matched"], true);
 }
 
 #[test]

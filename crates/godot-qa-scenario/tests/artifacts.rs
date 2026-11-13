@@ -113,6 +113,13 @@ fn prepare_run_artifacts_creates_expected_layout_and_metadata() {
                 "audio_dir": artifacts.audio_dir,
             },
             "run": {
+                "frame_pacing": {
+                    "mode": "fastest",
+                    "fixed_fps": 60,
+                    "source": "godot_default",
+                    "project_setting": null,
+                    "generated_godot_args": ["--fixed-fps", "60", "--disable-vsync"],
+                },
                 "id": "20260421T120000Z",
                 "nonce": nonce,
                 "started_at": "2026-04-21T12:00:00Z",

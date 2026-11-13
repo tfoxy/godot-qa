@@ -2,10 +2,12 @@ extends RefCounted
 
 const QaSnapshot = preload("res://addons/godot_qa/qa_snapshot.gd")
 const QaJsonEquality = preload("res://addons/godot_qa/qa_json_equality.gd")
+const QaArgs = preload("res://addons/godot_qa/qa_args.gd")
 
 var _runtime: RefCounted = null
 var _root_window: Window = null
 var _runtime_errors: Array = []
+var _session_fixed_fps := 0
 const SURFACE_ALLOWED_SPACES := {"world_2d": true, "viewport_2d": true, "world_3d": true}
 const SURFACE_MAX_POINTS := 32
 const SURFACE_MAX_RADIUS := 4096.0
@@ -32,6 +34,14 @@ func _init(runtime: RefCounted, root_window: Window, runtime_errors := []) -> vo
 	_runtime = runtime
 	_root_window = root_window
 	_runtime_errors = runtime_errors if runtime_errors is Array else []
+	var options: Dictionary = QaArgs.parse_user_args(OS.get_cmdline_user_args()).get("options", {})
+	var session_path := str(options.get("session_request", ""))
+	if session_path != "" and FileAccess.file_exists(session_path):
+		var request: Variant = JSON.parse_string(FileAccess.get_file_as_string(session_path))
+		if request is Dictionary:
+			var pacing: Variant = request.get("session", {}).get("frame_pacing", {})
+			if pacing is Dictionary:
+				_session_fixed_fps = int(pacing.get("fixed_fps", 0))
 
 
 func execute(command_name: String, params := {}) -> Dictionary:
@@ -3399,7 +3409,12 @@ func _temporal_window(params: Dictionary, target: String) -> Dictionary:
 	var seconds := float(params.get("window_seconds", 0.0))
 	if seconds <= 0.0:
 		return _error("invalid_window", "window_seconds must be greater than zero", {"target": target, "expected": "window_seconds > 0", "actual": seconds})
-	return {"ok": true, "mode": "seconds", "seconds": seconds, "start_msec": Time.get_ticks_msec(), "sample_every_frames": sample_every_frames, "sample": 0, "temporal_sampling": sampling_payload}
+	var window := {"ok": true, "mode": "seconds", "seconds": seconds, "start_msec": Time.get_ticks_msec(), "sample_every_frames": sample_every_frames, "sample": 0, "temporal_sampling": sampling_payload}
+	if _temporal_fixed_fps() > 0:
+		window["mode"] = "frames"
+		window["frames"] = _temporal_frame_count(null, seconds, 1)
+		window["remaining_frames"] = window["frames"]
+	return window
 
 
 func _temporal_should_sample(window: Dictionary) -> bool:
@@ -3440,7 +3455,7 @@ func _window_payload(window: Dictionary) -> Dictionary:
 	if not sampling.is_empty():
 		payload["temporal_sampling"] = sampling.duplicate(true)
 		payload["sampling_mode"] = str(sampling.get("mode", ""))
-	if str(window.get("mode", "frames")) == "seconds":
+	if window.has("seconds"):
 		payload["seconds"] = float(window.get("seconds", 0.0))
 	else:
 		payload["frames"] = int(window.get("frames", 0))
@@ -3809,11 +3824,18 @@ func _has_property(object: Object, property_name: String) -> bool:
 	return false
 
 
+func _temporal_fixed_fps() -> int:
+	# Godot consumes --fixed-fps before exposing cmdline args to scripts. Use
+	# CLI-resolved runner/session metadata, never the measured render FPS.
+	return int(_root_window.get_meta("_godot_qa_temporal_fixed_fps", _session_fixed_fps)) if _root_window != null else _session_fixed_fps
+
+
 func _temporal_frame_count(frame_value: Variant, second_value: Variant, default_frames: int) -> int:
 	if frame_value != null:
 		return max(1, int(frame_value))
 	if second_value != null:
-		var fps := Engine.get_frames_per_second()
+		var fixed_fps := _temporal_fixed_fps()
+		var fps := float(fixed_fps) if fixed_fps > 0 else Engine.get_frames_per_second()
 		if fps <= 0.0:
 			fps = 60.0
 		return max(1, int(ceil(float(second_value) * fps)))

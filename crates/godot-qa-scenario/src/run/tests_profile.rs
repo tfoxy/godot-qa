@@ -244,6 +244,8 @@
             serde_json::from_str(&fs::read_to_string(runtime_request_path).unwrap()).unwrap();
         assert!(request["run"]["nonce"].as_str().is_some_and(|nonce| !nonce.is_empty()));
         assert_eq!(runtime_request["run"]["nonce"], request["run"]["nonce"]);
+        assert_eq!(request["run"]["frame_pacing"]["fixed_fps"], json!(60));
+        assert_eq!(runtime_request["run"]["frame_pacing"], request["run"]["frame_pacing"]);
         assert_eq!(
             runtime_request["artifacts"]["progress"],
             json!(artifacts.progress_path)
@@ -1071,6 +1073,7 @@
             scenario["time_control"]
         );
         assert_eq!(request["run"]["time_control"], scenario["time_control"]);
+        assert!(request["run"].get("frame_pacing").is_none());
 
         let runtime_request_path = artifacts.root_dir.join("runtime-request.json");
         write_runtime_request(
@@ -1090,6 +1093,7 @@
             scenario["time_control"]
         );
         assert_eq!(runtime_request["time_control_warnings"], json!([]));
+        assert!(runtime_request["run"].get("frame_pacing").is_none());
 
         fs::remove_dir_all(root).unwrap();
     }

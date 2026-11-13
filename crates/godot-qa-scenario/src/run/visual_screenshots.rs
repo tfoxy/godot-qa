@@ -756,6 +756,9 @@ fn write_runtime_request(
             run.insert("time_control".to_string(), time_control.clone());
         }
     }
+    if let Some(pacing) = scenario_frame_pacing(scenario, project_root).ok().flatten() {
+        request["run"]["frame_pacing"] = pacing.to_json();
+    }
     if let Some(frame_budget) = scenario_frame_budget_json(scenario, project_root) {
         if let Some(run) = request.get_mut("run").and_then(Value::as_object_mut) {
             run.insert("frame_budget".to_string(), frame_budget);

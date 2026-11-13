@@ -1205,6 +1205,7 @@ Bounded-window rules:
 - Exactly one bounded window key is required: `window_frames` or `window_seconds`.
 - `window_frames` must be a positive integer.
 - `window_seconds` must be a positive number.
+- Under active frame pacing, `window_seconds` and `dwell_seconds` convert to game-time frame counts with the fixed FPS (`frames = ceil(seconds x fixed_fps)`), independent of host load.
 - Unbounded windows and non-positive windows fail validation as `scenario_validation_failed`.
 
 Temporal sampling rules:

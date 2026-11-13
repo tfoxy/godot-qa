@@ -44,8 +44,16 @@ fn run_regression(case: &str) {
     let mut command = Command::new(std::env::var("GODOT_BIN").unwrap_or_else(|_| "godot".into()));
     command
         .args(["--headless", "--quit-after", "600", "--path"])
-        .arg(&scratch.0)
-        .args(["--script", "res://test.gd", "--", case]);
+        .arg(&scratch.0);
+    if let Some(fps) = case.trim_start_matches("live_").strip_prefix("fixed_fps_") {
+        command.args(["--fixed-fps", fps]);
+    }
+    command.args(["--script", "res://test.gd", "--", case]);
+    if case.starts_with("live_") {
+        let request = scratch.0.join("session-request.json");
+        fs::write(&request, r#"{"session":{"frame_pacing":{"fixed_fps":90}}}"#).unwrap();
+        command.arg(format!("--qa-session-request={}", request.display()));
+    }
     #[cfg(target_os = "linux")]
     if case == "evidence_write_failure" {
         use std::os::unix::process::CommandExt;
@@ -82,6 +90,12 @@ fn run_regression(case: &str) {
         !String::from_utf8_lossy(&output.stderr).contains("SCRIPT ERROR"),
         "{diagnostics}"
     );
+    if case.contains("fixed_fps_") || case == "realtime_seconds" {
+        assert!(
+            !String::from_utf8_lossy(&output.stderr).contains("ERROR:"),
+            "{diagnostics}"
+        );
+    }
     if case == "non_finite_properties" {
         assert!(
             !String::from_utf8_lossy(&output.stderr).contains("ERROR:"),
@@ -148,4 +162,20 @@ fn observe_until_native_properties_round_trip_through_json() {
 #[test]
 fn observe_until_non_finite_properties_round_trip_through_json() {
     run_regression("non_finite_properties");
+}
+
+#[test]
+fn temporal_seconds_use_fixed_fps_under_load() {
+    run_regression("fixed_fps_60");
+    run_regression("fixed_fps_120");
+}
+
+#[test]
+fn temporal_seconds_preserve_realtime_behavior() {
+    run_regression("realtime_seconds");
+}
+
+#[test]
+fn temporal_seconds_use_live_session_fixed_fps() {
+    run_regression("live_fixed_fps_90");
 }

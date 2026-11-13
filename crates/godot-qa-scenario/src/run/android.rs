@@ -414,9 +414,9 @@ fn android_base_data(
 
 // --- Request rewrite -------------------------------------------------------
 
-/// Load the host request.json, strip `run.frame_budget` (device pacing is real,
-/// so the engine must not enforce a project-default-fps frame budget), re-persist
-/// the host copy so the on-disk record matches what ran, then rewrite every
+/// Load the host request.json, strip `run.frame_budget` and `run.frame_pacing`
+/// (device pacing is real, so neither budgets nor temporal windows may use the
+/// host's fixed FPS), re-persist the host copy to match what ran, then rewrite every
 /// host-run-root artifact string to its device path. Returns the device request
 /// bytes to push. `res://`/project paths outside the run root are left untouched.
 fn android_scenario_request_bytes(
@@ -429,6 +429,7 @@ fn android_scenario_request_bytes(
         .map_err(|error| android_request_invalid_failure(&artifacts.request_path, &error))?;
     if let Some(run) = request.get_mut("run").and_then(Value::as_object_mut) {
         run.remove("frame_budget");
+        run.remove("frame_pacing");
     }
     // Re-persist the host copy so the on-disk request matches what actually ran.
     write_json(&artifacts.request_path, &request)

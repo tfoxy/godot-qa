@@ -23,7 +23,7 @@ assert:
       method: get_accelerated_timer_qa_state
       matches:
         status: complete
-      window_seconds: 1.25
+      window_seconds: 3.0
       sample_every_frames: 1
   - state_matches:
       target: qa:main_menu

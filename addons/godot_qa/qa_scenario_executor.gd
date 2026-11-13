@@ -114,6 +114,7 @@ var _profile_next_assertion_index := 0
 var _profile_summary: Dictionary = {}
 var _soak: RefCounted = null
 var _original_max_fps := 0
+var _original_temporal_fixed_fps: Variant = null
 var _original_time_scale := 1.0
 var _original_physics_ticks_per_second := 0
 var _original_max_physics_steps_per_frame := 0
@@ -2887,6 +2888,9 @@ func _capture_engine_settings() -> void:
 	if _engine_settings_captured:
 		return
 	_original_max_fps = Engine.max_fps
+	_original_temporal_fixed_fps = _tree.root.get_meta("_godot_qa_temporal_fixed_fps") if _tree.root.has_meta("_godot_qa_temporal_fixed_fps") else null
+	var pacing: Variant = _request_run.get("frame_pacing", _check.get("frame_pacing", {}))
+	_tree.root.set_meta("_godot_qa_temporal_fixed_fps", int(pacing.get("fixed_fps", 0)) if pacing is Dictionary else 0)
 	_original_time_scale = Engine.time_scale
 	_original_physics_ticks_per_second = Engine.physics_ticks_per_second
 	_original_max_physics_steps_per_frame = Engine.max_physics_steps_per_frame
@@ -2946,6 +2950,10 @@ func _restore_engine_settings() -> void:
 	if not _engine_settings_captured:
 		return
 	Engine.max_fps = _original_max_fps
+	if _original_temporal_fixed_fps == null:
+		_tree.root.remove_meta("_godot_qa_temporal_fixed_fps")
+	else:
+		_tree.root.set_meta("_godot_qa_temporal_fixed_fps", _original_temporal_fixed_fps)
 	Engine.time_scale = _original_time_scale
 	Engine.physics_ticks_per_second = _original_physics_ticks_per_second
 	Engine.max_physics_steps_per_frame = _original_max_physics_steps_per_frame

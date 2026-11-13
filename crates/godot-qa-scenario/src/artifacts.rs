@@ -183,6 +183,12 @@ pub fn prepare_run_artifacts_with_assertion_source(
             run.insert("time_control".to_string(), time_control.clone());
         }
     }
+    if let Some(pacing) = crate::frame_pacing::scenario_frame_pacing(scenario, project_root)
+        .ok()
+        .flatten()
+    {
+        run["frame_pacing"] = pacing.to_json();
+    }
     if let Some(frame_budget) = crate::run::scenario_frame_budget_json(scenario, project_root) {
         if let Some(run) = run.as_object_mut() {
             run.insert("frame_budget".to_string(), frame_budget);

@@ -2,6 +2,8 @@ extends SceneTree
 
 const JsonEquality = preload("res://addons/godot_qa/qa_json_equality.gd")
 const Runtime = preload("res://addons/godot_qa/qa_runtime.gd")
+const Assertions = preload("res://addons/godot_qa/qa_assertions_impl.gd")
+const Executor = preload("res://addons/godot_qa/qa_scenario_executor.gd")
 
 class Subject extends Node2D:
 	var measurement: float = 0.0
@@ -157,6 +159,47 @@ func non_finite_properties() -> void:
 			check("persisted non-finite sample matches result", evidence is Dictionary and json_compatible(evidence) and JsonEquality.equals(evidence.get("first_matching_sample"), data.get("first_matching_sample")), evidence)
 
 
+func seconds_windows(case: String) -> void:
+	var fixed_fps := int(case.trim_prefix("live_").trim_prefix("fixed_fps_")) if case.contains("fixed_fps_") else 0
+	var executor := Executor.new(self)
+	executor._request_run = {"frame_pacing": {"fixed_fps": fixed_fps}} if fixed_fps > 0 else {}
+	get_root().set_meta("_godot_qa_temporal_fixed_fps", 17)
+	executor._capture_engine_settings()
+	var assertions := Assertions.new(runtime, get_root())
+	for loaded in [false, true]:
+		if loaded:
+			# Force a low measured FPS sample without changing the simulated delta.
+			for _i in range(48):
+				OS.delay_msec(50)
+				await process_frame
+			check("measured FPS differs from fixed FPS", fixed_fps == 0 or Engine.get_frames_per_second() < fixed_fps, Engine.get_frames_per_second())
+		var measured_fps := Engine.get_frames_per_second()
+		var fps := float(fixed_fps) if fixed_fps > 0 else (measured_fps if measured_fps > 0 else 60.0)
+		for seconds in [1.25, 0.01]:
+			var expected := int(ceil(seconds * fps))
+			check("seconds helper uses pacing FPS (loaded=%s)" % loaded, assertions._temporal_frame_count(null, seconds, 1) == expected, {"expected": expected, "actual": assertions._temporal_frame_count(null, seconds, 1), "measured_fps": measured_fps})
+			var window: Dictionary = assertions._temporal_window({"window_seconds": seconds}, "qa:subject")
+			var payload: Dictionary = assertions._window_payload(window)
+			check("seconds window preserves evidence units", payload.get("seconds") == seconds and not payload.has("frames"), payload)
+			check("seconds window uses frames only when paced", window.get("remaining_frames", -1) == (expected if fixed_fps > 0 else -1), window)
+			if fixed_fps > 0 and window.has("remaining_frames"):
+				var advanced := 0
+				while assertions._temporal_should_sample(window):
+					advanced += await assertions._advance_temporal_sample(window)
+				check("seconds window consumes exact frame budget", advanced == expected, {"expected": expected, "actual": advanced})
+		check("explicit frames take precedence", assertions._temporal_frame_count(7, 1.25, 1) == 7, loaded)
+		check("default frame count preserved", assertions._temporal_frame_count(null, null, 9) == 9, loaded)
+	executor._restore_engine_settings()
+	check("prior pacing metadata restored", get_root().get_meta("_godot_qa_temporal_fixed_fps") == 17, get_root().get_meta("_godot_qa_temporal_fixed_fps"))
+	get_root().remove_meta("_godot_qa_temporal_fixed_fps")
+	if case.begins_with("live_"):
+		check("live pacing remains available outside scenario scope", assertions._temporal_frame_count(null, 1.25, 1) == 113, assertions._temporal_frame_count(null, 1.25, 1))
+	executor = Executor.new(self)
+	executor._capture_engine_settings()
+	executor._restore_engine_settings()
+	check("absent pacing metadata restored", not get_root().has_meta("_godot_qa_temporal_fixed_fps"), get_root().has_meta("_godot_qa_temporal_fixed_fps"))
+
+
 func run() -> void:
 	subject = Subject.new()
 	subject.set_meta("qa_id", "subject")
@@ -164,6 +207,8 @@ func run() -> void:
 	runtime = Runtime.new(subject, get_root(), [], {})
 	var case := str(OS.get_cmdline_user_args()[0])
 	match case:
+		"fixed_fps_60", "fixed_fps_120", "live_fixed_fps_90", "realtime_seconds":
+			await seconds_windows(case)
 		"evidence_mkdir_failure", "evidence_open_failure", "evidence_write_failure":
 			await evidence_failure(case)
 		"native_properties":

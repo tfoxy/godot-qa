@@ -213,7 +213,7 @@ mod android_tests {
     }
 
     #[test]
-    fn request_rewrite_devices_paths_strips_frame_budget_and_leaves_res_paths() {
+    fn request_rewrite_devices_paths_strips_frame_pacing_and_budget_and_leaves_res_paths() {
         let root = unique_temp("request-rewrite");
         let artifacts = run_artifacts(&root);
         let host_request = json!({
@@ -223,6 +223,7 @@ mod android_tests {
                 "id": "run-1",
                 "godot_args": [],
                 "frame_budget": {"frames": 300, "fixed_fps": 60},
+                "frame_pacing": {"mode": "fastest", "fixed_fps": 60},
             },
         });
         write_json(&artifacts.request_path, &host_request).unwrap();
@@ -232,7 +233,7 @@ mod android_tests {
         let bytes = android_scenario_request_bytes(&mapper, &artifacts).unwrap();
         let device_request: Value = serde_json::from_slice(&bytes).unwrap();
 
-        // Every artifact string is device-rooted; frame_budget is gone; res:// stays.
+        // Every artifact string is device-rooted; host pacing is gone; res:// stays.
         assert_eq!(device_request["artifacts"]["run_root"], json!(device_root));
         assert_eq!(
             device_request["artifacts"]["result_path"],
@@ -243,15 +244,17 @@ mod android_tests {
             json!(format!("{device_root}/snapshots"))
         );
         assert!(device_request["run"].get("frame_budget").is_none());
+        assert!(device_request["run"].get("frame_pacing").is_none());
         assert_eq!(
             device_request["scenario"]["scene"],
             json!("res://main.tscn")
         );
 
-        // The re-persisted host copy keeps host paths but also lost frame_budget.
+        // The re-persisted host copy keeps host paths but also lost host pacing.
         let host_after: Value =
             serde_json::from_str(&fs::read_to_string(&artifacts.request_path).unwrap()).unwrap();
         assert!(host_after["run"].get("frame_budget").is_none());
+        assert!(host_after["run"].get("frame_pacing").is_none());
         assert_eq!(host_after["artifacts"]["run_root"], json!(root));
 
         let _ = fs::remove_dir_all(&root);
