@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::value::GodotValue;
 
-/// Severity of a non-fatal parse diagnostic. Parsing never panics or aborts; it
-/// accumulates diagnostics and returns partial results, matching the reference parser.
+/// Severity of a parse diagnostic. Parsing returns partial results; errors make
+/// those results unsafe for structural live edits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
@@ -15,7 +15,7 @@ pub enum Severity {
     Error,
 }
 
-/// A non-fatal parse diagnostic.
+/// A parse diagnostic, optionally identifying its source line.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Diagnostic {
     pub severity: Severity,

@@ -7,11 +7,16 @@
 //! [`SceneEditOp::ReparentNode`]. Anything that cannot be faithfully expressed as live
 //! edits records a `fell_back` reason so the caller full-scene-reloads instead.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 
 use crate::model::{SceneNode, SceneState};
 use crate::ops::{SceneDiff, SceneEditOp};
 use crate::value::GodotValue;
+
+#[cfg(test)]
+thread_local! {
+    static RENAME_CANDIDATE_CHECKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 /// Diff `old` → `new`, producing ordered live-edit ops or fallback reasons.
 pub fn diff(old: &SceneState, new: &SceneState) -> SceneDiff {
@@ -44,6 +49,13 @@ pub fn diff(old: &SceneState, new: &SceneState) -> SceneDiff {
         }
     }
 
+    if let Some(id) = changed_referenced_sub_resource(old, new) {
+        result.fell_back.push(format!(
+            "referenced or potentially referenced SubResource '{id}' changed"
+        ));
+        return result;
+    }
+
     let old_by_path = index_by_path(old);
     let new_by_path = index_by_path(new);
     let old_children = child_names_by_path(old);
@@ -69,6 +81,18 @@ pub fn diff(old: &SceneState, new: &SceneState) -> SceneDiff {
     // Rename/reparent heuristic: pair a removed node with an added node of the same type
     // and identical immediate-children names, differing only in parent and/or name.
     // Preserves the live node's state instead of remove+create.
+    // Index by type and child names, retaining path order within each bucket so
+    // ties match exactly as in the original ordered scan.
+    let mut candidates = BTreeMap::new();
+    for new_path in &added_paths {
+        let new_node = new_by_path[new_path];
+        if !new_node.is_instance() {
+            candidates
+                .entry((new_node.type_name.as_deref(), new_children.get(new_path)))
+                .or_insert_with(VecDeque::new)
+                .push_back(new_path);
+        }
+    }
     let mut reparents: Vec<(String, String)> = Vec::new();
     let mut matched_added: HashSet<String> = HashSet::new();
     for old_path in &removed_paths {
@@ -76,26 +100,42 @@ pub fn diff(old: &SceneState, new: &SceneState) -> SceneDiff {
         if old_node.is_instance() {
             continue;
         }
-        let old_kids = old_children.get(old_path);
-        for new_path in &added_paths {
-            if matched_added.contains(new_path) {
-                continue;
-            }
-            let new_node = new_by_path[new_path];
-            if new_node.type_name != old_node.type_name || new_node.is_instance() {
-                continue;
-            }
-            let same_kids = old_kids == new_children.get(new_path);
-            let moved_or_renamed =
-                old_node.name != new_node.name || old_node.parent != new_node.parent;
-            if same_kids && moved_or_renamed {
-                matched_added.insert(new_path.clone());
-                reparents.push((old_path.clone(), new_path.clone()));
-                break;
-            }
+        if let Some(new_path) = candidates
+            .get_mut(&(old_node.type_name.as_deref(), old_children.get(old_path)))
+            .and_then(VecDeque::pop_front)
+        {
+            #[cfg(test)]
+            RENAME_CANDIDATE_CHECKS.with(|checks| checks.set(checks.get() + 1));
+            // Removed and added paths are disjoint, so the parent or name differs.
+            matched_added.insert(new_path.clone());
+            reparents.push((old_path.clone(), new_path.clone()));
         }
     }
     let matched_removed: HashSet<String> = reparents.iter().map(|(old, _)| old.clone()).collect();
+
+    // Moving a subtree changes descendant paths, and removes precede moves while
+    // creates follow them. Reject dependent moves before emitting any operations.
+    for (old_path, new_path) in &reparents {
+        let old_parent = old_by_path[old_path].parent_path().unwrap();
+        let new_parent = new_by_path[new_path].parent_path().unwrap();
+        let dependency = if old_children.contains_key(old_path) {
+            Some("node has retained children".to_string())
+        } else if !new_by_path.contains_key(&old_parent) {
+            Some(format!("source parent '{old_parent}' is removed or moved"))
+        } else if !old_by_path.contains_key(&new_parent) {
+            Some(format!(
+                "destination parent '{new_parent}' is added or moved"
+            ))
+        } else {
+            None
+        };
+        if let Some(reason) = dependency {
+            result.fell_back.push(format!(
+                "cannot move '{old_path}' to '{new_path}' live: {reason}"
+            ));
+            return result;
+        }
+    }
 
     // 1. Removes (unmatched), deepest first.
     let mut pure_removes: Vec<String> = removed_paths
@@ -192,6 +232,85 @@ pub fn diff(old: &SceneState, new: &SceneState) -> SceneDiff {
     }
 
     result
+}
+
+/// Follow inline-resource references, including nested collections and resources.
+/// Unreferenced resource edits do not affect the live scene.
+fn changed_referenced_sub_resource<'a>(
+    old: &'a SceneState,
+    new: &'a SceneState,
+) -> Option<&'a str> {
+    let old_resources: BTreeMap<_, _> = old
+        .sub_resources
+        .iter()
+        .map(|resource| (resource.id.as_str(), resource))
+        .collect();
+    let new_resources: BTreeMap<_, _> = new
+        .sub_resources
+        .iter()
+        .map(|resource| (resource.id.as_str(), resource))
+        .collect();
+    let mut pending = Vec::new();
+    let mut opaque_references = false;
+    for node in old.nodes.iter().chain(&new.nodes) {
+        for (_, value) in &node.properties {
+            collect_sub_resource_ids(value, &mut pending, &mut opaque_references);
+        }
+    }
+    let mut visited = HashSet::new();
+    while let Some(id) = pending.pop() {
+        if !visited.insert(id) {
+            continue;
+        }
+        let previous = old_resources.get(id);
+        let current = new_resources.get(id);
+        if previous != current {
+            return Some(id);
+        }
+        if let Some(resource) = current {
+            for (_, value) in &resource.properties {
+                collect_sub_resource_ids(value, &mut pending, &mut opaque_references);
+            }
+        }
+    }
+    // Unsupported constructors discard their arguments, so reachable opaque values
+    // may hide references to any inline resource. Conservatively reload on any edit.
+    if opaque_references {
+        return old_resources
+            .keys()
+            .chain(new_resources.keys())
+            .copied()
+            .find(|id| old_resources.get(id) != new_resources.get(id));
+    }
+    None
+}
+
+fn collect_sub_resource_ids<'a>(
+    value: &'a GodotValue,
+    ids: &mut Vec<&'a str>,
+    opaque_references: &mut bool,
+) {
+    match value {
+        GodotValue::Unsupported(reason) => {
+            if let Some(id) = reason.strip_prefix("SubResource:") {
+                ids.push(id);
+            } else if !reason.starts_with("ExtResource:") {
+                *opaque_references = true;
+            }
+        }
+        GodotValue::Array(values) => {
+            for value in values {
+                collect_sub_resource_ids(value, ids, opaque_references);
+            }
+        }
+        GodotValue::Dictionary(entries) => {
+            for (key, value) in entries {
+                collect_sub_resource_ids(key, ids, opaque_references);
+                collect_sub_resource_ids(value, ids, opaque_references);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Emit `SetProp`/`SetPropRes` for every property that changed (added or modified).
@@ -475,6 +594,229 @@ mod tests {
                 pos: -1,
             }]
         );
+    }
+
+    #[test]
+    fn large_disjoint_types_do_not_scan_all_rename_candidates() {
+        const COUNT: usize = 10_000;
+        let mut old = scene(vec![root()]);
+        let mut new = scene(vec![root()]);
+        for index in 0..COUNT {
+            old.nodes.push(node(
+                &format!("Old{index:05}"),
+                Some("Node2D"),
+                Some("."),
+                &[],
+            ));
+            new.nodes.push(node(
+                &format!("New{index:05}"),
+                Some("Node3D"),
+                Some("."),
+                &[],
+            ));
+        }
+        assert_disjoint_rename_work(&old, &new, COUNT);
+    }
+
+    #[test]
+    fn large_disjoint_child_signatures_do_not_scan_all_rename_candidates() {
+        const COUNT: usize = 1_000;
+        let mut old = scene(vec![root()]);
+        let mut new = scene(vec![root()]);
+        for index in 0..COUNT {
+            let old_parent = format!("Old{index:05}");
+            let new_parent = format!("New{index:05}");
+            old.nodes
+                .push(node(&old_parent, Some("Node"), Some("."), &[]));
+            old.nodes
+                .push(node("OldChild", Some("Node2D"), Some(&old_parent), &[]));
+            new.nodes
+                .push(node(&new_parent, Some("Node"), Some("."), &[]));
+            new.nodes
+                .push(node("NewChild", Some("Node3D"), Some(&new_parent), &[]));
+        }
+        assert_disjoint_rename_work(&old, &new, COUNT * 2);
+    }
+
+    fn assert_disjoint_rename_work(old: &SceneState, new: &SceneState, count: usize) {
+        RENAME_CANDIDATE_CHECKS.with(|checks| checks.set(0));
+        let out = diff(old, new);
+        assert!(!out.requires_full_reload(), "{:?}", out.fell_back);
+        assert_eq!(out.ops.len(), count * 2);
+        assert_eq!(
+            out.ops
+                .iter()
+                .filter(|op| matches!(op, SceneEditOp::RemoveNode { .. }))
+                .count(),
+            count
+        );
+        assert_eq!(
+            out.ops
+                .iter()
+                .filter(|op| matches!(op, SceneEditOp::CreateNode { .. }))
+                .count(),
+            count
+        );
+        let checks = RENAME_CANDIDATE_CHECKS.with(|checks| checks.get());
+        assert!(
+            checks <= count,
+            "expected at most {count} candidate checks, got {checks}"
+        );
+    }
+
+    #[test]
+    fn ambiguous_rename_candidates_keep_path_order() {
+        let old = scene(vec![
+            root(),
+            node("Y", Some("Label"), Some("."), &[]),
+            node("X", Some("Label"), Some("."), &[]),
+        ]);
+        let new = scene(vec![
+            root(),
+            node("B", Some("Label"), Some("."), &[]),
+            node("A", Some("Label"), Some("."), &[]),
+        ]);
+        let out = diff(&old, &new);
+        assert!(!out.requires_full_reload());
+        assert_eq!(
+            out.ops,
+            vec![
+                SceneEditOp::ReparentNode {
+                    path: "X".to_string(),
+                    new_parent: ".".to_string(),
+                    new_name: "A".to_string(),
+                    pos: -1,
+                },
+                SceneEditOp::ReparentNode {
+                    path: "Y".to_string(),
+                    new_parent: ".".to_string(),
+                    new_name: "B".to_string(),
+                    pos: -1,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn rename_parent_with_retained_child_falls_back() {
+        let old = scene(vec![
+            root(),
+            node("A", Some("Node"), Some("."), &[]),
+            node("Child", Some("Sprite2D"), Some("A"), &[]),
+        ]);
+        let new = scene(vec![
+            root(),
+            node("B", Some("Node"), Some("."), &[]),
+            node("Child", Some("Sprite2D"), Some("B"), &[]),
+        ]);
+        let out = diff(&old, &new);
+        assert!(out.requires_full_reload(), "{out:?}");
+        assert!(out.ops.is_empty(), "{out:?}");
+    }
+
+    #[test]
+    fn move_into_new_parent_falls_back() {
+        let old = scene(vec![
+            root(),
+            node("Child", Some("Sprite2D"), Some("."), &[]),
+        ]);
+        let new = scene(vec![
+            root(),
+            node("Parent", Some("Node"), Some("."), &[]),
+            node("Child", Some("Sprite2D"), Some("Parent"), &[]),
+        ]);
+        let out = diff(&old, &new);
+        assert!(out.requires_full_reload(), "{out:?}");
+        assert!(out.ops.is_empty(), "{out:?}");
+    }
+
+    #[test]
+    fn move_out_of_removed_parent_falls_back() {
+        let old = scene(vec![
+            root(),
+            node("Parent", Some("Node"), Some("."), &[]),
+            node("Child", Some("Sprite2D"), Some("Parent"), &[]),
+        ]);
+        let new = scene(vec![
+            root(),
+            node("Child", Some("Sprite2D"), Some("."), &[]),
+        ]);
+        let out = diff(&old, &new);
+        assert!(out.requires_full_reload(), "{out:?}");
+        assert!(out.ops.is_empty(), "{out:?}");
+    }
+
+    fn material_scene(reference: &str, color: &str) -> SceneState {
+        crate::parse_scene(&format!(
+            "[sub_resource type=\"StandardMaterial3D\" id=\"Material\"]\n\
+             albedo_color = {color}\n\
+             [sub_resource type=\"Resource\" id=\"Wrapper\"]\n\
+             material = SubResource(\"Material\")\n\
+             [node name=\"Main\" type=\"Node\"]\n\
+             material = {reference}\n"
+        ))
+    }
+
+    #[test]
+    fn referenced_sub_resource_edit_falls_back() {
+        for reference in [
+            "SubResource(\"Material\")",
+            "[SubResource(\"Material\")]",
+            "{\"material\": SubResource(\"Material\")}",
+            "SubResource(\"Wrapper\")",
+        ] {
+            let old = material_scene(reference, "Color(1, 0, 0, 1)");
+            let new = material_scene(reference, "Color(0, 1, 0, 1)");
+            assert!(!old.has_errors() && !new.has_errors());
+            let out = diff(&old, &new);
+            assert!(out.requires_full_reload(), "{reference}: {out:?}");
+            assert!(out.ops.is_empty(), "{reference}: {out:?}");
+            assert!(out.fell_back[0].contains("Material"));
+        }
+    }
+
+    #[test]
+    fn opaque_constructor_sub_resource_edit_falls_back() {
+        for reference in [
+            "Array[Material]([SubResource(\"Material\")])",
+            "Array[Resource]([SubResource(\"Material\")])",
+            "SomeObject(SubResource(\"Material\"))",
+            "{\"materials\": Array[Material]([SubResource(\"Material\")])}",
+        ] {
+            let old = material_scene(reference, "Color(1, 0, 0, 1)");
+            let new = material_scene(reference, "Color(0, 1, 0, 1)");
+            assert!(old.diagnostics.is_empty(), "{:?}", old.diagnostics);
+            assert!(new.diagnostics.is_empty(), "{:?}", new.diagnostics);
+            let out = diff(&old, &new);
+            assert!(out.requires_full_reload(), "{reference}: {out:?}");
+            assert!(out.ops.is_empty(), "{reference}: {out:?}");
+            assert!(out.fell_back[0].contains("Material"));
+            assert!(!diff(&old, &old).requires_full_reload());
+        }
+    }
+
+    #[test]
+    fn reachable_opaque_sub_resource_edit_falls_back() {
+        let reference = "SubResource(\"Wrapper\")";
+        let old = material_scene(reference, "Color(1, 0, 0, 1)");
+        let new = material_scene(reference, "Color(0, 1, 0, 1)");
+        let wrap = |mut scene: SceneState| {
+            scene.sub_resources[1].properties[0].1 =
+                GodotValue::Unsupported("Array[Material]".to_string());
+            scene
+        };
+        let out = diff(&wrap(old), &wrap(new));
+        assert!(out.requires_full_reload(), "{out:?}");
+        assert!(out.ops.is_empty(), "{out:?}");
+    }
+
+    #[test]
+    fn unreferenced_sub_resource_edit_remains_no_op() {
+        let old = material_scene("null", "Color(1, 0, 0, 1)");
+        let new = material_scene("null", "Color(0, 1, 0, 1)");
+        let out = diff(&old, &new);
+        assert!(!out.requires_full_reload(), "{out:?}");
+        assert!(out.ops.is_empty());
     }
 
     #[test]

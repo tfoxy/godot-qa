@@ -13,8 +13,8 @@ use crate::model::{
 };
 use crate::value::GodotValue;
 
-/// Parse `.tscn` text into a [`SceneState`]. Accumulates non-fatal diagnostics rather
-/// than failing.
+/// Parse `.tscn` text into a [`SceneState`]. Returns partial results with diagnostics;
+/// syntax errors and excessive value nesting make the result unsafe for live edits.
 pub fn parse_scene(text: &str) -> SceneState {
     // Split on `\r?\n`, dropping a leading BOM (mirrors the reference parser).
     let normalized = text.strip_prefix('\u{feff}').unwrap_or(text);
@@ -297,9 +297,8 @@ fn split_header_parts(source: &str) -> Vec<String> {
     parts
 }
 
-/// Parse `key=value key=value …` header attributes. Mirrors the reference parser's
-/// `([A-Za-z0-9_./-]+)=` scan: each value spans up to the next attribute key (or the
-/// end), and is parsed with the same value grammar as properties.
+/// Parse `key=value key=value …` header attributes. Attribute keys are recognized
+/// only outside quoted/nested values; values use the same grammar as properties.
 fn parse_header_attributes(
     source: &str,
     diagnostics: &mut Vec<Diagnostic>,
@@ -310,8 +309,29 @@ fn parse_header_attributes(
     // Each match: (key, key_start, value_start).
     let mut matches: Vec<(String, usize, usize)> = Vec::new();
     let mut position = 0;
+    let mut quote = None;
+    let mut escaped = false;
+    let mut depth: usize = 0;
     while position < chars.len() {
-        if is_key_char(chars[position]) {
+        let current = chars[position];
+        if let Some(active) = quote {
+            if escaped {
+                escaped = false;
+            } else if current == '\\' {
+                escaped = true;
+            } else if current == active {
+                quote = None;
+            }
+        } else if current == '"' || current == '\'' {
+            quote = Some(current);
+        } else if matches!(current, '[' | '{' | '(') {
+            depth += 1;
+        } else if matches!(current, ']' | '}' | ')') {
+            depth = depth.saturating_sub(1);
+        } else if depth == 0
+            && (position == 0 || chars[position - 1].is_whitespace())
+            && is_key_char(current)
+        {
             let start = position;
             let mut end = position;
             while end < chars.len() && is_key_char(chars[end]) {
@@ -323,9 +343,9 @@ fn parse_header_attributes(
             } else {
                 position = end;
             }
-        } else {
-            position += 1;
+            continue;
         }
+        position += 1;
     }
 
     let mut attributes: Vec<(String, GodotValue)> = Vec::new();
@@ -360,8 +380,16 @@ fn split_assignment(line: &str) -> Option<(String, String)> {
 fn strip_line_comment(line: &str) -> String {
     let mut quote: Option<char> = None;
     let mut escaped = false;
+    let mut in_comment = false;
     let mut result = String::new();
     for current in line.chars() {
+        if in_comment {
+            if current == '\n' {
+                in_comment = false;
+                result.push(current);
+            }
+            continue;
+        }
         if let Some(active) = quote {
             result.push(current);
             if escaped {
@@ -377,7 +405,7 @@ fn strip_line_comment(line: &str) -> String {
             quote = Some(current);
             result.push(current);
         } else if current == ';' {
-            break;
+            in_comment = true;
         } else {
             result.push(current);
         }
@@ -455,6 +483,8 @@ fn collect_logical_line(lines: &[&str], start: usize) -> (String, usize) {
 // Value grammar (recursive descent)
 // ---------------------------------------------------------------------------
 
+const MAX_VALUE_DEPTH: usize = 64;
+
 fn parse_godot_value(
     source: &str,
     diagnostics: &mut Vec<Diagnostic>,
@@ -466,7 +496,7 @@ fn parse_godot_value(
     parser.skip_trivia();
     if !parser.done() {
         let rest = parser.remaining();
-        parser.warn(
+        parser.error(
             "godot_parser_trailing_value_text",
             format!("Trailing text after Godot value: {rest}"),
         );
@@ -477,6 +507,7 @@ fn parse_godot_value(
 struct ValueParser<'a> {
     chars: Vec<char>,
     position: usize,
+    depth: usize,
     diagnostics: &'a mut Vec<Diagnostic>,
     line: Option<usize>,
     ext_table: &'a HashMap<String, String>,
@@ -492,6 +523,7 @@ impl<'a> ValueParser<'a> {
         ValueParser {
             chars: source.chars().collect(),
             position: 0,
+            depth: 0,
             diagnostics,
             line,
             ext_table,
@@ -499,6 +531,23 @@ impl<'a> ValueParser<'a> {
     }
 
     fn parse_value(&mut self) -> GodotValue {
+        if self.depth >= MAX_VALUE_DEPTH {
+            self.error(
+                "godot_parser_nesting_limit_exceeded",
+                format!("Godot value exceeds maximum parsing depth of {MAX_VALUE_DEPTH}."),
+            );
+            // Abandon this value so enclosing containers unwind without parsing
+            // or allocating the rest of an excessively nested input.
+            self.position = self.chars.len();
+            return GodotValue::Null;
+        }
+        self.depth += 1;
+        let value = self.parse_value_inner();
+        self.depth -= 1;
+        value
+    }
+
+    fn parse_value_inner(&mut self) -> GodotValue {
         self.skip_trivia();
         let current = self.peek();
         if current == '"' || current == '\'' {
@@ -518,7 +567,7 @@ impl<'a> ValueParser<'a> {
         }
         let ident = self.parse_identifier();
         if ident.is_empty() {
-            self.warn(
+            self.error(
                 "godot_parser_empty_value",
                 "Expected a Godot value.".to_string(),
             );
@@ -563,9 +612,9 @@ impl<'a> ValueParser<'a> {
         self.chars[self.position..].iter().collect()
     }
 
-    fn warn(&mut self, code: &str, message: String) {
+    fn error(&mut self, code: &str, message: String) {
         self.diagnostics.push(Diagnostic {
-            severity: Severity::Warning,
+            severity: Severity::Error,
             code: code.to_string(),
             message,
             line: self.line,
@@ -591,7 +640,7 @@ impl<'a> ValueParser<'a> {
                 result.push(current);
             }
         }
-        self.warn(
+        self.error(
             "godot_parser_unterminated_string",
             "Unterminated Godot string.".to_string(),
         );
@@ -608,12 +657,11 @@ impl<'a> ValueParser<'a> {
                 return GodotValue::Array(values);
             }
             values.push(self.parse_value());
-            self.skip_trivia();
-            if self.peek() == ',' {
-                self.position += 1;
+            if !self.expect_separator(']') {
+                return GodotValue::Array(values);
             }
         }
-        self.warn(
+        self.error(
             "godot_parser_unterminated_array",
             "Unterminated Godot array.".to_string(),
         );
@@ -632,7 +680,7 @@ impl<'a> ValueParser<'a> {
             let key = self.parse_value();
             self.skip_trivia();
             if self.peek() != ':' {
-                self.warn(
+                self.error(
                     "godot_parser_dictionary_colon_missing",
                     "Expected ':' in Godot dictionary.".to_string(),
                 );
@@ -641,12 +689,11 @@ impl<'a> ValueParser<'a> {
             self.position += 1;
             let value = self.parse_value();
             entries.push((dictionary_key(key), value));
-            self.skip_trivia();
-            if self.peek() == ',' {
-                self.position += 1;
+            if !self.expect_separator('}') {
+                return GodotValue::Dictionary(entries);
             }
         }
-        self.warn(
+        self.error(
             "godot_parser_unterminated_dictionary",
             "Unterminated Godot dictionary.".to_string(),
         );
@@ -684,7 +731,7 @@ impl<'a> ValueParser<'a> {
             match text.parse::<f64>() {
                 Ok(value) => GodotValue::Float(value),
                 Err(_) => {
-                    self.warn(
+                    self.error(
                         "godot_parser_invalid_number",
                         format!("Invalid Godot number: {text}"),
                     );
@@ -698,7 +745,7 @@ impl<'a> ValueParser<'a> {
                 Err(_) => match text.parse::<f64>() {
                     Ok(value) => GodotValue::Float(value),
                     Err(_) => {
-                        self.warn(
+                        self.error(
                             "godot_parser_invalid_number",
                             format!("Invalid Godot number: {text}"),
                         );
@@ -736,7 +783,7 @@ impl<'a> ValueParser<'a> {
         if self.peek() == '"' || self.peek() == '\'' {
             return GodotValue::StringName(self.parse_string());
         }
-        self.warn(
+        self.error(
             "godot_parser_string_name_expected_string",
             "Expected quoted string after '&' StringName marker.".to_string(),
         );
@@ -753,16 +800,34 @@ impl<'a> ValueParser<'a> {
                 return call_value(name, args, self.ext_table);
             }
             args.push(self.parse_value());
-            self.skip_trivia();
-            if self.peek() == ',' {
-                self.position += 1;
+            if !self.expect_separator(')') {
+                return call_value(name, args, self.ext_table);
             }
         }
-        self.warn(
+        self.error(
             "godot_parser_unterminated_call",
             format!("Unterminated Godot call {name}(...)."),
         );
         call_value(name, args, self.ext_table)
+    }
+
+    fn expect_separator(&mut self, closing: char) -> bool {
+        self.skip_trivia();
+        if self.peek() == ',' {
+            self.position += 1;
+            return true;
+        }
+        if self.done() || self.peek() == closing {
+            return true;
+        }
+        self.error(
+            "godot_parser_missing_separator",
+            format!(
+                "Expected ',' or '{closing}' after Godot value, found '{}'.",
+                self.peek()
+            ),
+        );
+        false
     }
 }
 
@@ -1156,6 +1221,29 @@ mod tests {
     // -- Sections & node tree ----------------------------------------------
 
     #[test]
+    fn preserves_equals_in_header_names_and_paths() {
+        let scene = parse_scene(
+            r#"[ext_resource type="Texture2D" path="res://a=b.png" id="1"]
+[node name="a=b" type="Node" groups=["x=y", "escaped\"=value"]]
+texture = ExtResource("1")
+[node name="Child" type="Node" parent="a=b"]
+"#,
+        );
+        assert_eq!(scene.root().unwrap().name, "a=b");
+        assert_eq!(scene.nodes[1].parent.as_deref(), Some("a=b"));
+        assert_eq!(scene.nodes[0].groups, vec!["x=y", "escaped\"=value"]);
+        assert_eq!(
+            scene.ext_resources[0].path.as_deref(),
+            Some("res://a=b.png")
+        );
+        assert_eq!(
+            scene.nodes[0].property("texture"),
+            Some(&GodotValue::ExtResource("res://a=b.png".to_string()))
+        );
+        assert!(scene.diagnostics.is_empty(), "{:?}", scene.diagnostics);
+    }
+
+    #[test]
     fn parses_sections_node_tree_and_ext_resolution() {
         let scene = parse_scene(
             "[gd_scene load_steps=1 format=3]\n\
@@ -1252,6 +1340,36 @@ mod tests {
     }
 
     // -- Multi-line values --------------------------------------------------
+
+    #[test]
+    fn preserves_entries_after_multiline_comments() {
+        let scene = parse_scene(
+            r#"[node name="Root" type="Node"]
+items = [1, ; ignored " [ {
+; whole comment line
+2, "has ; semicolon"]
+mapping = {"first": 1, ; ignored } ]
+"second": 2}
+"#,
+        );
+        let root = scene.root().unwrap();
+        assert_eq!(
+            root.property("items"),
+            Some(&GodotValue::Array(vec![
+                GodotValue::Int(1),
+                GodotValue::Int(2),
+                GodotValue::Str("has ; semicolon".to_string()),
+            ]))
+        );
+        assert_eq!(
+            root.property("mapping"),
+            Some(&GodotValue::Dictionary(vec![
+                (GodotValue::Str("first".to_string()), GodotValue::Int(1)),
+                (GodotValue::Str("second".to_string()), GodotValue::Int(2)),
+            ]))
+        );
+        assert!(scene.diagnostics.is_empty(), "{:?}", scene.diagnostics);
+    }
 
     #[test]
     fn preserves_multiline_quoted_strings_and_editable() {

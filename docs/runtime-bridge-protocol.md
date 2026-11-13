@@ -206,6 +206,24 @@ without failing the successful runtime reload; later structural edits fall back.
 Failed runtime reloads send no confirmation and leave baselines and pending paths
 unchanged. This does not add a runtime command or alter the runtime response above.
 
+Structural diffing emits no live-edit operations if either parsed scene has value
+syntax errors. Value parsing is bounded to 64 recursive levels; excessive nesting
+returns a `godot_parser_nesting_limit_exceeded` diagnostic with severity `error`
+and the source line. Missing commas between array elements, dictionary entries or
+constructor arguments (for example `[1 3]`) return `godot_parser_missing_separator`
+with severity `error` and the source line. These errors force full-scene fallback
+(`scene has parse errors`) rather than sending partial recovered values through
+debugger frames.
+
+The differ also emits no operations for dependent moves (a parent moved with its
+retained children, a destination parent added or moved, or a source parent removed)
+or changes to referenced inline `SubResource` definitions. References through
+arrays, dictionaries and other inline resources are followed even when the node's
+resource ID is unchanged. Reachable unsupported constructors, such as
+`Array[Material]([SubResource("Material")])`, may hide references, so any inline-resource
+change then conservatively requires full-scene fallback. Otherwise, edits confined
+to unreferenced inline resources remain a no-op.
+
 ## Scenario profiling
 
 `scenario profile` is a one-shot scenario runner extension, not a new live TCP bridge command. The CLI prepares the same one-shot scenario request used by `scenario run` and adds a profiling request flag for the Godot runtime runner. The runtime returns profiling data in the one-shot result payload, and the CLI summarizes it plus writes the bounded `profile.json` artifact.
