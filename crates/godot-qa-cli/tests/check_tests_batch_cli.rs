@@ -70,6 +70,52 @@ fn read_jsonl(path: &Path) -> Vec<Value> {
 }
 
 #[test]
+fn check_tests_async_frames_in_isolated_and_batch_modes() {
+    let project = sample_project_root();
+    for batch in [false, true] {
+        let mut args = vec![
+            "check",
+            "--tests",
+            "--test",
+            "async_frames_test",
+            "--test",
+            "sample_script_test",
+            "--project",
+            project.to_str().unwrap(),
+            "--json",
+        ];
+        if batch {
+            args.push("--batch");
+        }
+        let (status, body) = run_godot_qa(&args);
+        assert!(status.success(), "batch={batch}: {body:#}");
+        assert_eq!(body["ok"], true);
+        assert_eq!(
+            body["data"]["execution_mode"],
+            if batch { "batch" } else { "isolated" }
+        );
+        let tests = body["data"]["tests"].as_array().unwrap();
+        assert_eq!(tests.len(), 2);
+        for test in tests {
+            assert_eq!(test["ok"], true, "batch={batch}: {test:#}");
+            assert_eq!(test["failures"], json!([]));
+        }
+        let async_test = tests
+            .iter()
+            .find(|test| test["id"] == "async_frames_test")
+            .expect("async manifest test result");
+        assert_eq!(async_test["data"]["fixture"], "async_frames_test");
+        assert!(async_test["data"]["frames_advanced"].as_u64().unwrap() >= 3);
+        let result: Value = serde_json::from_slice(
+            &fs::read(async_test["artifacts"]["result"].as_str().unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["data"], async_test["data"]);
+    }
+}
+
+#[test]
 fn check_tests_batch_cli_contract() {
     let project = sample_project_root();
     let (status, body) = run_godot_qa(&[
@@ -94,8 +140,8 @@ fn check_tests_batch_cli_contract() {
     assert_eq!(body["data"]["execution_mode"], "batch");
     assert_eq!(body["data"]["selected_test_count"], 3);
     assert_eq!(body["data"]["checked_test_count"], 3);
-    assert_eq!(body["data"]["skipped_test_count"], 3);
-    assert_eq!(body["data"]["total_test_count"], 6);
+    assert_eq!(body["data"]["skipped_test_count"], 4);
+    assert_eq!(body["data"]["total_test_count"], 7);
     assert_eq!(
         body["data"]["selection"]["selected_ids"],
         json!([

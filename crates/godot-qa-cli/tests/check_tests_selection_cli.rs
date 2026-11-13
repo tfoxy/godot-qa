@@ -66,7 +66,7 @@ fn assert_successful_selection(
         expected_ids.len() as u64
     );
     assert_eq!(body["data"]["skipped_test_count"], expected_skipped);
-    assert_eq!(body["data"]["total_test_count"], 6);
+    assert_eq!(body["data"]["total_test_count"], 7);
     assert_eq!(body["data"]["selection"]["mode"], expected_mode);
     assert_eq!(selected_ids(body), expected_ids);
     assert!(
@@ -170,7 +170,7 @@ fn check_tests_selection_cli_contract() {
         "explicit test selection failed: {}",
         serde_json::to_string_pretty(&body).unwrap()
     );
-    assert_successful_selection(&body, &["sample_script_test"], "filtered", 5);
+    assert_successful_selection(&body, &["sample_script_test"], "filtered", 6);
     assert_eq!(
         body["data"]["selection"]["tests"],
         json!(["sample_script_test"])
@@ -227,7 +227,7 @@ fn check_tests_selection_cli_contract() {
             "sample_script_state_test",
         ],
         "filtered",
-        3,
+        4,
     );
     assert_eq!(body["data"]["selection"]["tests"], json!([]));
     assert_eq!(body["data"]["selection"]["tags"], json!(["smoke"]));
@@ -255,7 +255,7 @@ fn check_tests_selection_cli_contract() {
             "sample_script_state_test",
         ],
         "filtered",
-        3,
+        4,
     );
     assert_eq!(body["data"]["selection"]["profile"], json!("smoke"));
     assert_eq!(body["data"]["selection"]["profile_tags"], json!(["smoke"]));
@@ -278,10 +278,10 @@ fn check_tests_selection_cli_contract() {
     assert_eq!(body["command"], "check");
     assert_eq!(body["ok"], true);
     assert_eq!(body["data"]["mode"], "tests");
-    assert_eq!(body["data"]["selected_test_count"], 6);
-    assert_eq!(body["data"]["checked_test_count"], 6);
+    assert_eq!(body["data"]["selected_test_count"], 7);
+    assert_eq!(body["data"]["checked_test_count"], 7);
     assert_eq!(body["data"]["skipped_test_count"], 0);
-    assert_eq!(body["data"]["total_test_count"], 6);
+    assert_eq!(body["data"]["total_test_count"], 7);
     assert_eq!(body["data"]["selection"]["mode"], "all");
     assert_eq!(
         body["data"]["selection"]["selected_ids"],
@@ -291,7 +291,8 @@ fn check_tests_selection_cli_contract() {
             "sample_script_test",
             "sample_script_state_test",
             "slow_manifest_test",
-            "engine_drift_manifest_test"
+            "engine_drift_manifest_test",
+            "async_frames_test"
         ])
     );
     assert_eq!(body["failures"], json!([]));
@@ -305,7 +306,7 @@ fn check_tests_profile_cli_contract() {
         "profiled explicit test selection failed: {}",
         serde_json::to_string_pretty(&body).unwrap()
     );
-    assert_successful_selection(&body, &["sample_script_test"], "filtered", 5);
+    assert_successful_selection(&body, &["sample_script_test"], "filtered", 6);
     assert_eq!(body["data"]["tests"][0]["ok"], true);
     assert_eq!(
         body["data"]["selection"]["selected_ids"],
@@ -334,7 +335,7 @@ fn check_tests_profile_cli_contract() {
             "sample_script_state_test",
         ],
         "filtered",
-        3,
+        4,
     );
     assert_eq!(body["data"]["selection"]["tags"], json!(["smoke"]));
     assert_eq!(
@@ -366,7 +367,7 @@ fn check_tests_profile_cli_contract() {
         "profiled slow test failed: {}",
         serde_json::to_string_pretty(&body).unwrap()
     );
-    assert_successful_selection(&body, &["slow_manifest_test"], "filtered", 5);
+    assert_successful_selection(&body, &["slow_manifest_test"], "filtered", 6);
     let slow_tests = body["data"]["profile"]["slow_tests"].as_array().unwrap();
     assert_eq!(slow_tests[0]["id"], "slow_manifest_test");
     assert_eq!(slow_tests[0]["ok"], true);
@@ -427,7 +428,7 @@ fn check_tests_selection_negative_filter_contract() {
         assert_eq!(body["ok"], false, "{name}");
         assert_eq!(body["data"]["selected_test_count"], 0, "{name}");
         assert_eq!(body["data"]["skipped_test_count"], 0, "{name}");
-        assert_eq!(body["data"]["total_test_count"], 6, "{name}");
+        assert_eq!(body["data"]["total_test_count"], 7, "{name}");
         assert_eq!(body["data"]["selection"]["mode"], "invalid", "{name}");
         assert_eq!(body["data"]["tests"], json!([]), "{name}");
         assert_eq!(

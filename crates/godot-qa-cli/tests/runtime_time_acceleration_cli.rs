@@ -139,8 +139,8 @@ fn check_tests_time_control_cli_contract() {
     assert_eq!(body["command"], "check");
     assert_eq!(body["ok"], true);
     assert_eq!(body["data"]["selected_test_count"], 1);
-    assert_eq!(body["data"]["skipped_test_count"], 5);
-    assert_eq!(body["data"]["total_test_count"], 6);
+    assert_eq!(body["data"]["skipped_test_count"], 6);
+    assert_eq!(body["data"]["total_test_count"], 7);
     assert_eq!(body["data"]["selection"]["mode"], "filtered");
     let tests = body["data"]["tests"].as_array().unwrap();
     let accelerated = tests

@@ -709,7 +709,7 @@ func _run_manifest_script_check(test_id: String, target: String) -> void:
 	_sample_profile_frame()
 	var run_started := _profile_now_usec()
 	var run_failure_count := _failures.size()
-	var raw_result: Variant = script_instance.call("run_qa_test")
+	var raw_result: Variant = await script_instance.call("run_qa_test")
 	_record_profile_timing("run_qa_test", run_started, run_failure_count, {"target": test_id})
 	await _tree.process_frame
 	_sample_profile_frame()

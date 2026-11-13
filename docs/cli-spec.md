@@ -1482,6 +1482,26 @@ func run_qa_test() -> Dictionary:
 
 `run_qa_test()` must return a JSON-compatible dictionary. `ok` must be a boolean, `failures` must be an array of dictionaries, and optional extra machine-readable data may live under `data`.
 
+`run_qa_test()` may be a coroutine: isolated and batch execution await its completed result before validation and teardown. Synchronous tests return immediately. The script instance is not added to the scene tree; use `Engine.get_main_loop()` to access the `SceneTree` when awaiting frames, rather than calling `get_tree()` on the test instance. The CLI's configured test timeout also bounds coroutines that never finish.
+
+For example, `qa/tests/async_frames_test.gd` in the sample project checks that process frames advance:
+
+```gdscript
+extends RefCounted
+
+func run_qa_test() -> Dictionary:
+    var tree: SceneTree = Engine.get_main_loop() as SceneTree
+    var before := Engine.get_process_frames()
+    for _index in range(3):
+        await tree.process_frame
+    var advanced := Engine.get_process_frames() - before
+    return {
+        "ok": advanced >= 3,
+        "failures": [] if advanced >= 3 else [{"message": "process frames did not advance"}],
+        "data": {"frames_advanced": advanced}
+    }
+```
+
 Example aggregate shape:
 
 ```json

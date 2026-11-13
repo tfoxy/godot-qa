@@ -44,6 +44,12 @@
       "kind": "script",
       "target": "res://qa/tests/script_engine_drift.gd",
       "tags": ["diagnostic", "engine-drift"]
+    },
+    {
+      "id": "async_frames_test",
+      "kind": "script",
+      "target": "res://qa/tests/async_frames_test.gd",
+      "tags": ["async", "script"]
     }
   ],
   "profiles": {
