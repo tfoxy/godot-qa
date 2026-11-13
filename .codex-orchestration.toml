@@ -9,6 +9,12 @@ runs_dir = "~/.local/state/codex-orch/godot-qa/runs"
 default_base = "main"
 branch_prefix = "codex/"
 
+# Nothing may open windows on the desktop. The root's ignored sample-project local config routes
+# windowed Godot through headless Gamescope (godot.windowed_launch_prefix); link it into every
+# worktree. Orchestrators also run each dispatch (start/next/resume/review/gate) inside
+# `gamescope --backend headless --expose-wayland`, so every child inherits its private display.
+shared_inputs = ["examples/sample_project/qa/config.local.yaml"]
+
 # Tests need the sample project materialized (addon copy) and imported.
 [setup]
 commands = ["mise trust --quiet", "cargo xtask prepare-sample"]
@@ -16,6 +22,7 @@ commands = ["mise trust --quiet", "cargo xtask prepare-sample"]
 # mise and CI pin Godot 4.5.2; the PATH `godot` may be a different engine.
 [worker_env]
 GODOT_BIN = "/home/user/.local/share/mise/installs/godot/4.5.2-stable/bin/godot"
+XMODIFIERS = "@im=none"                 # required by headless Gamescope (docs/workflows.md)
 
 # Security and protocol surface: runtime bridge auth, bind address, transport, process launch.
 [gate]
@@ -53,7 +60,8 @@ protected_files = [
 ]
 
 [checks]
-test_command = "cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test -- --test-threads=4"
+# Godot-launching tests run inside headless Gamescope, never on the desktop display.
+test_command = "cargo fmt --check && cargo clippy --all-targets -- -D warnings && /usr/games/gamescope --backend headless --expose-wayland -W 1920 -H 1080 -- cargo test -- --test-threads=4"
 max_workers = 2                         # each worker launches Godot processes
 
 [checks.min_free_gb]
