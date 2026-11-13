@@ -53,6 +53,35 @@ fn root() -> PathBuf {
         .to_path_buf()
 }
 
+fn cargo_target_directory(cargo: &mut Command) -> Result<PathBuf> {
+    let output = cargo
+        .current_dir(root())
+        .args(["metadata", "--format-version", "1", "--no-deps"])
+        .output()
+        .map_err(|error| {
+            format!(
+                "cargo metadata --format-version 1 --no-deps in {} failed: {error}",
+                root().display()
+            )
+        })?;
+    if !output.status.success() {
+        return Err(format!(
+            "cargo metadata --format-version 1 --no-deps in {} exited with {}; expected target_directory: {}",
+            root().display(),
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+        .into());
+    }
+    let metadata: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    metadata["target_directory"]
+        .as_str()
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            "cargo metadata --format-version 1 --no-deps returned no target_directory".into()
+        })
+}
+
 fn command(program: &str, args: &[&str]) -> Result {
     eprintln!("+ {program} {}", args.join(" "));
     let status = Command::new(program).args(args).status()?;
@@ -222,7 +251,9 @@ fn checks() -> Result {
     )?;
     command("cargo", &["build", "--locked", "--bin", "godot-qa"])?;
     smoke(
-        &root().join(format!("target/debug/godot-qa{}", env::consts::EXE_SUFFIX)),
+        &cargo_target_directory(&mut Command::new("cargo"))?
+            .join("debug")
+            .join(format!("godot-qa{}", env::consts::EXE_SUFFIX)),
         Path::new("examples/sample_project"),
     )
 }
@@ -392,7 +423,10 @@ fn package(target: &str) -> Result {
         "godot-qa"
     };
     fs::copy(
-        root().join("target").join(target).join("release").join(exe),
+        cargo_target_directory(&mut Command::new("cargo"))?
+            .join(target)
+            .join("release")
+            .join(exe),
         stage.join(exe),
     )?;
     copy_distribution(&stage)?;
@@ -499,6 +533,35 @@ fn package(target: &str) -> Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cargo_target_directory_honors_cargo_target_dir() {
+        for target in [
+            root().join(".local/custom target café"),
+            PathBuf::from(".local/relative target café"),
+        ] {
+            let expected = root().join(&target);
+            let actual =
+                cargo_target_directory(Command::new("cargo").env("CARGO_TARGET_DIR", &target))
+                    .unwrap();
+            assert_eq!(actual, expected, "CARGO_TARGET_DIR={}", target.display());
+        }
+    }
+
+    #[test]
+    fn cargo_target_directory_honors_cargo_config() {
+        let actual = cargo_target_directory(
+            Command::new("cargo")
+                .env_remove("CARGO_TARGET_DIR")
+                .env_remove("CARGO_BUILD_TARGET_DIR")
+                .args([
+                    "--config",
+                    "build.target-dir=\".local/configured target café\"",
+                ]),
+        )
+        .unwrap();
+        assert_eq!(actual, root().join(".local/configured target café"));
+    }
 
     #[test]
     fn sample_copy_uses_only_tracked_addon_files() {
