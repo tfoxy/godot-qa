@@ -1,0 +1,64 @@
+# .codex-orchestration.toml - settings for the codex-orchestration skill (Codex workers in worktrees).
+# Every key not set here uses the skill's default; see the skill's reference.md. Role files, worker
+# rules and the brief template fall back to the skill's bundled templates (no agents/ dir in this repo).
+
+# Outside the repo: the repo root is itself a Godot project (project.godot), so nested checkouts stay
+# out of project scans. Runs and archives sit next to them.
+worktree_dir = "~/.local/state/codex-orch/godot-qa/worktrees"
+runs_dir = "~/.local/state/codex-orch/godot-qa/runs"
+default_base = "main"
+branch_prefix = "codex/"
+
+# Tests need the sample project materialized (addon copy) and imported.
+[setup]
+commands = ["mise trust --quiet", "cargo xtask prepare-sample"]
+
+# mise and CI pin Godot 4.5.2; the PATH `godot` may be a different engine.
+[worker_env]
+GODOT_BIN = "/home/user/.local/share/mise/installs/godot/4.5.2-stable/bin/godot"
+
+# Security and protocol surface: runtime bridge auth, bind address, transport, process launch.
+[gate]
+opus_paths = [
+  "addons/godot_qa/qa_bridge.gd",
+  "addons/godot_qa/qa_live_session_host.gd",
+  "addons/godot_qa/qa_protocol.gd",
+  "addons/godot_qa/qa_args.gd",
+  "crates/godot-qa-runtime/src/session.rs",
+  "crates/godot-qa-runtime/src/transport.rs",
+  "crates/godot-qa-runtime/src/protocol.rs",
+  "crates/godot-qa-runtime/src/random.rs",
+  "crates/godot-qa-process/",
+  "docs/security-model.md",
+]
+
+[guard]
+# Device access and GitHub stay with the orchestrator. `cargo xtask release` cannot be told apart
+# from `cargo xtask check` by the guard, so release inputs are protected files instead.
+root_only_commands = ['^adb$', '^gh$']
+read_only_paths = []
+protected_files = [
+  "CHANGELOG.md",
+  "cliff.toml",
+  ".github/",
+  ".githooks/",
+  "xtask/src/release.rs",
+  "Cargo.toml",
+  "Cargo.lock",
+  "rust-toolchain.toml",
+  "mise.toml",
+  "addons/godot_qa/plugin.cfg",
+  "AGENTS.md",
+  "CLAUDE.md",
+]
+
+[checks]
+test_command = "cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test -- --test-threads=4"
+max_workers = 2                         # each worker launches Godot processes
+
+[checks.min_free_gb]
+"." = 10
+"/tmp" = 2
+
+[finish]
+archive_root = "~/.local/state/codex-orch/godot-qa/archives"
