@@ -1466,12 +1466,28 @@ fn failure_with_artifacts(failure: FailureDetail, artifacts: &Map<String, Value>
     }
 }
 
-fn persist_result(result_path: &Path, result: CommandResult) -> CommandResult {
-    if let Err(error) = write_result_artifact(result_path, &result) {
-        eprintln!(
-            "godot-qa: warning: failed to write result artifact {}: {error}",
-            result_path.display()
-        );
-    }
+fn persist_result(result_path: &Path, mut result: CommandResult) -> CommandResult {
+    persist_result_in_place(result_path, &mut result);
     result
+}
+
+fn persist_result_in_place(result_path: &Path, result: &mut CommandResult) {
+    if let Err(error) = write_result_artifact(result_path, result) {
+        result.ok = false;
+        result.exit_code = 1;
+        result.message = format!("{} failed", result.command);
+        let failure = FailureDetail {
+            kind: "artifact_write_failed".to_string(),
+            command: Some(result.command.clone()),
+            target: result.data.get("scenario").and_then(Value::as_str).map(str::to_string),
+            path: Some(result_path.to_string_lossy().into_owned()),
+            message: Some(format!("cannot save required result artifact: {error}")),
+            expected: Some(json!("final result.json written under the run root")),
+            actual: Some(json!(error.to_string())),
+            artifacts: result.data.get("artifacts").and_then(Value::as_object).cloned(),
+            ..FailureDetail::default()
+        };
+        result.failures.push(classify_failure_detail(failure, None));
+        refresh_outcome_summary(result);
+    }
 }

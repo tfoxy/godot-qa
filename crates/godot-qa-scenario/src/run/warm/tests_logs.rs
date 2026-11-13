@@ -124,6 +124,80 @@
         );
     }
 
+    #[test]
+    fn required_warm_log_window_write_failure_fails_scenario() {
+        let dir = warm_temp_dir("warm-log-write-failure");
+        let artifacts = warm_test_artifacts(&dir, MARKER_RUN);
+        let request = json!({
+            "run": {"id": MARKER_RUN, "nonce": "warm-log-test"},
+            "assertion_proof": artifacts.assertion_manifest,
+        });
+        std::fs::write(&artifacts.request_path, request.to_string()).unwrap();
+        let runtime_result = crate::assertion_proof::passed_fixture(
+            &request,
+            json!({"ok": true, "snapshots": [], "failures": []}),
+        );
+        std::fs::write(&artifacts.result_path, runtime_result.to_string()).unwrap();
+        // A directory at the destination injects a write failure even as root.
+        std::fs::create_dir(&artifacts.logs_path).unwrap();
+        let session_logs = dir.join("session-logs.txt");
+        std::fs::write(
+            &session_logs,
+            format!(
+                "{}\nERROR: warm scenario engine failure\n{}\n",
+                begin_marker(MARKER_RUN),
+                end_marker(MARKER_RUN),
+            ),
+        )
+        .unwrap();
+        let result_path = artifacts.result_path.clone();
+        let logs_path = artifacts.logs_path.clone();
+        let scenario = json!({"name": "warm_log_write", "scene": "res://main.tscn", "steps": []});
+        let base_data = Map::from_iter([
+            ("scenario".to_string(), json!("warm_log_write")),
+            ("artifacts".to_string(), artifacts.to_json()),
+            ("warm".to_string(), json!({"ran_warm": true})),
+        ]);
+        let (result, _) = warm_finalize_scenario(
+            &discard_test_config(),
+            &dir.join("scenario.json"),
+            &scenario,
+            true,
+            WarmDispatched {
+                artifacts,
+                base_data,
+                options: RuntimeExecutionOptions::default(),
+                use_runtime_request: false,
+                timing: WarmTiming::default(),
+                session_id: "session-a".to_string(),
+                session_log: Some(WarmSessionLogAnchor {
+                    path: session_logs.clone(),
+                    start_offset: 0,
+                }),
+            },
+            &test_pool(1),
+        );
+        assert!(!result.ok, "known ERROR window was lost: {result:?}");
+        assert_ne!(result.exit_code, 0);
+        assert_eq!(result.failures.len(), 1, "{:?}", result.failures);
+        let failure = &result.failures[0];
+        assert_eq!(failure.kind, "artifact_write_failed");
+        assert_eq!(failure.command.as_deref(), Some("scenario run"));
+        assert_eq!(failure.target.as_deref(), Some("warm_log_write"));
+        assert_eq!(failure.path.as_deref(), logs_path.to_str());
+        assert!(failure.expected.is_some());
+        assert!(failure.actual.is_some());
+        assert_eq!(
+            failure.artifacts.as_ref().unwrap()["session_logs_path"],
+            json!(session_logs),
+        );
+        assert_eq!(result.data["outcome"]["status"], json!("fail"));
+        let persisted: Value = serde_json::from_slice(&std::fs::read(result_path).unwrap()).unwrap();
+        assert_eq!(persisted["ok"], json!(false));
+        assert_eq!(persisted["failures"][0]["type"], json!("artifact_write_failed"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// An addon older than the markers: no logs.txt is created, so `data.logs`
     /// stays exactly as `missing` as it was before warm log parity — and the
     /// bundle raises the warning ONCE no matter how many scenarios hit it.

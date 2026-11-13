@@ -1060,6 +1060,39 @@ fn bundle_artifact_summary_preserves_nested_lineage_and_failure_paths() {
 }
 
 #[test]
+fn required_bundle_artifact_directory_failure_fails_passing_children() {
+    let root = temp_dir("bundle-directory-failure");
+    write_retry_fixture(&root);
+    let config = make_config(&root);
+    write(
+        &config.artifacts_dir.join("bundles"),
+        "blocks directory creation",
+    );
+    let result = run_scenario_bundle_with_runner(
+        &config,
+        "gate",
+        &retry_options(1),
+        |_, _, _, _, _, _| CommandResult::success("scenario run", "passed"),
+        BundlePostRun::default,
+    );
+    assert_eq!(result.data["runs"][0]["ok"], true);
+    assert!(
+        !result.ok,
+        "required artifact directory failure was ignored"
+    );
+    assert_eq!(result.exit_code, 1);
+    let failure = &result.failures[0];
+    assert_eq!(failure.kind, "artifact_write_failed");
+    assert_eq!(failure.command.as_deref(), Some("scenario bundle run"));
+    assert_eq!(failure.target.as_deref(), Some("gate"));
+    assert!(failure.path.is_some());
+    assert!(failure.expected.is_some());
+    assert!(failure.actual.is_some());
+    assert!(failure.artifacts.is_some());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn bundle_artifact_summary_is_written_and_matches_output() {
     let root = temp_dir("bundle-artifact-summary-file");
     write(

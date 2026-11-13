@@ -66,10 +66,11 @@ fn structural_cold_reason(
     // A process-level --fixed-fps cannot change mid-session: a scenario whose
     // explicit fixed_fps differs from the session's must run cold. A frame
     // pacing validation error also falls back to cold so the error surfaces
-    // identically.
+    // identically. Realtime pacing cannot run in a fixed-FPS session either.
     match scenario_frame_pacing(scenario, project_root) {
         Ok(Some(pacing)) if pacing.fixed_fps != session_fps => Some("fixed_fps_mismatch"),
-        Ok(_) => None,
+        Ok(Some(_)) => None,
+        Ok(None) => Some("frame_pacing_realtime"),
         Err(_) => Some("frame_pacing_invalid"),
     }
 }

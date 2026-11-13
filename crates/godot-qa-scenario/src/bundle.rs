@@ -621,8 +621,8 @@ where
     // into the bundle timing rather than plumbing a second channel for them.
     let (pool_seed_ms, pool_shutdown_ms) = bundle_pool_timing(&post_run.data);
 
-    let failures = ordered_bundle_failures(prepared.failures, &child_summaries);
-    let failure_clusters = cluster_failures(&failures, child_summaries.len());
+    let mut failures = ordered_bundle_failures(prepared.failures, &child_summaries);
+    let mut failure_clusters = cluster_failures(&failures, child_summaries.len());
     let mut warnings = prepared.warnings;
     // Selection warnings (today only `selection_empty`) describe the run itself, so they
     // have to be in `warnings` BEFORE the artifacts are written: a run that executed
@@ -664,6 +664,14 @@ where
         &failure_clusters,
         &annotations,
     );
+    let bundle_artifacts = match bundle_artifacts {
+        Ok(artifacts) => artifacts,
+        Err(failure) => {
+            failures.push(failure);
+            failure_clusters = cluster_failures(&failures, child_summaries.len());
+            serde_json::Map::new()
+        }
+    };
     let timing = BundleTiming {
         artifacts_ms: millis_since(artifacts_started),
         ..timing
@@ -1566,6 +1574,62 @@ pub(crate) fn bundle_retention_warning(
     })
 }
 
+fn allocate_bundle_run_root(
+    run_parent: &Path,
+    base_run_id: &str,
+) -> std::io::Result<(String, PathBuf)> {
+    fs::create_dir_all(run_parent)?;
+    let mut run_id = base_run_id.to_string();
+    let mut suffix = 1;
+    loop {
+        let root = run_parent.join(&run_id);
+        match fs::create_dir(&root) {
+            Ok(()) => return Ok((run_id, root)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                run_id = format!("{base_run_id}-{suffix:02}");
+                suffix += 1;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn write_bundle_artifact_files(
+    root: &Path,
+    documents: &[(&str, Value)],
+) -> Result<(), (PathBuf, std::io::Error)> {
+    for (name, value) in documents {
+        let path = root.join(name);
+        fs::write(&path, serde_json::to_vec_pretty(value).unwrap_or_default())
+            .map_err(|error| (path, error))?;
+    }
+    Ok(())
+}
+
+fn bundle_artifact_write_failure(
+    bundle: &BundleManifest,
+    root: &Path,
+    path: &Path,
+    error: std::io::Error,
+) -> FailureDetail {
+    FailureDetail {
+        kind: "artifact_write_failed".to_string(),
+        command: Some("scenario bundle run".to_string()),
+        target: Some(bundle.name.clone()),
+        path: Some(path.to_string_lossy().into_owned()),
+        message: Some(format!("cannot save required bundle artifacts: {error}")),
+        expected: Some(json!(
+            "exclusive run directory and required bundle artifacts written"
+        )),
+        actual: Some(json!(error.to_string())),
+        artifacts: Some(serde_json::Map::from_iter([(
+            "run_root".to_string(),
+            json!(root),
+        )])),
+        ..FailureDetail::default()
+    }
+}
+
 fn prepare_bundle_artifacts(
     config: &ProjectConfig,
     bundle: &BundleManifest,
@@ -1578,7 +1642,7 @@ fn prepare_bundle_artifacts(
     timing: &Value,
     failure_clusters: &[Value],
     annotations: &BundleRunAnnotations,
-) -> serde_json::Map<String, Value> {
+) -> Result<serde_json::Map<String, Value>, FailureDetail> {
     let run_id = format!(
         "{}",
         SystemTime::now()
@@ -1587,68 +1651,62 @@ fn prepare_bundle_artifacts(
             .unwrap_or(0)
     );
     let run_parent = config.artifacts_dir.join("bundles").join(&bundle.name);
-    let root = run_parent.join(&run_id);
     let mut out = serde_json::Map::new();
-    if fs::create_dir_all(&root).is_ok() {
-        let redacted_runs = redacted_bundle_runs_for_metadata(runs);
-        // `meta.json` is bundle identity + invocation only. `runs` and `artifact_index` are
-        // deliberately absent: they are byte-for-byte duplicates of what `summary.json` and
-        // `artifact-index.json` already hold, and on a 100-scenario gate that duplication
-        // cost megabytes per run.
-        let meta = json!({"bundle": bundle.name, "bundle_path": bundle.path, "command": options.command_line, "parallelism": parallelism, "selection": annotations.selection, "required_bundles": bundle.required_bundles, "required_scenarios": bundle.required_scenarios, "optional_scenarios": bundle.optional_scenarios, "recommended_manual_checks": bundle.recommended_manual_checks, "addon_identity": config.installed_addon_identity()});
-        let summary = json!({
-            "bundle": bundle.name,
-            "bundle_path": bundle.path,
-            "purpose": bundle.purpose,
-            "parallelism": parallelism,
-            "selection": annotations.selection,
-            "scheduling": annotations.scheduling,
-            "required_bundles": bundle.required_bundles,
-            "required_scenarios": bundle.required_scenarios,
-            "optional_scenarios": bundle.optional_scenarios,
-            "recommended_manual_checks": bundle.recommended_manual_checks,
-            "warnings": warnings,
-            "failures": failures,
-            "failure_clusters": failure_clusters,
-            "timing": timing,
-            "runs": redacted_runs,
-            "artifact_index": artifact_index
-        });
-        let result = json!({"ok": failures.is_empty(), "summary": "summary.json"});
-        let _ = fs::write(
-            root.join("meta.json"),
-            serde_json::to_vec_pretty(&meta).unwrap_or_default(),
-        );
-        let _ = fs::write(
-            root.join("summary.json"),
-            serde_json::to_vec_pretty(&summary).unwrap_or_default(),
-        );
-        let _ = fs::write(
-            root.join("artifact-index.json"),
-            serde_json::to_vec_pretty(artifact_index).unwrap_or_default(),
-        );
-        let _ = fs::write(
-            root.join("result.json"),
-            serde_json::to_vec_pretty(&result).unwrap_or_default(),
-        );
-        out.insert("run_root".to_string(), json!(root));
-        out.insert("meta_path".to_string(), json!(root.join("meta.json")));
-        out.insert("summary_path".to_string(), json!(root.join("summary.json")));
-        out.insert(
-            "artifact_index_path".to_string(),
-            json!(root.join("artifact-index.json")),
-        );
-        out.insert("result_path".to_string(), json!(root.join("result.json")));
-        // A stable path to the run that just finished, rotated after the four writes so
-        // the link never points at a half-written directory. It is a convenience alias,
-        // not evidence: a platform without symlinks simply has no `latest_path`, and a
-        // rotation failure is silent for the same reason — housekeeping must never change
-        // a bundle's verdict.
-        if retention::update_bundle_latest_link(&run_parent, &run_id).is_ok() {
-            out.insert("latest_path".to_string(), json!(run_parent.join("latest")));
-        }
+    let (run_id, root) = allocate_bundle_run_root(&run_parent, &run_id).map_err(|error| {
+        bundle_artifact_write_failure(bundle, &run_parent, &run_parent.join(&run_id), error)
+    })?;
+    let redacted_runs = redacted_bundle_runs_for_metadata(runs);
+    // `meta.json` is bundle identity + invocation only. `runs` and `artifact_index` are
+    // deliberately absent: they are byte-for-byte duplicates of what `summary.json` and
+    // `artifact-index.json` already hold, and on a 100-scenario gate that duplication
+    // cost megabytes per run.
+    let meta = json!({"bundle": bundle.name, "bundle_path": bundle.path, "command": options.command_line, "parallelism": parallelism, "selection": annotations.selection, "required_bundles": bundle.required_bundles, "required_scenarios": bundle.required_scenarios, "optional_scenarios": bundle.optional_scenarios, "recommended_manual_checks": bundle.recommended_manual_checks, "addon_identity": config.installed_addon_identity()});
+    let summary = json!({
+        "bundle": bundle.name,
+        "bundle_path": bundle.path,
+        "purpose": bundle.purpose,
+        "parallelism": parallelism,
+        "selection": annotations.selection,
+        "scheduling": annotations.scheduling,
+        "required_bundles": bundle.required_bundles,
+        "required_scenarios": bundle.required_scenarios,
+        "optional_scenarios": bundle.optional_scenarios,
+        "recommended_manual_checks": bundle.recommended_manual_checks,
+        "warnings": warnings,
+        "failures": failures,
+        "failure_clusters": failure_clusters,
+        "timing": timing,
+        "runs": redacted_runs,
+        "artifact_index": artifact_index
+    });
+    let result = json!({"ok": failures.is_empty(), "summary": "summary.json"});
+    write_bundle_artifact_files(
+        &root,
+        &[
+            ("meta.json", meta),
+            ("summary.json", summary),
+            ("artifact-index.json", json!(artifact_index)),
+            ("result.json", result),
+        ],
+    )
+    .map_err(|(path, error)| bundle_artifact_write_failure(bundle, &root, &path, error))?;
+    out.insert("run_root".to_string(), json!(root));
+    out.insert("meta_path".to_string(), json!(root.join("meta.json")));
+    out.insert("summary_path".to_string(), json!(root.join("summary.json")));
+    out.insert(
+        "artifact_index_path".to_string(),
+        json!(root.join("artifact-index.json")),
+    );
+    out.insert("result_path".to_string(), json!(root.join("result.json")));
+    // A stable path to the run that just finished, rotated after the four writes so
+    // the link never points at a half-written directory. It is a convenience alias,
+    // not evidence: a platform without symlinks simply has no `latest_path`, and a
+    // rotation failure is silent for the same reason — housekeeping must never change
+    // a bundle's verdict.
+    if retention::update_bundle_latest_link(&run_parent, &run_id).is_ok() {
+        out.insert("latest_path".to_string(), json!(run_parent.join("latest")));
     }
-    out
+    Ok(out)
 }
 
 fn redacted_bundle_runs_for_metadata(runs: &[BundleRunSummary]) -> Value {
@@ -1684,6 +1742,63 @@ include!("bundle/artifact_paths.rs");
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn required_bundle_artifact_writes_report_each_failed_destination() {
+        let root = std::env::temp_dir().join(format!(
+            "godot-qa-bundle-write-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let documents = [
+            ("meta.json", json!({})),
+            ("summary.json", json!({"failures": []})),
+            ("artifact-index.json", json!({"children": []})),
+            ("result.json", json!({"ok": true})),
+        ];
+        for (blocked, _) in &documents {
+            let run_root = root.join(blocked);
+            fs::create_dir_all(run_root.join(blocked)).unwrap();
+            let result = write_bundle_artifact_files(&run_root, &documents);
+            assert!(result.is_err(), "{blocked} write failure was ignored");
+            assert_eq!(result.unwrap_err().0, run_root.join(blocked));
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn bundle_run_roots_at_same_timestamp_preserve_both_runs() {
+        let run_parent = std::env::temp_dir().join(format!(
+            "godot-qa-bundle-collision-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let timestamp = "1794576000";
+        let (first_id, first_root) = allocate_bundle_run_root(&run_parent, timestamp).unwrap();
+        fs::write(first_root.join("summary.json"), "first run").unwrap();
+        let (second_id, second_root) = allocate_bundle_run_root(&run_parent, timestamp).unwrap();
+        fs::write(second_root.join("summary.json"), "second run").unwrap();
+
+        assert_ne!(first_root, second_root);
+        assert_ne!(first_id, second_id);
+        assert_eq!(first_root, run_parent.join(first_id));
+        assert_eq!(second_root, run_parent.join(second_id));
+        assert_eq!(
+            fs::read_to_string(first_root.join("summary.json")).unwrap(),
+            "first run"
+        );
+        assert_eq!(
+            fs::read_to_string(second_root.join("summary.json")).unwrap(),
+            "second run"
+        );
+        fs::remove_dir_all(run_parent).unwrap();
+    }
 
     #[test]
     fn late_display_text_after_runtime_progress_cannot_retry_gameplay() {

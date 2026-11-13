@@ -1487,3 +1487,29 @@
         assert!(visual_dir.starts_with(&artifact_root));
         assert!(!visual_dir.starts_with(root.join("qa/baselines")));
     }
+    #[test]
+    fn required_result_write_failure_fails_a_passing_scenario() {
+        let root = temp_dir("result-write-failure");
+        let mut result = strict_summary_result(
+            &root, 0,
+            &json!({"ok": true, "snapshots": [], "failures": [], "duration_ms": 12}),
+            "",
+        );
+        assert!(result.ok);
+        result.data.insert("scenario".into(), json!("passing_scenario"));
+        let result_path = root.join("result.json");
+        fs::create_dir(&result_path).unwrap();
+        let result = super::persist_result(&result_path, result);
+        assert!(!result.ok, "required result write failure was ignored");
+        assert_eq!(result.exit_code, 1);
+        assert_eq!(result.data["outcome"]["status"], "fail");
+        let failure = &result.failures[0];
+        assert_eq!(failure.kind, "artifact_write_failed");
+        assert_eq!(failure.command.as_deref(), Some("scenario run"));
+        assert_eq!(failure.target.as_deref(), Some("passing_scenario"));
+        assert_path_eq(failure.path.as_deref().unwrap(), &result_path);
+        assert!(failure.expected.is_some());
+        assert!(failure.actual.is_some());
+        assert!(failure.artifacts.is_some());
+        fs::remove_dir_all(root).unwrap();
+    }

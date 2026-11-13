@@ -33,7 +33,7 @@ fn cold_fallback_result(
         VisualRiskExecutionOptions::default(),
     );
     annotate_warm_result(&mut result, false, None, None, Some(reason), warm_strict);
-    repersist_annotated_result(&result);
+    repersist_annotated_result(&mut result);
     result
 }
 
@@ -357,16 +357,17 @@ fn insert_warm_timing(
 /// mutates the in-memory result — re-write it so the on-disk artifact matches
 /// what the bundle summary reports. Early-failure results without a
 /// result_path have no artifact to update.
-fn repersist_annotated_result(result: &CommandResult) {
+fn repersist_annotated_result(result: &mut CommandResult) {
     let Some(result_path) = result
         .data
         .get("artifacts")
         .and_then(|artifacts| artifacts.get("result_path"))
         .and_then(Value::as_str)
+        .map(PathBuf::from)
     else {
         return;
     };
-    let _ = write_result_artifact(Path::new(result_path), result);
+    persist_result_in_place(&result_path, result);
 }
 
 /// Read back the `data.warm` annotation a warm-leg result carries, so the
@@ -859,8 +860,34 @@ fn warm_finalize_scenario(
     // Point every engine-log failure at the session-log window it was read from,
     // so a warm `godot_log_error` is as traceable as a cold one (which simply owns
     // its whole logs.txt), then re-persist so result.json matches.
-    if annotate_warm_log_failures(&mut result, &session_id, window.as_ref()) {
-        repersist_annotated_result(&result);
+    let annotated = annotate_warm_log_failures(&mut result, &session_id, window.as_ref());
+    if let Some(error) = &log_slice.write_error {
+        let mut failure_artifacts = artifacts.to_json().as_object().cloned().unwrap_or_default();
+        failure_artifacts.insert("session_logs_path".to_string(), json!(log_slice.source));
+        result.failures.push(classify_failure_detail(
+            FailureDetail {
+                kind: "artifact_write_failed".to_string(),
+                command: Some(result.command.clone()),
+                target: Some(scenario_name_of(scenario).to_string()),
+                path: Some(artifacts.logs_path.to_string_lossy().into_owned()),
+                message: Some(format!(
+                    "cannot save required warm log window from {}: {error}",
+                    log_slice.source,
+                )),
+                expected: Some(json!("marked scenario log window written to the run's logs.txt")),
+                actual: Some(json!(error)),
+                artifacts: Some(failure_artifacts),
+                ..FailureDetail::default()
+            },
+            None,
+        ));
+        result.ok = false;
+        result.exit_code = 1;
+        result.message = "scenario run failed".to_string();
+        refresh_outcome_summary(&mut result);
+    }
+    if annotated || log_slice.write_error.is_some() {
+        repersist_annotated_result(&mut result);
     }
     timing.finalize_ms = millis_since(finalize_started);
     timing.engine_ms = result.data.get("duration_ms").and_then(Value::as_f64);

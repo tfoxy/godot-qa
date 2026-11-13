@@ -185,6 +185,62 @@
     }
 
     #[test]
+    fn required_annotated_result_write_failure_fails_command() {
+        let root = warm_temp_dir("annotated-result-write-failure");
+        let mut result = cmd(true, &[], &[]);
+        result.data.insert("artifacts".into(), json!({"result_path": root}));
+        repersist_annotated_result(&mut result);
+        assert!(!result.ok, "annotated result write failure was ignored");
+        assert_eq!(result.exit_code, 1);
+        assert_eq!(result.failures[0].kind, "artifact_write_failed");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn realtime_pacing_forces_cold() {
+        let scenario = json!({
+            "name": "x", "scene": "res://x.tscn",
+            "time_control": {"time_scale": 1.0},
+        });
+        assert_eq!(
+            scenario_frame_pacing(&scenario, Path::new(".")).unwrap(),
+            None
+        );
+        assert_eq!(
+            classify_warm_bucket(&scenario, Path::new("."), 60, None, None),
+            WarmBucket::TrulyCold {
+                reason: "frame_pacing_realtime",
+                strict: true
+            }
+        );
+    }
+
+    #[test]
+    fn realtime_pacing_cold_reason_is_consistent_under_warm_strict() {
+        let scenario = json!({
+            "name": "x", "scene": "res://x.tscn",
+            "time_control": {"time_scale": 1.0},
+        });
+        let reason = skip_strict_cold_reason(&scenario, Path::new("."), 60, None, None);
+        assert_eq!(reason, Some("frame_pacing_realtime"));
+        for strict in [false, true] {
+            let mut result = cmd(true, &[], &[]);
+            annotate_warm_result(&mut result, false, None, None, reason, strict);
+            assert_eq!(result.data["warm"]["ran_warm"], json!(false));
+            assert_eq!(result.data["warm"]["reason"], json!("frame_pacing_realtime"));
+            assert_eq!(result.ok, !strict);
+            assert_eq!(result.exit_code, i32::from(strict));
+            if strict {
+                assert_eq!(result.failures.len(), 1);
+                assert_eq!(result.failures[0].kind, "warm_fallback_forced_cold");
+                assert_eq!(result.failures[0].actual, Some(json!("frame_pacing_realtime")));
+            } else {
+                assert!(result.failures.is_empty());
+            }
+        }
+    }
+
+    #[test]
     fn differing_fixed_fps_forces_cold_but_matching_is_warm() {
         let cold = json!({
             "name": "x", "scene": "res://x.tscn",
@@ -614,7 +670,7 @@
             json!({"result_path": result_path.to_string_lossy()}),
         );
         annotate_warm_result(&mut result, false, None, None, Some("godot_args"), true);
-        repersist_annotated_result(&result);
+        repersist_annotated_result(&mut result);
 
         let persisted: Value =
             serde_json::from_str(&std::fs::read_to_string(&result_path).expect("read result.json"))
@@ -640,5 +696,5 @@
             false,
         );
         // Must not panic or error when the result has no artifacts.
-        repersist_annotated_result(&result);
+        repersist_annotated_result(&mut result);
     }

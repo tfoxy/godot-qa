@@ -39,7 +39,8 @@ pub fn prune_scenario_runs(artifacts_dir: &Path, scenario_name: &str, keep: usiz
 }
 
 /// Keep the newest `keep` bundle run directories under
-/// `<artifacts_dir>/bundles/<bundle_name>/`. Bundle run ids are a bare `<epoch>`.
+/// `<artifacts_dir>/bundles/<bundle_name>/`. Bundle run ids are `<epoch>` or `<epoch>-NN`,
+/// ordered by numeric `(epoch, suffix)` with a bare epoch having suffix 0.
 pub fn prune_bundle_runs(artifacts_dir: &Path, bundle_name: &str, keep: usize) -> PruneReport {
     prune_run_dirs(
         &artifacts_dir.join("bundles").join(bundle_name),
@@ -67,6 +68,7 @@ pub fn oldest_retained_bundle_run_epoch_secs(
                 .unwrap_or(false)
         })
         .filter_map(|entry| parse_bundle_run_id(&entry.file_name().to_string_lossy()))
+        .map(|(epoch, _)| epoch)
         .min()
 }
 
@@ -85,7 +87,7 @@ pub fn bundle_run_roots_newest_first(
     let Ok(entries) = fs::read_dir(run_parent) else {
         return Vec::new();
     };
-    let mut roots: Vec<(u64, PathBuf)> = entries
+    let mut roots: Vec<((u64, u64), PathBuf)> = entries
         .flatten()
         .filter(|entry| {
             entry
@@ -94,14 +96,16 @@ pub fn bundle_run_roots_newest_first(
                 .unwrap_or(false)
         })
         .filter_map(|entry| {
-            parse_bundle_run_id(&entry.file_name().to_string_lossy())
-                .map(|epoch| (epoch, entry.path()))
+            parse_bundle_run_id(&entry.file_name().to_string_lossy()).map(|key| (key, entry.path()))
         })
         .collect();
-    // Descending by epoch; the path breaks ties so the order is stable across filesystems
-    // that hand back directory entries in arbitrary order.
+    // Descending by numeric epoch and suffix; the path breaks ties across equivalent keys
+    // so the order is stable across filesystems.
     roots.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| right.1.cmp(&left.1)));
     roots
+        .into_iter()
+        .map(|((epoch, _), path)| (epoch, path))
+        .collect()
 }
 
 /// The newest bundle run directory on disk, or `None` when the bundle has never run.
@@ -127,7 +131,7 @@ pub fn latest_bundle_run_root(artifacts_dir: &Path, bundle_name: &str) -> Option
 ///
 /// Retention never removes the link and never leaves it dangling: `prune_run_dirs` only
 /// considers entries whose `DirEntry::metadata` reports a directory (symlinks are excluded)
-/// and whose name parses as a bare epoch, and the link always names the newest run, which is
+/// and whose name parses as a bundle run id, and the link always names the newest run, which is
 /// the last directory a prune would remove.
 ///
 /// Windows uses a directory junction, requiring no symlink privilege. Junction targets
@@ -254,9 +258,10 @@ fn parse_scenario_run_id(name: &str) -> Option<(u64, u64)> {
     Some((epoch, suffix))
 }
 
-/// A bare `<epoch>` (see `bundle::prepare_bundle_artifacts`).
-fn parse_bundle_run_id(name: &str) -> Option<u64> {
-    parse_digits(name)
+/// `<epoch>` or `<epoch>-NN`. Returns the sort key `(epoch, suffix)`.
+fn parse_bundle_run_id(name: &str) -> Option<(u64, u64)> {
+    let (epoch, suffix) = name.split_once('-').unwrap_or((name, "0"));
+    Some((parse_digits(epoch)?, parse_digits(suffix)?))
 }
 
 /// The millisecond timestamp inside `session-<millis>-<hex>`, as whole seconds. Ids that do
@@ -421,7 +426,7 @@ pub fn plan_artifact_prune(artifacts_dir: &Path, keep: usize) -> Result<Artifact
             let (removals, oldest_retained) =
                 select_run_dirs_for_removal(&bundle_dir, keep, parse_bundle_run_id);
             plan.bundle_runs.extend(removals);
-            if let Some(oldest_retained) = oldest_retained {
+            if let Some((oldest_retained, _)) = oldest_retained {
                 oldest_retained_bundle_run = Some(match oldest_retained_bundle_run {
                     Some(current) => current.min(oldest_retained),
                     None => oldest_retained,
@@ -731,6 +736,83 @@ mod tests {
     }
 
     #[test]
+    fn bundle_collision_run_ids_parse_and_order_numerically() {
+        let bare = parse_bundle_run_id("1788493321").unwrap();
+        let first = parse_bundle_run_id("1788493321-01").expect("collision run key");
+        assert!(first > bare);
+        assert!(
+            parse_bundle_run_id("1788493321-10").unwrap()
+                > parse_bundle_run_id("1788493321-02").unwrap()
+        );
+        assert!(
+            parse_bundle_run_id("1788493321-100").unwrap()
+                > parse_bundle_run_id("1788493321-10").unwrap()
+        );
+        for invalid in [
+            "1788493321Z",
+            "1788493321-",
+            "1788493321-a",
+            "1788493321-01-x",
+        ] {
+            assert_eq!(parse_bundle_run_id(invalid), None, "{invalid}");
+        }
+    }
+
+    #[test]
+    fn bundle_collision_run_roots_include_the_newest_suffix() {
+        let root = temp_root("bundle-collision-roots");
+        let bundle_dir = root.join("bundles").join("regression_gate");
+        for run_id in ["999", "1000", "1000-01"] {
+            make_dir(&bundle_dir.join(run_id));
+        }
+        assert_eq!(
+            bundle_run_roots_newest_first(&root, "regression_gate"),
+            vec![
+                (1000, bundle_dir.join("1000-01")),
+                (1000, bundle_dir.join("1000")),
+                (999, bundle_dir.join("999")),
+            ]
+        );
+        assert_eq!(
+            latest_bundle_run_root(&root, "regression_gate"),
+            Some(bundle_dir.join("1000-01"))
+        );
+        for run_id in ["1000-02", "1000-10", "1000-100"] {
+            make_dir(&bundle_dir.join(run_id));
+        }
+        let roots = bundle_run_roots_newest_first(&root, "regression_gate");
+        assert_eq!(roots[0], (1000, bundle_dir.join("1000-100")));
+        assert_eq!(roots[1], (1000, bundle_dir.join("1000-10")));
+        assert_eq!(roots[2], (1000, bundle_dir.join("1000-02")));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn bundle_collision_runs_count_toward_retention_and_prune_oldest_first() {
+        let root = temp_root("bundle-collision-prune");
+        let bundle_dir = root.join("bundles").join("regression_gate");
+        for run_id in ["999", "1000", "1000-01", "1000-02", "1000-10", "1000-100"] {
+            make_dir(&bundle_dir.join(run_id));
+        }
+        let expected_removals = vec![
+            bundle_dir.join("999"),
+            bundle_dir.join("1000"),
+            bundle_dir.join("1000-01"),
+        ];
+        let plan = plan_artifact_prune(&root, 3).unwrap();
+        assert_eq!(plan.bundle_runs, expected_removals);
+        let report = prune_bundle_runs(&root, "regression_gate", 3);
+        assert!(report.errors.is_empty());
+        assert_eq!(report.removed, expected_removals);
+        assert_eq!(names(&bundle_dir), vec!["1000-02", "1000-10", "1000-100"]);
+        assert_eq!(
+            oldest_retained_bundle_run_epoch_secs(&root, "regression_gate"),
+            Some(1000)
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn prune_pool_sessions_removes_only_old_ownerless_sessions() {
         let root = temp_root("pool-sessions");
         let live_dir = root.join("live");
@@ -830,7 +912,8 @@ mod tests {
         assert_eq!(parse_scenario_run_id("1788493321Z-"), None);
         assert_eq!(parse_scenario_run_id("Z"), None);
 
-        assert_eq!(parse_bundle_run_id("1788493321"), Some(1788493321));
+        assert_eq!(parse_bundle_run_id("1788493321"), Some((1788493321, 0)));
+        assert_eq!(parse_bundle_run_id("1788493321-01"), Some((1788493321, 1)));
         assert_eq!(parse_bundle_run_id("1788493321Z"), None);
 
         assert_eq!(

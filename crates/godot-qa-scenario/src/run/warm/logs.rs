@@ -68,6 +68,8 @@ const WARM_LOG_SLICE_UNAVAILABLE: &str = "unavailable";
 /// The outcome of slicing one warm scenario out of its session log.
 struct WarmLogSlice {
     status: &'static str,
+    /// A known window could not be saved; finalization must fail the run.
+    write_error: Option<String>,
     /// The session log the slice was read from (empty when there was none).
     source: String,
     /// Absolute byte offsets into that session log, present only when sliced.
@@ -79,6 +81,7 @@ impl WarmLogSlice {
     fn unavailable(source: String) -> Self {
         WarmLogSlice {
             status: WARM_LOG_SLICE_UNAVAILABLE,
+            write_error: None,
             source,
             begin_offset: None,
             end_offset: None,
@@ -124,6 +127,7 @@ fn materialize_warm_scenario_logs(
     let Some(range) = slice_scenario_log(&bytes, &artifacts.run_id) else {
         return WarmLogSlice {
             status: WARM_LOG_SLICE_MARKERS_MISSING,
+            write_error: None,
             source,
             begin_offset: None,
             end_offset: None,
@@ -131,16 +135,18 @@ fn materialize_warm_scenario_logs(
     };
     let begin_offset = anchor.start_offset + range.start as u64;
     let end_offset = anchor.start_offset + range.end as u64;
-    if fs::write(
+    if let Err(error) = fs::write(
         &artifacts.logs_path,
         String::from_utf8_lossy(&bytes[range]).as_bytes(),
-    )
-    .is_err()
-    {
-        return WarmLogSlice::unavailable(source);
+    ) {
+        return WarmLogSlice {
+            write_error: Some(error.to_string()),
+            ..WarmLogSlice::unavailable(source)
+        };
     }
     WarmLogSlice {
         status: WARM_LOG_SLICE_SLICED,
+        write_error: None,
         source,
         begin_offset: Some(begin_offset),
         end_offset: Some(end_offset),

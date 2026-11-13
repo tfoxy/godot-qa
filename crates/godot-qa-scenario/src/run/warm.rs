@@ -582,7 +582,7 @@ pub fn run_scenario_bundle_warm_equivalence(
                         );
                     }
                 }
-                repersist_annotated_result(&cold);
+                repersist_annotated_result(&mut cold);
             }
             cold
         },
