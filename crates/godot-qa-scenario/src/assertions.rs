@@ -3,6 +3,7 @@ use godot_qa_core::config::ProjectConfig;
 use godot_qa_core::results::{CommandResult, FailureDetail};
 use godot_qa_runtime;
 use serde_json::{Map, Value, json};
+use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, Default)]
 pub struct AssertOptions {
@@ -1444,37 +1445,189 @@ fn evaluate_snapshot_assertion(
         return evaluate_artifact_query_assertion(assertion, snapshot_context, artifacts);
     }
     if is_visual_assertion_name(name) {
+        if name != "visible_pixels" {
+            return Err(unsupported_saved_assertion(assertion, artifacts));
+        }
         return evaluate_saved_visual_assertion(assertion, snapshot_context, artifacts);
     }
-    let indexes = build_indexes(snapshot_context)?;
-    if name == "text_equals" {
-        let target = assertion
-            .get("target")
+    let unsupported = || unsupported_saved_assertion(assertion, artifacts);
+    let argument = |key| {
+        assertion
+            .get(key)
             .and_then(Value::as_str)
-            .unwrap_or_default();
-        let expected = assertion
-            .get("expected")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let (_node, control) = resolve_target(&indexes, target, artifacts)?;
-        let actual = control
-            .as_ref()
-            .and_then(|control| control.get("text"))
-            .and_then(Value::as_str)
-            .map(str::to_owned);
-        if actual.as_deref() == Some(expected) {
-            return Ok(EvalOutcome::passed());
-        }
-        return Ok(EvalOutcome::failed(failure(
-            "text_equals_mismatch",
-            "target text did not match the expected value",
-            Some(json!(expected)),
-            Some(json!(actual)),
-            Some(target.to_string()),
-            Some(artifacts.clone()),
-        )));
+            .unwrap_or_default()
+    };
+    let target = argument("target");
+    if name == "no_errors" {
+        let errors = snapshot_context
+            .pointer("/errors/errors")
+            .and_then(Value::as_array)
+            .ok_or_else(unsupported)?;
+        return Ok(if errors.is_empty() {
+            EvalOutcome::passed()
+        } else {
+            EvalOutcome::failed(failure(
+                "runtime_errors_present",
+                "snapshot recorded runtime errors",
+                Some(json!([])),
+                Some(json!(errors)),
+                Some("runtime".to_string()),
+                Some(artifacts.clone()),
+            ))
+        });
     }
-    Ok(EvalOutcome::passed())
+    if assertion.get("temporal").and_then(Value::as_bool) == Some(true)
+        || name == "distance"
+        || name.starts_with("surface_")
+    {
+        return Err(unsupported());
+    }
+    let indexes = build_indexes(snapshot_context)?;
+    if name == "not_exists" && matches_for_target(&indexes, target).is_empty() {
+        return if indexes.filtered_evidence
+            || (target.starts_with("qa:") && indexes.missing_metadata)
+        {
+            Err(unsupported())
+        } else {
+            Ok(EvalOutcome::passed())
+        };
+    }
+    let left = assertion.get("a").and_then(Value::as_str).unwrap_or(target);
+    let (node, control) = resolve_target(&indexes, left, artifacts)?;
+    let field = |key: &str| control.as_ref().and_then(|control| control.get(key));
+    let (passes, expected, actual) = match name {
+        "exists" => return Ok(EvalOutcome::passed()),
+        "not_exists" => (false, json!("missing"), json!(node_label(&node))),
+        "visible" | "hidden" => {
+            let visible = node
+                .get("visible")
+                .and_then(Value::as_bool)
+                .ok_or_else(unsupported)?;
+            (
+                visible == (name == "visible"),
+                json!(name == "visible"),
+                json!(visible),
+            )
+        }
+        "enabled" | "disabled" => {
+            let disabled = field("disabled")
+                .and_then(Value::as_bool)
+                .ok_or_else(unsupported)?;
+            let actual = if name == "enabled" {
+                !disabled
+            } else {
+                disabled
+            };
+            (actual, json!(true), json!(actual))
+        }
+        "focused" => {
+            let owner = snapshot_context
+                .pointer("/focus/focus_owner_path")
+                .and_then(Value::as_str)
+                .ok_or_else(unsupported)?;
+            (
+                node.get("path").and_then(Value::as_str) == Some(owner),
+                json!(target),
+                json!(owner),
+            )
+        }
+        "text_equals" | "text_contains" => {
+            let expected = argument("expected");
+            let actual = field("text")
+                .and_then(Value::as_str)
+                .ok_or_else(unsupported)?;
+            (
+                if name == "text_equals" {
+                    actual == expected
+                } else {
+                    actual.contains(expected)
+                },
+                json!(expected),
+                json!(actual),
+            )
+        }
+        "inside_viewport" | "no_overlap" => {
+            let rect = saved_rect(field("global_rect")).ok_or_else(unsupported)?;
+            if name == "inside_viewport" {
+                let viewport: [f64; 2] = snapshot_context
+                    .pointer("/ui/viewport")
+                    .and_then(|value| serde_json::from_value(value.clone()).ok())
+                    .ok_or_else(unsupported)?;
+                if !viewport.iter().all(|v| v.is_finite() && *v >= 0.0) {
+                    return Err(unsupported());
+                }
+                (
+                    rect[0] >= 0.0
+                        && rect[1] >= 0.0
+                        && rect[0] + rect[2] <= viewport[0]
+                        && rect[1] + rect[3] <= viewport[1],
+                    json!(true),
+                    json!(rect),
+                )
+            } else {
+                let right = argument("b");
+                let (_, other) = resolve_target(&indexes, right, artifacts)?;
+                let other = saved_rect(other.as_ref().and_then(|c| c.get("global_rect")))
+                    .ok_or_else(unsupported)?;
+                let overlaps = rect[0] < other[0] + other[2]
+                    && rect[0] + rect[2] > other[0]
+                    && rect[1] < other[1] + other[3]
+                    && rect[1] + rect[3] > other[1];
+                (!overlaps, json!(false), json!(true))
+            }
+        }
+        _ => return Err(unsupported()),
+    };
+    Ok(if passes {
+        EvalOutcome::passed()
+    } else {
+        EvalOutcome::failed(failure(
+            &format!("{name}_mismatch"),
+            "saved snapshot did not satisfy the assertion",
+            Some(expected),
+            Some(actual),
+            Some(if name == "no_overlap" {
+                format!("{left} vs {}", argument("b"))
+            } else {
+                target.to_string()
+            }),
+            Some(artifacts.clone()),
+        ))
+    })
+}
+
+fn saved_rect(value: Option<&Value>) -> Option<[f64; 4]> {
+    let rect: [f64; 4] = serde_json::from_value(value?.clone()).ok()?;
+    (rect.iter().all(|v| v.is_finite()) && rect[2] >= 0.0 && rect[3] >= 0.0).then_some(rect)
+}
+
+fn unsupported_saved_assertion(
+    assertion: &Map<String, Value>,
+    artifacts: &Map<String, Value>,
+) -> FailureDetail {
+    failure(
+        "unsupported_saved_assertion",
+        "saved evidence cannot evaluate this assertion; use --live or run a scenario to capture the required runtime evidence",
+        Some(
+            json!({"required": "complete saved fields or runtime assertion evidence", "assertion": assertion}),
+        ),
+        Some(
+            json!({"mode": "saved_snapshot", "reason": "unsupported assertion or missing required saved fields"}),
+        ),
+        assertion
+            .get("target")
+            .or_else(|| assertion.get("a"))
+            .or_else(|| {
+                assertion.values().find_map(|v| {
+                    v.get("target")
+                        .or_else(|| v.get("follower"))
+                        .or_else(|| v.get("a"))
+                })
+            })
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        Some(artifacts.clone()),
+    )
 }
 
 fn evaluate_saved_visual_assertion(
@@ -2011,12 +2164,37 @@ fn build_indexes(snapshot_context: &Value) -> Result<Indexes, FailureDetail> {
     let mut by_path = Map::new();
     let mut by_qa = Map::new();
     let mut by_name = Map::new();
+    let mut missing_metadata = false;
     for node in flatten_tree(tree_root) {
+        missing_metadata |= !node.contains_key("metadata");
         if let Some(path) = node.get("path").and_then(Value::as_str) {
+            if by_path.contains_key(path) {
+                continue;
+            }
             by_path.insert(path.to_string(), Value::Object(node.clone()));
         }
-        if let Some(qa_id) = node.get("qa_id").and_then(Value::as_str) {
-            by_qa.insert(qa_id.to_string(), json!([Value::Object(node.clone())]));
+        let mut qa_ids = node
+            .get("qa_id")
+            .and_then(Value::as_str)
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        if let Some(aliases) = node
+            .get("metadata")
+            .and_then(|metadata| metadata.get("qa_aliases"))
+            .and_then(Value::as_array)
+        {
+            qa_ids.extend(
+                aliases
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(|alias| alias.strip_prefix("qa:").unwrap_or(alias)),
+            );
+        }
+        for qa_id in qa_ids {
+            let entry = by_qa.entry(qa_id.to_string()).or_insert_with(|| json!([]));
+            if let Some(items) = entry.as_array_mut() {
+                items.push(Value::Object(node.clone()));
+            }
         }
         if let Some(name) = node.get("name").and_then(Value::as_str) {
             let entry = by_name.entry(name.to_string()).or_insert_with(|| json!([]));
@@ -2037,6 +2215,7 @@ fn build_indexes(snapshot_context: &Value) -> Result<Indexes, FailureDetail> {
         by_name,
         ui_by_path,
         filtered_evidence,
+        missing_metadata,
     })
 }
 
@@ -2129,10 +2308,18 @@ fn matches_for_target(indexes: &Indexes, target: &str) -> Vec<Map<String, Value>
 }
 
 fn flatten_tree(root: &Map<String, Value>) -> Vec<Map<String, Value>> {
-    let mut entries = vec![root.clone()];
-    if let Some(children) = root.get("children").and_then(Value::as_array) {
-        for child in children.iter().filter_map(Value::as_object) {
-            entries.extend(flatten_tree(child));
+    let mut entries = Vec::new();
+    let mut pending = vec![root];
+    while let Some(node) = pending.pop() {
+        // Index records need each node's fields, never another copy of its subtree.
+        entries.push(
+            node.iter()
+                .filter(|(key, _)| key.as_str() != "children")
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+        );
+        if let Some(children) = node.get("children").and_then(Value::as_array) {
+            pending.extend(children.iter().rev().filter_map(Value::as_object));
         }
     }
     entries
@@ -2281,6 +2468,39 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn flatten_deep_tree_without_retaining_descendants() {
+        let mut tree = Value::Null;
+        for index in (0..128).rev() {
+            tree = json!({
+                "path": index.to_string(),
+                "name": "Node",
+                "qa_id": "shared",
+                "children": [tree]
+            });
+        }
+        let nodes = flatten_tree(tree.as_object().unwrap());
+        assert_eq!(nodes.len(), 128);
+        for (index, node) in nodes.iter().enumerate() {
+            assert_eq!(node["path"], index.to_string());
+            assert!(
+                !node.contains_key("children"),
+                "flattened node {index} retains descendants"
+            );
+        }
+        let context = json!({"tree": {"root": tree}, "ui": {"controls": []}});
+        let indexes = build_indexes(&context).unwrap();
+        assert_eq!(indexes.by_path.len(), 128);
+        for node in indexes
+            .by_path
+            .values()
+            .chain(indexes.by_qa["shared"].as_array().unwrap())
+            .chain(indexes.by_name["Node"].as_array().unwrap())
+        {
+            assert!(node.get("children").is_none(), "index retains descendants");
+        }
+    }
 
     #[test]
     fn temporal_normalizes_alias_and_builds_request() {
@@ -2875,6 +3095,7 @@ struct Indexes {
     by_name: Map<String, Value>,
     ui_by_path: Map<String, Value>,
     filtered_evidence: bool,
+    missing_metadata: bool,
 }
 
 #[cfg(test)]

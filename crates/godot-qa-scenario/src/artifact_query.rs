@@ -161,10 +161,18 @@ fn read_json(path: &Path, artifact_name: &str, command: &str) -> Result<Value, F
 }
 
 fn flatten_tree(root: &Map<String, Value>) -> Vec<Map<String, Value>> {
-    let mut entries = vec![root.clone()];
-    if let Some(children) = root.get("children").and_then(Value::as_array) {
-        for child in children.iter().filter_map(Value::as_object) {
-            entries.extend(flatten_tree(child));
+    let mut entries = Vec::new();
+    let mut pending = vec![root];
+    while let Some(node) = pending.pop() {
+        // Keep one record per node without retaining copies of descendant subtrees.
+        entries.push(
+            node.iter()
+                .filter(|(key, _)| key.as_str() != "children")
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+        );
+        if let Some(children) = node.get("children").and_then(Value::as_array) {
+            pending.extend(children.iter().rev().filter_map(Value::as_object));
         }
     }
     entries
@@ -286,5 +294,27 @@ fn artifact_failure(
         actual: Some(actual),
         severity: Some("error".to_string()),
         ..FailureDetail::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn flatten_deep_tree_without_retaining_descendants() {
+        let mut tree = Value::Null;
+        for index in (0..128).rev() {
+            tree = json!({"path": index.to_string(), "children": [tree]});
+        }
+        let nodes = flatten_tree(tree.as_object().unwrap());
+        assert_eq!(nodes.len(), 128);
+        for (index, node) in nodes.iter().enumerate() {
+            assert_eq!(node["path"], index.to_string());
+            assert!(
+                !node.contains_key("children"),
+                "flattened node {index} retains descendants"
+            );
+        }
     }
 }

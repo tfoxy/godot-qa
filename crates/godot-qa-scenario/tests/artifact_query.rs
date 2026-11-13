@@ -1030,5 +1030,58 @@ fn saved_visual_assertion_keeps_target_hidden_modes_unsupported() {
     );
 
     assert!(!result.ok);
-    assert_eq!(result.failures[0].kind, "unsupported_visual_assertion");
+    assert_eq!(result.failures[0].kind, "unsupported_saved_assertion");
+}
+
+#[test]
+fn duplicate_qa_id_reports_both_paths_but_deduplicates_one_path() {
+    let root = temp_dir("saved-assert-duplicate-qa-id");
+    let run_root = write_run(&root);
+    for second_path in ["/root/Main/Second", "/root/Main/First"] {
+        write_json(
+            &run_root.join("snapshots/impact/tree.json"),
+            &json!({"root": {"path": "/root/Main", "children": [
+                {"path": "/root/Main/First", "qa_id": "duplicate"},
+                {"path": second_path, "qa_id": "duplicate"}
+            ]}}),
+        );
+        write_json(
+            &run_root.join("snapshots/impact/ui.json"),
+            &json!({"controls": [
+                {"path": "/root/Main/First", "text": "First"},
+                {"path": second_path, "text": "Second"}
+            ]}),
+        );
+        for name in ["text_equals", "visible_pixels"] {
+            let result = run_assert(
+                &config(&root),
+                name,
+                Some("qa:duplicate"),
+                (name == "text_equals").then_some("Second"),
+                AssertOptions {
+                    min_count: Some(1),
+                    ..AssertOptions::default()
+                },
+                false,
+                Some("combat_flow"),
+                Some("100Z"),
+                Some("impact"),
+            );
+            if second_path == "/root/Main/Second" {
+                assert!(!result.ok, "{name} selected the last duplicate QA ID");
+                assert_eq!(result.exit_code, 1);
+                assert_eq!(result.failures[0].kind, "ambiguous_target", "{name}");
+                assert_eq!(result.failures[0].target.as_deref(), Some("qa:duplicate"));
+                assert_eq!(
+                    result.failures[0].actual,
+                    Some(json!(["path:/root/Main/First", "path:/root/Main/Second"]))
+                );
+            } else if name == "text_equals" {
+                assert!(result.ok, "{:?}", result.failures);
+            } else {
+                assert_eq!(result.failures[0].kind, "missing_screenshot_image");
+            }
+        }
+    }
+    fs::remove_dir_all(root).unwrap();
 }
