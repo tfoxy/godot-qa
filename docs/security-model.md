@@ -8,7 +8,7 @@ The runtime bridge can inspect and control a running Godot project. Treat it as 
 - Test mode is enabled only by `--qa`, `--qa-*`, or an explicit `godot_qa/enabled` project setting.
 - Binds to `127.0.0.1` only.
 - Requires a random per-session token.
-- Stores the token value only in `.qa/session.token`; normal CLI output and `.qa/session.json` keep only the token file path.
+- Stores singleton tokens in `.qa/session.token` and pooled tokens in each isolated session artifact directory's `session.token`; normal CLI output and session metadata keep only the token file path.
 - Does not expose arbitrary script execution.
 - Writes artifacts only under configured artifact directories.
 - Excluded from production exports by default.
@@ -22,7 +22,8 @@ A local process might send commands to the bridge.
 Mitigations:
 
 - Random token.
-- Token stored in a local token file with restrictive permissions where possible.
+- On Unix, token files are created exclusively with owner-only (`0600`) permissions and atomically renamed into place, so new secrets are never briefly group/world-readable. Replacing a token repairs older file permissions; reading an existing token also restricts its permissions before reading. Windows retains its existing filesystem/ACL behavior.
+- Desktop file-transport fallback requests contain the token and use the same owner-only creation, including temporary files, before atomic publication. Completed or timed-out requests are removed.
 - Port is random by default.
 - Only localhost binding.
 - Every live command is validated again inside Godot; the CLI is not trusted as the final authority.

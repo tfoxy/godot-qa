@@ -171,7 +171,7 @@ pub fn start_pooled_session(
             // Persist the per-session record + token into the isolated artifact dir
             // (NOT the singleton) so the session is self-describing / debuggable.
             let _ = write_json(&session_json_path, &persisted.to_json_value());
-            let _ = fs::write(&session_token_path, &prepared.token);
+            let _ = write_private_file(&session_token_path, prepared.token.as_bytes());
             Ok(PooledSessionHandle {
                 record: persisted,
                 token: prepared.token,
@@ -344,7 +344,7 @@ fn deploy_android_scenario_session(
     let session_token_path = Path::new(&record.artifact_dir).join("session.token");
     record.token_file = session_token_path.to_string_lossy().into_owned();
     let _ = write_json(&session_json_path, &record.to_json_value());
-    let _ = fs::write(&session_token_path, &prepared.token);
+    let _ = write_private_file(&session_token_path, prepared.token.as_bytes());
     Ok(PooledSessionHandle {
         record,
         token: prepared.token,

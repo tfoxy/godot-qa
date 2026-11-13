@@ -509,6 +509,22 @@ fn pairing_warnings(
     events: &[&EventTraceEvent],
     pair_rules: &[EventTracePairRule],
 ) -> Vec<EventTraceWarning> {
+    if pair_rules.is_empty() {
+        return Vec::new();
+    }
+    let mut times_by_type: BTreeMap<&str, Vec<f64>> = BTreeMap::new();
+    for event in events {
+        if let Some(time) = event.time_msec.filter(|time| time.is_finite()) {
+            times_by_type
+                .entry(event.event_type.as_str())
+                .or_default()
+                .push(time);
+        }
+    }
+    for times in times_by_type.values_mut() {
+        times.sort_unstable_by(f64::total_cmp);
+    }
+
     let mut warnings = Vec::new();
     for rule in pair_rules {
         for event in events
@@ -519,16 +535,16 @@ fn pairing_warnings(
             let Some(source_time) = event.time_msec.filter(|time| time.is_finite()) else {
                 continue;
             };
-            let has_pair = events.iter().copied().any(|candidate| {
-                candidate
-                    .time_msec
-                    .filter(|time| time.is_finite())
-                    .map(|time| {
-                        time >= source_time
-                            && time - source_time <= rule.requires_within_msec as f64
-                            && rule.any_of.contains(&candidate.event_type)
-                    })
-                    .unwrap_or(false)
+            let has_pair = rule.any_of.iter().any(|event_type| {
+                let Some(times) = times_by_type.get(event_type.as_str()) else {
+                    return false;
+                };
+                let first = times.partition_point(|time| *time < source_time);
+                // The earliest eligible time is sufficient. Retain subtraction to
+                // preserve the existing floating-point window boundary behavior.
+                times
+                    .get(first)
+                    .is_some_and(|time| *time - source_time <= rule.requires_within_msec as f64)
             });
             if !has_pair {
                 let mut warning = EventTraceWarning::new(
@@ -717,6 +733,172 @@ mod tests {
                 .warning_ids
                 .contains(&WARNING_EVENT_SPAM_RISK.to_string())
         );
+    }
+
+    fn reference_pairing_warnings(
+        events: &[&EventTraceEvent],
+        pair_rules: &[EventTracePairRule],
+    ) -> Vec<EventTraceWarning> {
+        let mut warnings = Vec::new();
+        for rule in pair_rules {
+            for event in events
+                .iter()
+                .copied()
+                .filter(|event| event.event_type == rule.source)
+            {
+                let Some(source_time) = event.time_msec.filter(|time| time.is_finite()) else {
+                    continue;
+                };
+                let has_pair = events.iter().copied().any(|candidate| {
+                    candidate
+                        .time_msec
+                        .filter(|time| time.is_finite())
+                        .map(|time| {
+                            time >= source_time
+                                && time - source_time <= rule.requires_within_msec as f64
+                                && rule.any_of.contains(&candidate.event_type)
+                        })
+                        .unwrap_or(false)
+                });
+                if !has_pair {
+                    let mut warning = EventTraceWarning::new(
+                        WARNING_PAIRED_EVENT_MISSING,
+                        "source event did not have a configured companion event within the time window",
+                    );
+                    warning.event_type = Some(event.event_type.clone());
+                    warning.event_id = event.event_id.clone();
+                    warning.frame = event.frame;
+                    warning.details.insert(
+                        "requires_within_msec".to_string(),
+                        json!(rule.requires_within_msec),
+                    );
+                    warning
+                        .details
+                        .insert("any_of".to_string(), json!(rule.any_of));
+                    warnings.push(warning);
+                }
+            }
+        }
+        warnings
+    }
+
+    #[test]
+    fn event_trace_pairing_matches_reference_scan() {
+        let times = [
+            None,
+            Some(f64::NAN),
+            Some(f64::NEG_INFINITY),
+            Some(f64::INFINITY),
+            Some(-f64::MAX),
+            Some(-20.0),
+            Some(-1e-300),
+            Some(-0.0),
+            Some(0.0),
+            Some(0.1),
+            Some(1.0),
+            Some(9.9),
+            Some(10.0),
+            Some(10.000_000_000_000_002),
+            Some(20.0),
+            Some(f64::MAX),
+        ];
+        let mut events = Vec::new();
+        for event_type in ["source", "companion", "other"] {
+            for time in times {
+                let mut value = event(Some(&events.len().to_string()), 1, 0.0, event_type);
+                value.time_msec = time;
+                events.push(value);
+            }
+        }
+        let mut rules = Vec::new();
+        for source in ["source", "companion", "missing"] {
+            for requires_within_msec in [0, 1, 10, MAX_PAIRING_WINDOW_MSEC] {
+                for any_of in [
+                    vec!["companion", "other", "companion"],
+                    vec!["source"],
+                    vec!["missing"],
+                    vec![],
+                ] {
+                    rules.push(EventTracePairRule {
+                        source: source.to_string(),
+                        requires_within_msec,
+                        any_of: any_of.into_iter().map(str::to_string).collect(),
+                    });
+                }
+            }
+        }
+        for _ in 0..3 {
+            let references: Vec<_> = events.iter().collect();
+            let expected = reference_pairing_warnings(&references, &rules);
+            assert!(!expected.is_empty());
+            assert_eq!(pairing_warnings(&references, &rules), expected);
+            assert!(pairing_warnings(&references, &[]).is_empty());
+            assert!(pairing_warnings(&[], &rules).is_empty());
+            events.reverse();
+            events.rotate_left(7);
+        }
+        // Isolate each source/companion timestamp combination so an equal-time
+        // companion cannot hide a mismatch at the edge of a window.
+        for source_time in times {
+            for companion_time in times {
+                let mut pair = [
+                    event(Some("source"), 1, 0.0, "source"),
+                    event(Some("companion"), 2, 0.0, "companion"),
+                ];
+                pair[0].time_msec = source_time;
+                pair[1].time_msec = companion_time;
+                let references: Vec<_> = pair.iter().collect();
+                assert_eq!(
+                    pairing_warnings(&references, &rules),
+                    reference_pairing_warnings(&references, &rules),
+                    "source: {source_time:?}, companion: {companion_time:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn event_trace_pairing_handles_10k_unmatched_events_quickly() {
+        use std::time::{Duration, Instant};
+
+        let rules = [EventTracePairRule {
+            source: "source".to_string(),
+            requires_within_msec: 10,
+            any_of: vec!["companion".to_string()],
+        }];
+        for include_early_companions in [false, true] {
+            let events: Vec<_> = (0..10_000)
+                .map(|index| {
+                    let early_companion = include_early_companions && index % 2 == 0;
+                    event(
+                        Some(&index.to_string()),
+                        index,
+                        if early_companion { -1.0 } else { index as f64 },
+                        if early_companion {
+                            "companion"
+                        } else {
+                            "source"
+                        },
+                    )
+                })
+                .collect();
+            let references: Vec<_> = events.iter().collect();
+            let start = Instant::now();
+            let warnings = pairing_warnings(&references, &rules);
+            let elapsed = start.elapsed();
+            assert_eq!(
+                warnings.len(),
+                if include_early_companions {
+                    5_000
+                } else {
+                    10_000
+                }
+            );
+            assert!(
+                elapsed < Duration::from_secs(1),
+                "10k-event pairing took {elapsed:?}; expected under 1s (early companions: {include_early_companions})"
+            );
+        }
     }
 
     #[test]

@@ -2080,7 +2080,7 @@ pub fn session_stop_result(config: &ProjectConfig) -> CommandResult {
     if let Some(failure) = failure {
         if matches!(
             failure.kind.as_str(),
-            "session_connect_failed" | "stale_session"
+            "session_connect_failed" | "session_request_failed" | "stale_session"
         ) && session_liveness(&record) == SessionLiveness::Stopped
         {
             clear_session_files(config);
@@ -2099,6 +2099,7 @@ pub fn session_stop_result(config: &ProjectConfig) -> CommandResult {
         if matches!(
             failure.kind.as_str(),
             "session_connect_failed"
+                | "session_request_failed"
                 | "session_bridge_busy"
                 | "resource_unavailable"
                 | "resource_busy"
@@ -2624,7 +2625,24 @@ fn read_session_token(record: &SessionRecord, command: &str) -> Result<String, F
             json!("missing"),
         ));
     }
-    fs::read_to_string(&token_path)
+    (|| -> std::io::Result<String> {
+        let mut options = fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW);
+        }
+        let mut file = options.open(&token_path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)?;
+        Ok(contents)
+    })()
         .map(|contents| contents.trim().to_string())
         .map_err(|error| {
             session_failure(

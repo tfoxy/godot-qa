@@ -745,6 +745,8 @@ mod tests {
         }
     }
 
+    include!("transport_tests.rs");
+
     #[test]
     fn unique_session_id_has_millis_and_random_hex_suffix() {
         let id = unique_session_id();
@@ -2553,32 +2555,36 @@ config/name="demo"
             live_request_timeout(
                 SESSION_WAIT_FRAMES,
                 &Map::from_iter([("frames".to_string(), json!(0))])
-            ),
+            )
+            .unwrap(),
             Duration::from_secs(5)
         );
         assert_eq!(
             live_request_timeout(
                 SESSION_WAIT_FRAMES,
                 &Map::from_iter([("frames".to_string(), json!(60))])
-            ),
+            )
+            .unwrap(),
             Duration::from_secs(7)
         );
         assert_eq!(
             live_request_timeout(
                 SESSION_WAIT_FRAMES,
                 &Map::from_iter([("frames".to_string(), json!(420))])
-            ),
+            )
+            .unwrap(),
             Duration::from_secs(19)
         );
         assert_eq!(
             live_request_timeout(
                 SESSION_WAIT_FRAMES,
                 &Map::from_iter([("frames".to_string(), json!(999999))])
-            ),
+            )
+            .unwrap(),
             Duration::from_secs(120)
         );
         assert_eq!(
-            live_request_timeout(SESSION_PROFILE, &Map::new()),
+            live_request_timeout(SESSION_PROFILE, &Map::new()).unwrap(),
             Duration::from_secs(26)
         );
     }
@@ -2589,21 +2595,24 @@ config/name="demo"
             live_request_timeout(
                 SESSION_PROFILE,
                 &Map::from_iter([("frames".to_string(), json!(600))])
-            ),
+            )
+            .unwrap(),
             Duration::from_secs(80)
         );
         assert_eq!(
             live_request_timeout(
                 SESSION_PROFILE,
                 &Map::from_iter([("seconds".to_string(), json!(10.0))])
-            ),
+            )
+            .unwrap(),
             Duration::from_secs(30)
         );
         assert_eq!(
             live_request_timeout(
                 SESSION_PROFILE,
                 &Map::from_iter([("frames".to_string(), json!(999999))])
-            ),
+            )
+            .unwrap(),
             Duration::from_secs(120)
         );
     }
@@ -2614,21 +2623,24 @@ config/name="demo"
             live_request_timeout(
                 EVENT_TRACE,
                 &Map::from_iter([("frames".to_string(), json!(300))])
-            ),
+            )
+            .unwrap(),
             Duration::from_secs(50)
         );
         assert_eq!(
             live_request_timeout(
                 EVENT_TRACE,
                 &Map::from_iter([("frames".to_string(), json!(600))])
-            ),
+            )
+            .unwrap(),
             Duration::from_secs(80)
         );
         assert_eq!(
             live_request_timeout(
                 EVENT_TRACE,
                 &Map::from_iter([("frames".to_string(), json!(3600))])
-            ),
+            )
+            .unwrap(),
             Duration::from_secs(120)
         );
     }
@@ -2716,20 +2728,116 @@ config/name="demo"
         let _ = fs::remove_dir_all(root);
     }
 
+    #[cfg(unix)]
+    fn assert_session_stop_recovers_after_bridge_reset(exit_before_response: bool) {
+        use std::io::BufRead;
+        use std::os::fd::AsRawFd;
+
+        let root = temp_root(if exit_before_response {
+            "stop-bridge-reset-exited"
+        } else {
+            "stop-bridge-reset-alive"
+        });
+        let config = test_config(&root);
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let mut record = test_session_record(&config, &root, port);
+        record.pid = child.id() as i64;
+        record.process_identity = godot_qa_process::process_identity(record.pid);
+        persist_session(&config, &record, "token-test").unwrap();
+
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            std::io::BufReader::new(&mut stream)
+                .read_line(&mut request)
+                .unwrap();
+            let request: Value = serde_json::from_str(&request).unwrap();
+            assert_eq!(request["command"], SESSION_STOP);
+            if exit_before_response {
+                child.kill().unwrap();
+                child.wait().unwrap();
+            }
+            // Reset after receiving the request so the client gets a read error,
+            // rather than interpreting an orderly EOF as an invalid JSON response.
+            let linger = libc::linger {
+                l_onoff: 1,
+                l_linger: 0,
+            };
+            // SAFETY: the live socket and linger value are valid for this call.
+            assert_eq!(
+                unsafe {
+                    libc::setsockopt(
+                        stream.as_raw_fd(),
+                        libc::SOL_SOCKET,
+                        libc::SO_LINGER,
+                        (&linger as *const libc::linger).cast(),
+                        std::mem::size_of_val(&linger) as libc::socklen_t,
+                    )
+                },
+                0
+            );
+            drop(stream);
+            child
+        });
+
+        let result = session_stop_result(&config);
+
+        let mut child = handle.join().unwrap();
+        let child_was_stopped = child.try_wait().unwrap().is_some();
+        // Reap the fixture even when exercising the unfixed failure path.
+        let _ = child.kill();
+        let _ = child.wait();
+        if !result.ok {
+            assert_eq!(result.failures[0].kind, "session_request_failed");
+        }
+        assert!(result.ok, "{:?}", result.failures);
+        assert_eq!(
+            result.message,
+            if exit_before_response {
+                "cleaned stale live session metadata"
+            } else {
+                "terminated live session after bridge request failed"
+            }
+        );
+        assert!(child_was_stopped);
+        assert!(!session_json_path(&config).exists());
+        assert!(!session_token_path(&config).exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn session_stop_terminates_after_bridge_reset() {
+        assert_session_stop_recovers_after_bridge_reset(false);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn session_stop_cleans_stale_metadata_after_bridge_reset() {
+        assert_session_stop_recovers_after_bridge_reset(true);
+    }
+
     #[test]
     fn trace_record_request_timeout_scales_with_frames() {
         assert_eq!(
             live_request_timeout(
                 TRACE_RECORD,
                 &Map::from_iter([("frames".to_string(), json!(300))])
-            ),
+            )
+            .unwrap(),
             Duration::from_secs(80)
         );
         assert_eq!(
             live_request_timeout(
                 TRACE_RECORD,
                 &Map::from_iter([("frames".to_string(), json!(3600))])
-            ),
+            )
+            .unwrap(),
             Duration::from_secs(120)
         );
     }

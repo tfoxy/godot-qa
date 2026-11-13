@@ -1,5 +1,9 @@
 // Extracted from lib.rs; included by lib.rs to preserve the original crate namespace.
 
+const LIVE_QUEUE_WAIT_ALLOWANCE: Duration = Duration::from_secs(30);
+const LIVE_RESPONSE_MAX_BYTES: usize = 64 * 1024 * 1024;
+const LIVE_REQUEST_TIMEOUT_MAX: Duration = Duration::from_secs(24 * 60 * 60);
+
 fn merged_args(default_args: &[String], specific_args: &[String]) -> Vec<String> {
     let mut args = Vec::with_capacity(default_args.len() + specific_args.len());
     args.extend(default_args.iter().cloned());
@@ -21,8 +25,34 @@ pub fn persist_session(
         &Path::new(&record.artifact_dir).join("session.json"),
         &session_json,
     )?;
-    fs::write(session_token_path(config), token)
+    write_private_file(&session_token_path(config), token.as_bytes())
         .map_err(|error| artifact_write_failure(&session_token_path(config), &error))
+}
+
+/// Publish secrets from an exclusively created owner-only file. Replacing the
+/// destination also repairs permissions on token files from older CLI versions.
+fn write_private_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let temporary = path.with_file_name(format!(
+            ".{}.{}.tmp",
+            path.file_name().unwrap_or_default().to_string_lossy(),
+            crate::random::random_hex(16),
+        ));
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temporary)?;
+        let result = file.write_all(contents).and_then(|_| fs::rename(&temporary, path));
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        result
+    }
+    #[cfg(not(unix))]
+    fs::write(path, contents)
 }
 
 pub fn send_live_request(
@@ -58,7 +88,10 @@ fn send_live_request_with_metadata_path(
         mapper.map_outgoing_params(&mut value)?;
         params = value.as_object().cloned().unwrap_or_default();
     }
-    let timeout = live_request_timeout(protocol_command, &params);
+    let timeout = live_request_timeout(protocol_command, &params).map_err(|mut failure| {
+        failure.path = Some(metadata_path.to_string_lossy().into_owned());
+        failure
+    })? + LIVE_QUEUE_WAIT_ALLOWANCE;
     let mut response = send_live_request_with_timeout(
         record,
         metadata_path,
@@ -90,7 +123,25 @@ fn send_live_request_with_metadata_path(
     Ok(response)
 }
 
-fn live_request_timeout(protocol_command: &str, params: &Map<String, Value>) -> Duration {
+fn live_request_timeout(
+    protocol_command: &str,
+    params: &Map<String, Value>,
+) -> Result<Duration, FailureDetail> {
+    let seconds = live_request_timeout_seconds(protocol_command, params);
+    Duration::try_from_secs_f64(seconds)
+        .ok()
+        .filter(|timeout| *timeout <= LIVE_REQUEST_TIMEOUT_MAX)
+        .ok_or_else(|| FailureDetail {
+            kind: "session_timeout_invalid".to_string(),
+            command: Some(protocol_command.to_string()),
+            message: Some("live request timeout exceeds the supported duration; reduce the requested duration or scenario timeout".to_string()),
+            expected: Some(json!({"max_timeout_seconds": LIVE_REQUEST_TIMEOUT_MAX.as_secs()})),
+            actual: Some(json!({"timeout_seconds": seconds})),
+            ..FailureDetail::default()
+        })
+}
+
+fn live_request_timeout_seconds(protocol_command: &str, params: &Map<String, Value>) -> f64 {
     if protocol_command == SCREENSHOT_BURST {
         let seconds = params
             .get("max_seconds")
@@ -98,7 +149,7 @@ fn live_request_timeout(protocol_command: &str, params: &Map<String, Value>) -> 
             .filter(|value| value.is_finite())
             .unwrap_or(3.0)
             .clamp(0.0, 10.0);
-        return Duration::from_secs_f64(seconds + 30.0 + 10.0);
+        return seconds + 30.0 + 10.0;
     }
     if protocol_command == TRACE_RECORD {
         let frames = params
@@ -108,10 +159,10 @@ fn live_request_timeout(protocol_command: &str, params: &Map<String, Value>) -> 
             .max(0) as f64;
         let wait_seconds = (frames / LIVE_TRACE_RECORD_TIMEOUT_FPS).ceil()
             + LIVE_TRACE_RECORD_TIMEOUT_GRACE_SECONDS;
-        return Duration::from_secs_f64(wait_seconds.clamp(
+        return wait_seconds.clamp(
             LIVE_SESSION_REQUEST_TIMEOUT_SECONDS,
             LIVE_SESSION_WAIT_TIMEOUT_MAX_SECONDS,
-        ));
+        );
     }
     if protocol_command == EVENT_TRACE || protocol_command == TELEMETRY_RECORD {
         let frames = params
@@ -121,10 +172,10 @@ fn live_request_timeout(protocol_command: &str, params: &Map<String, Value>) -> 
             .max(0) as f64;
         let wait_seconds =
             (frames / LIVE_EVENT_TRACE_TIMEOUT_FPS).ceil() + LIVE_EVENT_TRACE_TIMEOUT_GRACE_SECONDS;
-        return Duration::from_secs_f64(wait_seconds.clamp(
+        return wait_seconds.clamp(
             LIVE_SESSION_REQUEST_TIMEOUT_SECONDS,
             LIVE_SESSION_WAIT_TIMEOUT_MAX_SECONDS,
-        ));
+        );
     }
     if matches!(
         protocol_command,
@@ -147,10 +198,10 @@ fn live_request_timeout(protocol_command: &str, params: &Map<String, Value>) -> 
             };
         let wait_seconds = (frames / LIVE_SESSION_WAIT_TIMEOUT_FPS).ceil()
             + LIVE_SESSION_WAIT_TIMEOUT_GRACE_SECONDS;
-        return Duration::from_secs_f64(wait_seconds.clamp(
+        return wait_seconds.clamp(
             LIVE_SESSION_REQUEST_TIMEOUT_SECONDS,
             LIVE_SESSION_WAIT_TIMEOUT_MAX_SECONDS,
-        ));
+        );
     }
     if protocol_command == INPUT_TEXT {
         // _type_text spends 2 rendered frames per codepoint (press + release),
@@ -162,10 +213,10 @@ fn live_request_timeout(protocol_command: &str, params: &Map<String, Value>) -> 
             .unwrap_or(0) as f64;
         let wait_seconds = (frames / LIVE_SESSION_WAIT_TIMEOUT_FPS).ceil()
             + LIVE_SESSION_WAIT_TIMEOUT_GRACE_SECONDS;
-        return Duration::from_secs_f64(wait_seconds.clamp(
+        return wait_seconds.clamp(
             LIVE_SESSION_REQUEST_TIMEOUT_SECONDS,
             LIVE_SESSION_WAIT_TIMEOUT_MAX_SECONDS,
-        ));
+        );
     }
     if protocol_command == SESSION_PROFILE {
         let wait_seconds = if let Some(seconds) = params.get("seconds").and_then(Value::as_f64) {
@@ -178,10 +229,10 @@ fn live_request_timeout(protocol_command: &str, params: &Map<String, Value>) -> 
                 .max(0) as f64;
             (frames / LIVE_PROFILE_TIMEOUT_FPS).ceil() + LIVE_PROFILE_TIMEOUT_GRACE_SECONDS
         };
-        return Duration::from_secs_f64(wait_seconds.clamp(
+        return wait_seconds.clamp(
             LIVE_SESSION_REQUEST_TIMEOUT_SECONDS,
             LIVE_SESSION_WAIT_TIMEOUT_MAX_SECONDS,
-        ));
+        );
     }
     if protocol_command == SCENARIO_RUN {
         // A warm scenario can run many wait_frames + asserts in one round-trip.
@@ -201,7 +252,7 @@ fn live_request_timeout(protocol_command: &str, params: &Map<String, Value>) -> 
                 .min(LIVE_SCENARIO_RUN_FRAME_BUDGET_TIMEOUT_MAX_SECONDS)
                 .max(declared)
                 + LIVE_SCENARIO_RUN_GRACE_SECONDS;
-            return Duration::from_secs_f64(backstop.max(LIVE_SESSION_REQUEST_TIMEOUT_SECONDS));
+            return backstop.max(LIVE_SESSION_REQUEST_TIMEOUT_SECONDS);
         }
         let seconds = params
             .get("timeout_seconds")
@@ -209,10 +260,10 @@ fn live_request_timeout(protocol_command: &str, params: &Map<String, Value>) -> 
             .unwrap_or(LIVE_SCENARIO_RUN_DEFAULT_TIMEOUT_SECONDS)
             .max(0.0)
             + LIVE_SCENARIO_RUN_GRACE_SECONDS;
-        return Duration::from_secs_f64(seconds.clamp(
+        return seconds.clamp(
             LIVE_SESSION_REQUEST_TIMEOUT_SECONDS,
             LIVE_SCENARIO_RUN_TIMEOUT_MAX_SECONDS,
-        ));
+        );
     }
     if protocol_command == AUDIO_CAPTURE || protocol_command == AUDIO_RENDER {
         let seconds = params
@@ -220,11 +271,10 @@ fn live_request_timeout(protocol_command: &str, params: &Map<String, Value>) -> 
             .and_then(Value::as_f64)
             .unwrap_or(0.0)
             .max(0.0);
-        return Duration::from_secs_f64(
-            (seconds + LIVE_AUDIO_REQUEST_GRACE_SECONDS).max(LIVE_SESSION_REQUEST_TIMEOUT_SECONDS),
-        );
+        return (seconds + LIVE_AUDIO_REQUEST_GRACE_SECONDS)
+            .max(LIVE_SESSION_REQUEST_TIMEOUT_SECONDS);
     }
-    Duration::from_secs_f64(LIVE_SESSION_REQUEST_TIMEOUT_SECONDS)
+    LIVE_SESSION_REQUEST_TIMEOUT_SECONDS
 }
 
 fn send_live_request_with_timeout(
@@ -309,27 +359,25 @@ fn send_live_request_with_timeout(
             ));
         }
     };
-    let _ = stream.set_read_timeout(Some(timeout));
-    let _ = stream.set_write_timeout(Some(timeout));
-    if let Err(error) = stream.write_all(&payload) {
-        if error.kind() == std::io::ErrorKind::PermissionDenied
-            && file_live_transport_allowed(record)
-        {
-            return send_file_live_request(
-                record,
-                metadata_path,
-                protocol_command,
-                &request_id,
-                &request,
-                &error.to_string(),
-                timeout,
-            );
-        }
-        return Err(session_failure(
+    let deadline = std::time::Instant::now() + timeout;
+    stream.set_write_timeout(Some(timeout)).map_err(|error| {
+        session_failure(
             "session_connect_failed",
             protocol_command,
             metadata_path,
-            &error.to_string(),
+            &format!("could not configure live request write timeout: {error}"),
+            json!("socket with bounded write timeout"),
+            json!(io_error_name(&error)),
+        )
+    })?;
+    if let Err(error) = stream.write_all(&payload) {
+        // write_all may have sent part of the request. Never resubmit through
+        // another connection or transport once transmission has started.
+        return Err(session_failure(
+            "session_request_failed",
+            protocol_command,
+            metadata_path,
+            &format!("live request write failed; command outcome is unknown: {error}"),
             json!(format!(
                 "reachable live session at {}:{}",
                 record.host, record.port
@@ -340,9 +388,36 @@ fn send_live_request_with_timeout(
     let mut response_bytes = Vec::new();
     let mut chunk = [0u8; 65536];
     loop {
-        match stream.read(&mut chunk) {
+        let read_result = (|| {
+            let timed_out = || {
+                std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "absolute live response deadline exceeded",
+                )
+            };
+            let remaining = deadline
+                .checked_duration_since(std::time::Instant::now())
+                .filter(|remaining| !remaining.is_zero())
+                .ok_or_else(timed_out)?;
+            stream.set_read_timeout(Some(remaining))?;
+            let read = stream.read(&mut chunk)?;
+            if std::time::Instant::now() >= deadline {
+                return Err(timed_out());
+            }
+            Ok(read)
+        })();
+        match read_result {
             Ok(0) => break,
             Ok(read) => {
+                let read = chunk[..read]
+                    .iter()
+                    .position(|byte| *byte == b'\n')
+                    .map_or(read, |index| index + 1);
+                check_live_response_size(
+                    protocol_command,
+                    metadata_path,
+                    response_bytes.len() + read,
+                )?;
                 response_bytes.extend_from_slice(&chunk[..read]);
                 if response_bytes.ends_with(b"\n") {
                     break;
@@ -350,10 +425,12 @@ fn send_live_request_with_timeout(
             }
             Err(error) => {
                 return Err(session_failure(
-                    "session_connect_failed",
+                    "session_request_failed",
                     protocol_command,
                     metadata_path,
-                    &error.to_string(),
+                    &format!(
+                        "live response read failed; command may already have executed: {error}"
+                    ),
                     json!(format!(
                         "reachable live session at {}:{}",
                         record.host, record.port
@@ -371,6 +448,24 @@ fn send_live_request_with_timeout(
         actual: Some(json!("invalid_json")),
         ..FailureDetail::default()
     })
+}
+
+fn check_live_response_size(
+    command: &str,
+    metadata_path: &Path,
+    bytes: usize,
+) -> Result<(), FailureDetail> {
+    if bytes <= LIVE_RESPONSE_MAX_BYTES {
+        return Ok(());
+    }
+    Err(session_failure(
+        "session_request_failed",
+        command,
+        metadata_path,
+        "live response exceeds size limit; command may already have executed; narrow the requested data",
+        json!({"max_response_bytes": LIVE_RESPONSE_MAX_BYTES}),
+        json!({"response_bytes": bytes}),
+    ))
 }
 
 fn file_live_transport_allowed(record: &SessionRecord) -> bool {
@@ -407,7 +502,7 @@ fn send_file_live_request(
     let request_tmp_path = requests_dir.join(format!("{request_id}.tmp"));
     let response_path = responses_dir.join(format!("{request_id}.json"));
     let content = serde_json::to_string(request).unwrap_or_else(|_| "{}".to_string());
-    fs::write(&request_tmp_path, content)
+    write_private_file(&request_tmp_path, content.as_bytes())
         .and_then(|_| fs::rename(&request_tmp_path, &request_path))
         .map_err(|error| {
             let _ = fs::remove_file(&request_tmp_path);
@@ -423,19 +518,23 @@ fn send_file_live_request(
     let deadline = std::time::Instant::now() + timeout;
     while std::time::Instant::now() < deadline {
         if response_path.exists() {
-            let contents = fs::read_to_string(&response_path).map_err(|error| {
+            let mut contents = Vec::new();
+            fs::File::open(&response_path).and_then(|file| {
+                file.take((LIVE_RESPONSE_MAX_BYTES + 1) as u64).read_to_end(&mut contents)
+            }).map_err(|error| {
                 session_failure(
-                    "session_connect_failed",
+                    "session_request_failed",
                     protocol_command,
                     metadata_path,
-                    &error.to_string(),
+                    &format!("file-backed live response read failed; command may already have executed: {error}"),
                     json!("readable file-backed live response"),
                     json!("OSError"),
                 )
             })?;
             let _ = fs::remove_file(&request_path);
             let _ = fs::remove_file(&response_path);
-            return serde_json::from_str::<Value>(&contents).map_err(|error| FailureDetail {
+            check_live_response_size(protocol_command, metadata_path, contents.len())?;
+            return serde_json::from_slice::<Value>(&contents).map_err(|error| FailureDetail {
                 kind: "protocol_error".to_string(),
                 command: Some(protocol_command.to_string()),
                 message: Some(error.to_string()),
@@ -448,10 +547,12 @@ fn send_file_live_request(
     }
     let _ = fs::remove_file(&request_path);
     Err(session_failure(
-        "session_connect_failed",
+        "session_request_failed",
         protocol_command,
         metadata_path,
-        &format!("file-backed live session response timed out after TCP failed: {fallback_reason}"),
+        &format!(
+            "file-backed live session response timed out after TCP failed: {fallback_reason}; command may already have executed"
+        ),
         json!("file-backed live response under session artifacts"),
         json!("TimeoutError"),
     ))
@@ -548,14 +649,15 @@ mod transport_tests {
     #[test]
     fn burst_timeout_includes_capture_encoding_and_transport_budgets() {
         assert_eq!(
-            live_request_timeout(SCREENSHOT_BURST, &Map::new()),
+            live_request_timeout(SCREENSHOT_BURST, &Map::new()).unwrap(),
             Duration::from_secs(43)
         );
         assert_eq!(
             live_request_timeout(
                 SCREENSHOT_BURST,
                 &Map::from_iter([("max_seconds".to_string(), json!(10.0))])
-            ),
+            )
+            .unwrap(),
             Duration::from_secs(50)
         );
     }
@@ -591,7 +693,7 @@ mod transport_tests {
             .into_iter()
             .collect();
         assert_eq!(
-            live_request_timeout(INPUT_TEXT, &params),
+            live_request_timeout(INPUT_TEXT, &params).unwrap(),
             Duration::from_secs_f64(6.0)
         );
         // Max-length 900-char text: ceil(1800/30) + 5 = 65s, under the 120s cap.
@@ -599,12 +701,12 @@ mod transport_tests {
             .into_iter()
             .collect();
         assert_eq!(
-            live_request_timeout(INPUT_TEXT, &params),
+            live_request_timeout(INPUT_TEXT, &params).unwrap(),
             Duration::from_secs_f64(65.0)
         );
         // Missing text falls back to the 5s request floor.
         assert_eq!(
-            live_request_timeout(INPUT_TEXT, &Map::new()),
+            live_request_timeout(INPUT_TEXT, &Map::new()).unwrap(),
             Duration::from_secs_f64(5.0)
         );
     }
@@ -634,17 +736,17 @@ mod transport_tests {
         // Declared timeout + grace, clamped to the 600s cap.
         let params = scenario_run_params(&[("timeout_seconds", json!(120.0))]);
         assert_eq!(
-            live_request_timeout(SCENARIO_RUN, &params),
+            live_request_timeout(SCENARIO_RUN, &params).unwrap(),
             Duration::from_secs_f64(135.0)
         );
         let params = scenario_run_params(&[("timeout_seconds", json!(900.0))]);
         assert_eq!(
-            live_request_timeout(SCENARIO_RUN, &params),
+            live_request_timeout(SCENARIO_RUN, &params).unwrap(),
             Duration::from_secs_f64(600.0)
         );
         let params = scenario_run_params(&[]);
         assert_eq!(
-            live_request_timeout(SCENARIO_RUN, &params),
+            live_request_timeout(SCENARIO_RUN, &params).unwrap(),
             Duration::from_secs_f64(135.0)
         );
     }
@@ -657,7 +759,7 @@ mod transport_tests {
             ("timeout_frames", json!(7200)),
         ]);
         assert_eq!(
-            live_request_timeout(SCENARIO_RUN, &params),
+            live_request_timeout(SCENARIO_RUN, &params).unwrap(),
             Duration::from_secs_f64(120.0 * 3.0 + 15.0)
         );
         // 900s declared no longer truncates: capped at 1800 + grace.
@@ -666,7 +768,7 @@ mod transport_tests {
             ("timeout_frames", json!(54000)),
         ]);
         assert_eq!(
-            live_request_timeout(SCENARIO_RUN, &params),
+            live_request_timeout(SCENARIO_RUN, &params).unwrap(),
             Duration::from_secs_f64(1800.0 + 15.0)
         );
         // The backstop never undercuts a declared wall above the cap.
@@ -675,7 +777,7 @@ mod transport_tests {
             ("timeout_frames", json!(120000)),
         ]);
         assert_eq!(
-            live_request_timeout(SCENARIO_RUN, &params),
+            live_request_timeout(SCENARIO_RUN, &params).unwrap(),
             Duration::from_secs_f64(2000.0 + 15.0)
         );
     }
@@ -692,17 +794,17 @@ mod transport_tests {
                     hold_seconds
                 };
                 assert_eq!(
-                    live_request_timeout(command, &params),
+                    live_request_timeout(command, &params).unwrap(),
                     Duration::from_secs(expected)
                 );
             }
             assert_eq!(
-                live_request_timeout(command, &Map::new()),
+                live_request_timeout(command, &Map::new()).unwrap(),
                 Duration::from_secs(6)
             );
         }
         assert_eq!(
-            live_request_timeout("input.key_release", &Map::new()),
+            live_request_timeout("input.key_release", &Map::new()).unwrap(),
             Duration::from_secs(5)
         );
     }
