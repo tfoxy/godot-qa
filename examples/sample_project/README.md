@@ -63,9 +63,10 @@ Live gate fixtures:
 Manifest-backed tests:
 - `qa/tests/manifest.json`: explicit `check --tests` contract with one `scene` entry and one `script` entry.
 - `qa/tests/script_smoke.gd`: minimal passing `run_qa_test()` fixture for manifest-backed script coverage.
-- `qa/tests/joy_lifecycle_test.gd`: direct headless check of virtual controller signal timing, selective button/axis release, unowned-device rejection, and reset/finalization cleanup. Run with `godot --headless --path examples/sample_project --script res://qa/tests/joy_lifecycle_test.gd`.
+- `qa/tests/joy_lifecycle_test.gd`: direct headless check of virtual controller signal timing, selective button/axis release, unowned-device rejection, and reset/finalization cleanup. Run with `SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT=0xffff/0xffff godot --headless --path examples/sample_project --script res://qa/tests/joy_lifecycle_test.gd`; without that variable, physical or virtual host gamepads occupy the low device ids and roster checks fail.
 - `qa/live_scripts/joy_lifecycle_cleanup_smoke.yaml`: headless live-session script that holds a virtual pad across scene replacement, verifies its input and roster were cleared, then stops another held-pad session with before/after cleanup evidence.
 - `qa/gates/joy_lifecycle_failure_cleanup.yaml`: deliberately failing two-scenario warm gate. Run with `scenario bundle run joy_lifecycle_failure_cleanup --warm --warm-strict --jobs 1 --schedule manifest --headless`; expect bundle exit 1 from the first false assertion and require `joy_lifecycle_after_fail` to pass in the same session.
+- On hosts with gamepads attached (including virtual controllers from streaming tools), set `godot.joypad_isolation: true` in `qa/config.local.yaml` before running the joypad scenarios, live scripts, and gates above; otherwise host devices appear in the virtual roster.
 
 Verification commands:
 
