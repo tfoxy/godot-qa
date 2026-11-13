@@ -83,6 +83,8 @@ When both config files exist, `qa/config.local.yaml` overlays keys from `qa/conf
 
 Version probing has one narrow exception: `doctor` first tries the configured prefixed probe, but if that prefixed `godot --version` fails, it may retry the selected Godot binary directly as `godot --version`. This fallback is only for version probes, does not bypass an invalid explicit Godot binary path, and does not change normal launch behavior. `doctor --json` reports the probe path under `data.godot.version_probe`, including the attempted prefixed command, whether direct fallback was used, the fallback reason, and the final probe command that produced the version.
 
+Each Godot version attempt, prefixed or direct, has a two-second deadline including output collection and uses the same concurrent, bounded capture as binary-surface probes. A timed-out attempt records `failure_type: "godot_version_probe_failed"` and `failure_reason: "timeout"` in the existing attempt metadata, retaining available stdout/stderr excerpts. A prefixed timeout records `fallback_reason: "timeout"` before trying the direct command with its own two-second deadline; a direct timeout fails version probing even if partial version output was printed.
+
 Rules:
 
 - Missing `qa/config.yaml` and `qa/config.local.yaml` preserves the default direct Godot launch behavior.
@@ -1199,6 +1201,8 @@ godot-qa check --tests --timeout-seconds 5
 
 This surface is intentionally bounded by default. `doctor` verifies prerequisites, `import` runs Godot asset import, `check` validates the project `run/main_scene`, `check --scene` and `check --all-scenes` validate scene startup/runtime health, `check --script` and `check --all-scripts` validate GDScript load/compile health through Godot, and `check --tests` runs only the explicit manifest-backed scene/script tests declared under `qa/tests/manifest.json`. `check` is not a heuristic or third-party-framework test runner. Scene and script checks fail if Godot output contains script parse or compilation diagnostics such as `Failed to load script`, `Parse error`, `Parser Error`, or `Compilation failed`, even if the runtime otherwise reaches a result payload. Strict script diagnostic failures include a bounded excerpt with nearby nested/preloaded script line and column context when Godot prints it.
 
+Foreground Godot launches, including `check`, `import`, and patch helpers, capture stdout/stderr directly to separate raw files alongside their combined log (for example, `logs.stdout.txt`, `logs.stderr.txt`, and `logs.txt`). Retained in-memory output and the combined log keep at most 8 MiB of raw bytes per stream: the first and last 4 MiB when truncated, plus omission notices identifying complete raw artifact paths and byte counts. Raw files retain every byte unchanged, including for launches without a timeout. A successful foreground process whose validation output was truncated fails with `type: "output_capture_truncated"` so omitted diagnostics cannot silently pass; its failure includes the command, expected capture limit, actual byte counts, and log/raw artifact paths. Existing process failures and timeouts retain their original failure handling.
+
 `doctor` checks:
 
 - Godot binary is available.
@@ -1208,6 +1212,7 @@ This surface is intentionally bounded by default. `doctor` verifies prerequisite
 - if version probing fails, the failure stays machine-readable and includes the probe command, binary path, and expected/actual probe state.
 - probe commands are quoted as needed in failure payloads so spaced binary paths remain reproducible.
   Probe `actual` values are currently one of a non-zero exit status, `timeout`, `empty_output`, or `os_error`.
+- binary-surface help/version probes drain stdout and stderr concurrently and retain at most the first 64 KiB of raw bytes per stream. Their deadline covers output collection; remaining owned descendants are terminated on completion (the owned process group on Unix).
 - target project root is resolved from `--project` or the current working directory.
 - a missing target root returns `type: "missing_project_root"` instead of silently creating artifact directories there, including when `--project` is a nonexistent relative path.
 - addon is installed or installable.

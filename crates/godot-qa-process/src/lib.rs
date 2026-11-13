@@ -350,51 +350,39 @@ fn run_version_probe_attempt(
     command: &[String],
     used_launch_prefix: bool,
 ) -> GodotVersionProbeAttempt {
-    match run_command_output(command) {
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            let version = if !stdout.is_empty() {
-                stdout.clone()
-            } else {
-                stderr.clone()
-            };
-            let (failure_type, failure_reason) = if !output.status.success() {
-                (
-                    Some(GODOT_VERSION_PROBE_FAILED.to_string()),
-                    Some(if version.is_empty() {
-                        format!("exited with status {}", output.status.code().unwrap_or(-1))
-                    } else {
-                        version
-                    }),
-                )
-            } else if version.is_empty() {
-                (
-                    Some(GODOT_VERSION_PROBE_FAILED.to_string()),
-                    Some("empty_output".to_string()),
-                )
-            } else {
-                (None, None)
-            };
-            GodotVersionProbeAttempt {
-                command: command.to_vec(),
-                used_launch_prefix,
-                status: Some(output.status.code().unwrap_or(-1)),
-                stdout,
-                stderr,
-                failure_type,
-                failure_reason,
-            }
-        }
-        Err(error) => GodotVersionProbeAttempt {
-            command: command.to_vec(),
-            used_launch_prefix,
-            status: None,
-            stdout: String::new(),
-            stderr: String::new(),
-            failure_type: Some(GODOT_VERSION_PROBE_FAILED.to_string()),
-            failure_reason: Some(format!("os_error: {error}")),
-        },
+    let output = run_safe_probe(
+        Path::new(&command[0]),
+        &command[1..],
+        Duration::from_secs(2),
+    );
+    let stdout = output.stdout.trim().to_string();
+    let stderr = output.stderr.trim().to_string();
+    let version = if !stdout.is_empty() { &stdout } else { &stderr };
+    let failure_reason = if output.timed_out {
+        Some("timeout".to_string())
+    } else if let Some(error) = output.error_message {
+        Some(format!("os_error: {error}"))
+    } else if output.status != Some(0) {
+        Some(if version.is_empty() {
+            format!("exited with status {}", output.status.unwrap_or(-1))
+        } else {
+            version.clone()
+        })
+    } else if version.is_empty() {
+        Some("empty_output".to_string())
+    } else {
+        None
+    };
+    GodotVersionProbeAttempt {
+        command: command.to_vec(),
+        used_launch_prefix,
+        status: output.status,
+        stdout,
+        stderr,
+        failure_type: failure_reason
+            .as_ref()
+            .map(|_| GODOT_VERSION_PROBE_FAILED.to_string()),
+        failure_reason,
     }
 }
 
@@ -444,7 +432,7 @@ pub fn run_safe_probe(executable: &Path, args: &[String], timeout: Duration) -> 
         use std::os::windows::process::CommandExt;
         child_command.creation_flags(windows_sys::Win32::System::Threading::CREATE_SUSPENDED);
     }
-    let mut child = match child_command.spawn() {
+    let mut child = match spawn_probe_child(&mut child_command) {
         Ok(child) => child,
         Err(error) => {
             return SafeProbeResult {
@@ -478,90 +466,127 @@ pub fn run_safe_probe(executable: &Path, args: &[String], timeout: Duration) -> 
             };
         }
     };
+    let stdout = ProbeCapture::spawn(child.stdout.take().expect("piped stdout"));
+    let stderr = ProbeCapture::spawn(child.stderr.take().expect("piped stderr"));
+    let mut status = None;
+    let mut error = None;
+    let mut timed_out = false;
     loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                #[cfg(windows)]
-                let _ = owned_job.terminate();
-                return match child.wait_with_output() {
-                    Ok(output) => SafeProbeResult {
-                        command,
-                        status: output.status.code().or_else(|| status.code()),
-                        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-                        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-                        duration: started.elapsed(),
-                        timed_out: false,
-                        error_kind: None,
-                        error_message: None,
-                    },
-                    Err(error) => SafeProbeResult {
-                        command,
-                        status: None,
-                        stdout: String::new(),
-                        stderr: String::new(),
-                        duration: started.elapsed(),
-                        timed_out: false,
-                        error_kind: Some(format!("{:?}", error.kind())),
-                        error_message: Some(error.to_string()),
-                    },
-                };
-            }
-            Ok(None) if started.elapsed() >= timeout => {
-                #[cfg(windows)]
-                let _ = owned_job.terminate();
-                let kill_error = kill_safe_probe_child(&mut child);
-                return match child.wait_with_output() {
-                    Ok(output) => SafeProbeResult {
-                        command,
-                        status: output.status.code(),
-                        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-                        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-                        duration: started.elapsed(),
-                        timed_out: true,
-                        error_kind: Some("timeout".to_string()),
-                        error_message: kill_error
-                            .map(|error| format!("timed out; kill failed: {error}"))
-                            .or_else(|| Some("timed out".to_string())),
-                    },
-                    Err(error) => SafeProbeResult {
-                        command,
-                        status: None,
-                        stdout: String::new(),
-                        stderr: String::new(),
-                        duration: started.elapsed(),
-                        timed_out: true,
-                        error_kind: Some("timeout".to_string()),
-                        error_message: Some(format!("timed out; cleanup failed: {error}")),
-                    },
-                };
-            }
-            Ok(None) => {
-                thread::sleep(Duration::from_millis(10));
-            }
-            Err(error) => {
-                let _ = kill_safe_probe_child(&mut child);
-                let _ = child.wait();
-                return SafeProbeResult {
-                    command,
-                    status: None,
-                    stdout: String::new(),
-                    stderr: String::new(),
-                    duration: started.elapsed(),
-                    timed_out: false,
-                    error_kind: Some(format!("{:?}", error.kind())),
-                    error_message: Some(error.to_string()),
-                };
+        if status.is_none() {
+            match child.try_wait() {
+                Ok(Some(exited)) => {
+                    status = Some(exited);
+                    // The leader may leave descendants holding the pipes open.
+                    #[cfg(windows)]
+                    let cleanup = owned_job.terminate().err();
+                    #[cfg(not(windows))]
+                    let cleanup = kill_safe_probe_child(&mut child);
+                    error = cleanup;
+                }
+                Ok(None) => {}
+                Err(wait_error) => {
+                    error = Some(wait_error);
+                    break;
+                }
             }
         }
+        if status.is_some() && stdout.worker.is_finished() && stderr.worker.is_finished() {
+            break;
+        }
+        if started.elapsed() >= timeout {
+            timed_out = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+    if status.is_none() {
+        #[cfg(windows)]
+        let _ = owned_job.terminate();
+        if let Some(kill_error) = kill_safe_probe_child(&mut child) {
+            error.get_or_insert(kill_error);
+        } else {
+            match child.wait() {
+                Ok(exited) => status = Some(exited),
+                Err(wait_error) => {
+                    error.get_or_insert(wait_error);
+                }
+            }
+        }
+    }
+    // Never join a reader still waiting for EOF: even pipe collection shares the deadline.
+    let (stdout, stdout_error) = stdout.finish();
+    let (stderr, stderr_error) = stderr.finish();
+    error = error.or(stdout_error).or(stderr_error);
+    SafeProbeResult {
+        command,
+        status: status.and_then(|status| status.code()),
+        stdout,
+        stderr,
+        duration: started.elapsed(),
+        timed_out,
+        error_kind: if timed_out {
+            Some("timeout".to_string())
+        } else {
+            error.as_ref().map(|error| format!("{:?}", error.kind()))
+        },
+        error_message: if timed_out {
+            Some(error.map_or_else(
+                || "timed out".to_string(),
+                |error| format!("timed out; cleanup failed: {error}"),
+            ))
+        } else {
+            error.map(|error| error.to_string())
+        },
+    }
+}
+
+struct ProbeCapture {
+    bytes: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    worker: thread::JoinHandle<std::io::Result<()>>,
+}
+
+impl ProbeCapture {
+    fn spawn(mut stream: impl Read + Send + 'static) -> Self {
+        const LIMIT: usize = 64 * 1024;
+        let bytes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = bytes.clone();
+        let worker = thread::spawn(move || {
+            let mut buffer = [0; 8192];
+            loop {
+                let count = match stream.read(&mut buffer) {
+                    Ok(0) => return Ok(()),
+                    Ok(count) => count,
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(error) => return Err(error),
+                };
+                let mut bytes = captured.lock().expect("probe capture lock");
+                let retained = count.min(LIMIT - bytes.len());
+                bytes.extend_from_slice(&buffer[..retained]);
+            }
+        });
+        Self { bytes, worker }
+    }
+
+    fn finish(self) -> (String, Option<std::io::Error>) {
+        let error = if self.worker.is_finished() {
+            self.worker.join().expect("probe reader thread").err()
+        } else {
+            None
+        };
+        let bytes = self.bytes.lock().expect("probe capture lock");
+        (String::from_utf8_lossy(&bytes).into_owned(), error)
     }
 }
 
 fn kill_safe_probe_child(child: &mut std::process::Child) -> Option<std::io::Error> {
     #[cfg(unix)]
     {
-        send_process_group_signal(child.id() as i64, libc::SIGKILL)
-            .err()
-            .map(std::io::Error::other)
+        // Signal only the session we created, including after its leader has exited.
+        if unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL) } == 0 {
+            return None;
+        }
+        let error = std::io::Error::last_os_error();
+        (error.raw_os_error() != Some(libc::ESRCH)).then_some(error)
     }
     #[cfg(not(unix))]
     {
@@ -1510,7 +1535,7 @@ fn run_godot_command_with_completion_path(
         joypad_isolation,
         timeout,
         completion_path,
-        completion_path.map(|_| logs_path),
+        Some(logs_path),
     ) {
         Ok(child_output) => {
             let OwnedChildOutput {
@@ -1567,6 +1592,28 @@ fn run_godot_command_with_completion_path(
                     ..FailureDetail::default()
                 }
             })?;
+            // Foreground validation must not pass after diagnostics were omitted.
+            if completion_path.is_none()
+                && status_code == 0
+                && !timed_out
+                && let Some(truncation) = &output_truncation
+            {
+                return Err(FailureDetail {
+                    kind: "output_capture_truncated".to_string(),
+                    command: Some(format_command(command)),
+                    path: Some(logs_path.to_string_lossy().into_owned()),
+                    expected: Some(json!({"complete_output": true, "max_bytes_per_stream": CAPTURED_STREAM_LIMIT_BYTES})),
+                    target: command.windows(2).find(|args| args[0] == "--path").map(|args| args[1].clone()),
+                    actual: Some(json!(truncation)),
+                    message: Some("Foreground Godot output exceeded the capture limit; inspect the complete raw artifacts, reduce output, and rerun validation.".to_string()),
+                    artifacts: Some(serde_json::Map::from_iter([
+                        ("logs".to_string(), json!(logs_path)),
+                        ("raw_stdout".to_string(), json!(truncation.raw_stdout_path)),
+                        ("raw_stderr".to_string(), json!(truncation.raw_stderr_path)),
+                    ])),
+                    ..FailureDetail::default()
+                });
+            }
             if status_code == 0
                 && !timed_out
                 && completion_path.is_some()
@@ -1741,10 +1788,10 @@ fn run_owned_child_output(
     let process_group = current_run_process_group(pid);
     if !cfg!(windows) && timeout.is_none() && completion_path.is_none() {
         let output = child.wait_with_output()?;
-        let (stdout, stderr) = if let Some((stdout_path, stderr_path)) = &file_paths {
-            (fs::read(stdout_path)?, fs::read(stderr_path)?)
+        let (stdout, stderr, output_truncation) = if file_paths.is_some() {
+            collected_child_output(&file_paths, None, None)?
         } else {
-            (output.stdout, output.stderr)
+            (output.stdout, output.stderr, None)
         };
         process_timing.total_ms = duration_millis_u64(started.elapsed());
         return Ok(OwnedChildOutput {
@@ -1765,7 +1812,7 @@ fn run_owned_child_output(
             }),
             timed_out: false,
             timeout_ms: None,
-            output_truncation: None,
+            output_truncation,
         });
     }
     let stdout = child.stdout.take();
@@ -2137,28 +2184,17 @@ fn terminate_owned_child_after_timeout(
     }
 }
 
-fn run_command_output(command: &[String]) -> std::io::Result<std::process::Output> {
-    let Some(executable) = command.first() else {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "empty command",
-        ));
-    };
-    let mut last_error = None;
+fn spawn_probe_child(command: &mut Command) -> std::io::Result<std::process::Child> {
     for attempt in 0..3 {
-        match Command::new(executable)
-            .args(command.iter().skip(1))
-            .output()
-        {
-            Ok(output) => return Ok(output),
+        match command.spawn() {
+            Ok(child) => return Ok(child),
             Err(error) if error.raw_os_error() == Some(26) && attempt < 2 => {
-                last_error = Some(error);
                 thread::sleep(Duration::from_millis(10));
             }
             Err(error) => return Err(error),
         }
     }
-    Err(last_error.expect("retry loop records executable-busy error"))
+    unreachable!("final spawn attempt returns its result")
 }
 
 fn classify_launch_spawn_failure(display: &DisplayLaunchMetadata, command: &[String]) -> String {
@@ -2456,6 +2492,71 @@ mod tests {
     }
 
     #[test]
+    fn safe_probe_drains_large_streams_with_bounded_retention() {
+        let temp_dir = unique_temp_dir().join("probe with spaces");
+        let stdout = "o".repeat(4 * 1024 * 1024);
+        let stderr = "e".repeat(4 * 1024 * 1024);
+        let probe = fixture(
+            &temp_dir.join("large output"),
+            &[("stdout", &stdout), ("stderr", &stderr)],
+        );
+
+        let result = run_safe_probe(&probe, &[], Duration::from_secs(2));
+        fs::remove_dir_all(temp_dir).unwrap();
+
+        assert!(
+            !result.timed_out,
+            "probe timed out with status {:?}",
+            result.status
+        );
+        assert_eq!(result.status, Some(0));
+        assert_eq!(result.error_kind, None);
+        assert!(!result.stdout.is_empty());
+        assert!(!result.stderr.is_empty());
+        assert!(result.stdout.len() <= 64 * 1024);
+        assert!(result.stderr.len() <= 64 * 1024);
+        assert!(result.stdout.bytes().all(|byte| byte == b'o'));
+        assert!(result.stderr.bytes().all(|byte| byte == b'e'));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn safe_probe_reaps_descendant_holding_pipes_after_leader_exit() {
+        let temp_dir = unique_temp_dir().join("probe with spaces");
+        let sleeper = fixture(&temp_dir.join("sleeper"), &[("sleep_ms", "30000")]);
+        let pid_file = temp_dir.join("sleeper.pid");
+        let probe = fixture(
+            &temp_dir.join("probe"),
+            &[
+                ("child_exe", sleeper.to_str().unwrap()),
+                ("child_pid_file", pid_file.to_str().unwrap()),
+                ("stdout", "leader exited\n"),
+            ],
+        );
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = run_safe_probe(&probe, &[], Duration::from_millis(300));
+            let _ = sender.send(result);
+        });
+        let result = receiver.recv_timeout(Duration::from_secs(2));
+        let pid = fs::read_to_string(pid_file).unwrap().parse().unwrap();
+        let cleaned_up = super::wait_for_godot_process_exit(pid, 0.5);
+        // Ensure a failed regression does not leave the fixture or reader blocked.
+        if !cleaned_up {
+            super::send_signal(pid, 9).unwrap();
+        }
+        worker.join().unwrap();
+        fs::remove_dir_all(temp_dir).unwrap();
+
+        let result = result.expect("probe must return while descendant would still be sleeping");
+        assert!(result.duration < Duration::from_secs(2));
+        assert_eq!(result.status, Some(0));
+        assert!(!result.timed_out);
+        assert_eq!(result.stdout, "leader exited\n");
+        assert!(cleaned_up, "probe must terminate the owned descendant");
+    }
+
+    #[test]
     fn owned_child_file_capture_without_deadline_returns_output() {
         let _signal_guard = PROCESS_SIGNAL_LOCK.lock().expect("signal test lock");
         let temp_dir = unique_temp_dir();
@@ -2539,6 +2640,69 @@ mod tests {
         assert!(result.duration >= Duration::from_millis(200));
         assert_eq!(result.stdout, "before loop\n");
         assert_ne!(result.status, Some(0));
+    }
+
+    #[test]
+    fn version_probe_hanging_prefix_times_out_before_direct_fallback() {
+        let temp_dir = unique_temp_dir().join("version probe with spaces");
+        let wrapper = fixture(
+            &temp_dir.join("wrapper"),
+            &[
+                ("stdout", "prefix started\n"),
+                ("sleep_ms", "3000"),
+                ("exit", "19"),
+            ],
+        );
+        let godot = fixture(&temp_dir.join("godot"), &[("stdout", "Godot_v4.5\n")]);
+        let started = std::time::Instant::now();
+        let result = probe_godot_version_with_metadata(
+            godot.to_str().unwrap(),
+            &[wrapper.to_string_lossy().into_owned()],
+        )
+        .expect("direct probe succeeds after prefix timeout");
+        let elapsed = started.elapsed();
+        fs::remove_dir_all(temp_dir).unwrap();
+
+        assert!(elapsed < Duration::from_millis(2800), "{elapsed:?}");
+        assert_eq!(result.version, "Godot_v4.5");
+        assert!(result.metadata.fallback_used);
+        assert_eq!(result.metadata.fallback_reason.as_deref(), Some("timeout"));
+        let metadata = result.metadata.to_json();
+        assert_eq!(metadata["attempts"].as_array().unwrap().len(), 2);
+        assert_eq!(metadata["attempts"][0]["failure_reason"], "timeout");
+        assert_eq!(
+            metadata["attempts"][0]["failure_type"],
+            "godot_version_probe_failed"
+        );
+        assert_eq!(metadata["attempts"][0]["stdout"], "prefix started");
+        assert_eq!(metadata["attempts"][1]["status"], 0);
+        assert_eq!(
+            metadata["selected_command"][0],
+            godot.to_string_lossy().as_ref()
+        );
+    }
+
+    #[test]
+    fn version_probe_hanging_direct_probe_reports_timeout() {
+        let temp_dir = unique_temp_dir().join("version probe with spaces");
+        let godot = fixture(
+            &temp_dir.join("godot"),
+            &[("stdout", "Godot_v4.5\n"), ("sleep_ms", "3000")],
+        );
+        let started = std::time::Instant::now();
+        let result = probe_godot_version_with_metadata(godot.to_str().unwrap(), &[]);
+        let elapsed = started.elapsed();
+        fs::remove_dir_all(temp_dir).unwrap();
+
+        assert!(elapsed < Duration::from_millis(2800), "{elapsed:?}");
+        let failure = result.expect_err("output from a timed-out probe must not be a version");
+        assert_eq!(failure.kind, "godot_version_probe_failed");
+        assert_eq!(failure.actual, Some(serde_json::json!("timeout")));
+        let metadata = &failure.details["version_probe"];
+        assert_eq!(metadata["fallback_used"], false);
+        assert_eq!(metadata["attempts"].as_array().unwrap().len(), 1);
+        assert_eq!(metadata["attempts"][0]["stdout"], "Godot_v4.5");
+        assert_eq!(metadata["attempts"][0]["failure_reason"], "timeout");
     }
 
     #[test]
@@ -4027,6 +4191,109 @@ mod tests {
             );
         }
         let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn foreground_file_capture_keeps_bounded_streams_and_complete_artifacts() {
+        let temp_dir = unique_temp_dir().join("foreground capture with spaces");
+        let stdout = format!(
+            "stdout head\n{}\nstdout tail\n",
+            "x".repeat(9 * 1024 * 1024)
+        );
+        let stderr = format!(
+            "stderr head\n{}\nstderr tail\n",
+            "y".repeat(9 * 1024 * 1024)
+        );
+        let child = fixture(
+            &temp_dir.join("noisy godot"),
+            &[("stdout", &stdout), ("stderr", &stderr)],
+        );
+        for timeout in [None, Some(Duration::from_secs(10))] {
+            let logs = temp_dir.join("logs.txt");
+            let result = super::run_owned_child_output(
+                &[child.to_string_lossy().into_owned()],
+                false,
+                timeout,
+                None,
+                Some(&logs),
+            )
+            .unwrap();
+            assert_eq!(result.status_code, 0);
+            assert!(!result.timed_out);
+            for (capture, original, stream) in [
+                (&result.stdout, &stdout, "stdout"),
+                (&result.stderr, &stderr, "stderr"),
+            ] {
+                assert!(capture.len() <= super::CAPTURED_STREAM_LIMIT_BYTES as usize + 1024);
+                let excerpt = String::from_utf8_lossy(capture);
+                assert!(excerpt.starts_with(&format!("{stream} head\n")));
+                assert!(excerpt.ends_with(&format!("{stream} tail\n")));
+                assert!(excerpt.contains("omitted"));
+                assert_eq!(
+                    fs::read(logs.with_extension(format!("{stream}.txt"))).unwrap(),
+                    original.as_bytes()
+                );
+            }
+            let truncation = result.output_truncation.unwrap();
+            assert_eq!(truncation.stdout_total_bytes, stdout.len() as u64);
+            assert_eq!(truncation.stderr_total_bytes, stderr.len() as u64);
+        }
+        fs::remove_dir_all(temp_dir).unwrap();
+    }
+
+    #[test]
+    fn foreground_launches_fail_on_truncated_capture_and_keep_raw_artifacts() {
+        let temp_dir = unique_temp_dir().join("foreground helpers with spaces");
+        let output = "x".repeat(9 * 1024 * 1024);
+        let child = fixture(
+            &temp_dir.join("noisy godot"),
+            &[("stdout", &output), ("stderr", &output)],
+        );
+        let binary = child.to_str().unwrap();
+        let request = temp_dir.join("request.json");
+        for helper in ["check", "check_timeout", "import", "patch"] {
+            let logs = temp_dir.join(format!("{helper}.logs.txt"));
+            let result = match helper {
+                "check" => {
+                    launch_godot_check(binary, &[], false, &[], &[], &temp_dir, &request, &logs)
+                }
+                "check_timeout" => super::launch_godot_check_with_timeout(
+                    binary,
+                    &[],
+                    false,
+                    &[],
+                    &[],
+                    &temp_dir,
+                    &request,
+                    &logs,
+                    Some(Duration::from_secs(10)),
+                ),
+                "import" => launch_godot_import(binary, &[], false, &temp_dir, &logs),
+                "patch" => {
+                    launch_godot_patch_runner(binary, &[], false, &[], &temp_dir, &request, &logs)
+                }
+                _ => unreachable!(),
+            };
+            let failure = result.expect_err("truncated validation output must fail");
+            assert_eq!(failure.kind, "output_capture_truncated");
+            assert!(failure.command.unwrap().contains("noisy godot"));
+            assert_eq!(failure.target.as_deref(), temp_dir.to_str());
+            assert_eq!(failure.actual.unwrap()["stdout_total_bytes"], output.len());
+            let artifacts = failure.artifacts.unwrap();
+            assert_eq!(artifacts["logs"], logs.to_string_lossy().as_ref());
+            assert!(
+                fs::metadata(&logs).unwrap().len() <= 2 * super::CAPTURED_STREAM_LIMIT_BYTES + 4096
+            );
+            for stream in ["stdout", "stderr"] {
+                let raw = logs.with_extension(format!("{stream}.txt"));
+                assert_eq!(
+                    artifacts[&format!("raw_{stream}")],
+                    raw.to_string_lossy().as_ref()
+                );
+                assert_eq!(fs::read(raw).unwrap(), output.as_bytes());
+            }
+        }
+        fs::remove_dir_all(temp_dir).unwrap();
     }
 
     #[test]
