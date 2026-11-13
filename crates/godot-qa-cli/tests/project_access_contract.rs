@@ -13,7 +13,7 @@ fn read(path: &str) -> String {
 
 #[test]
 fn all_godot_launchers_use_a_project_lease_or_a_guarded_delegate() {
-    let source = read("crates/godot-qa-process/src/lib.rs");
+    let source = read("crates/godot-qa-process/src/launch.rs");
     let expected = [
         ("launch_godot_import", "launch_godot_import_with_args("),
         ("launch_godot_import_with_args", "LaunchLease::acquire("),
