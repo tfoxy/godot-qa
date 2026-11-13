@@ -1,6 +1,6 @@
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub(super) fn aliases_input(output: &Path, input: &Path) -> io::Result<bool> {
     let output = match fs::canonicalize(output) {
@@ -76,4 +76,17 @@ fn same_file(_output: &Path, _input: &Path) -> io::Result<bool> {
         io::ErrorKind::Unsupported,
         "comparison output file identity checks require Unix or Windows",
     ))
+}
+
+pub(super) fn resolve_input_path(project_root: &Path, raw_path: Option<&str>) -> Option<PathBuf> {
+    let raw_path = raw_path?.trim();
+    if raw_path.is_empty() {
+        return None;
+    }
+    let path = Path::new(raw_path);
+    Some(if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        project_root.join(path)
+    })
 }

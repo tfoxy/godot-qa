@@ -1,4 +1,13 @@
-use super::*;
+use super::capture::{json_u64, live_screenshot_capture_from_response, protocol_error};
+use super::sequence::ScreenshotSequencePlan;
+#[cfg(test)]
+use super::sequence::screenshot_sequence_plan;
+use super::{LiveScreenshotCapture, ScreenshotSequenceOptions, screenshot_args_invalid};
+use godot_qa_core::config::ProjectConfig;
+use godot_qa_core::results::{CommandResult, FailureDetail};
+use godot_qa_runtime as runtime;
+use serde_json::{Map, Value, json};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_MAX_BYTES: u64 = 512 * 1024 * 1024;
 const HARD_MAX_BYTES: u64 = 1024 * 1024 * 1024;
@@ -307,6 +316,8 @@ fn decode_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use image::RgbaImage;
+    use std::fs;
     #[test]
     fn partial_responses_require_explicit_failures_and_valid_completion() {
         let options = super::super::tests::sequence_options();

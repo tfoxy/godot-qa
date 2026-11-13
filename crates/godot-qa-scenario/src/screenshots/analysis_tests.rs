@@ -1,6 +1,10 @@
 use super::*;
+use crate::screenshots::{compare_screenshot_files, compare_screenshot_files_cached};
+use image::Rgba;
+use std::fs;
 use std::hint::black_box;
 use std::time::Instant;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 fn temp_root(label: &str) -> PathBuf {
     let unique = SystemTime::now()
