@@ -796,3 +796,57 @@ fn journal_checksum_survives_precise_audio_floats_across_repeated_loads() {
     }
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn passing_texture_trial_retains_and_references_review_diff() {
+    let root = root();
+    let config = test_config(&root);
+    let (mut j, mut candidate) = evidence_fixture(&root);
+    let before = root.join("capture.png");
+    let after = root.join("candidate.png");
+    image::RgbaImage::from_pixel(8, 8, image::Rgba([10, 20, 30, 255]))
+        .save(&before)
+        .unwrap();
+    image::RgbaImage::from_pixel(8, 8, image::Rgba([90, 80, 70, 255]))
+        .save(&after)
+        .unwrap();
+    candidate["snapshot_artifacts"]["capture"]["screenshot"] = json!(after);
+    evidence::candidate(&j, &candidate).unwrap();
+    j.candidate = Some(candidate);
+    finish_review(&config, &mut j).unwrap();
+
+    let diff = j.evidence_root.join("coin-diff.png");
+    assert!(
+        diff.is_file(),
+        "passing texture trial omitted its review diff"
+    );
+    let image = image::open(&diff).unwrap().into_rgba8();
+    assert_eq!(image.dimensions(), (8, 8));
+    assert!(image.pixels().all(|pixel| pixel.0 == [255, 0, 0, 255]));
+    assert_eq!(
+        j.evidence_hashes["coin-diff.png"],
+        file_hash(&diff).unwrap()
+    );
+    let review = read_json(&j.dir().join("review.json")).unwrap();
+    assert_eq!(review["technical_status"], "pass");
+    assert_eq!(review["comparisons"][0]["image_diff"]["ok"], true);
+    assert_eq!(
+        review["comparisons"][0]["image_diff"]["data"]["artifacts"]["diff"],
+        json!(diff)
+    );
+    assert_eq!(result("asset try", &j).data["technical_status"], "pass");
+
+    let ordinary_diff = root.join("ordinary-diff.png");
+    let comparison = crate::screenshots::compare_screenshot_files(
+        "screenshot compare",
+        &after,
+        &before,
+        1.0,
+        Some(&ordinary_diff),
+        None,
+    );
+    assert!(comparison.ok);
+    assert!(!ordinary_diff.exists());
+    assert!(comparison.data["artifacts"].get("diff").is_none());
+    fs::remove_dir_all(root).unwrap();
+}

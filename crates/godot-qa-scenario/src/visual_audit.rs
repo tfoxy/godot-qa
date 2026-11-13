@@ -365,7 +365,12 @@ fn normalize_live_target(value: Value) -> Value {
         if let Some(rect) = object
             .get("visual_evidence")
             .and_then(Value::as_object)
-            .and_then(|evidence| evidence.get("rect"))
+            .and_then(|evidence| {
+                evidence
+                    .get("rect_screenshot")
+                    .filter(|rect| !rect.is_null())
+                    .or_else(|| evidence.get("rect"))
+            })
             .cloned()
             .filter(|rect| !rect.is_null())
         {
@@ -732,6 +737,7 @@ fn looks_like_single_target(object: &Map<String, Value>) -> bool {
         || object.contains_key("qa_id")
         || object.contains_key("target_rect")
         || object.contains_key("rect")
+        || object.contains_key("rect_screenshot")
         || object.contains_key("bounds")
         || object.contains_key("visual_evidence")
 }
@@ -752,7 +758,14 @@ fn normalize_target(value: &Value, index: usize) -> TargetEvidence {
         .or_else(|| evidence.and_then(|evidence| string_field(evidence, "target")))
         .unwrap_or(fallback_id);
     let rect = object
-        .get("target_rect")
+        .get("rect_screenshot")
+        .filter(|rect| !rect.is_null())
+        .or_else(|| {
+            evidence
+                .and_then(|evidence| evidence.get("rect_screenshot"))
+                .filter(|rect| !rect.is_null())
+        })
+        .or_else(|| object.get("target_rect"))
         .or_else(|| object.get("rect"))
         .or_else(|| object.get("bounds"))
         .or_else(|| evidence.and_then(|evidence| evidence.get("target_rect")))
@@ -1451,6 +1464,83 @@ mod tests {
             evidence["targets"][0]["target_rect"],
             json!([20.0, 20.0, 32.0, 32.0])
         );
+    }
+
+    #[test]
+    fn visual_audit_live_uses_screenshot_rect_at_2x_scale() {
+        let root = temp_dir("visual-audit-live-scaled");
+        let path = root.join("scaled.png");
+        save_png(&path, 160, 160, |x, y| {
+            if (40..104).contains(&x) && (40..104).contains(&y) {
+                [245, 245, 245, 255]
+            } else {
+                [20, 24, 28, 255]
+            }
+        });
+        let evidence = normalize_live_target_evidence(json!({"targets": [{
+            "locator": "qa:scaled",
+            "visual_evidence": {
+                "rect": [20, 20, 32, 32],
+                "rect_screenshot": [40, 40, 64, 64]
+            }
+        }]}));
+        assert_eq!(
+            evidence["targets"][0]["target_rect"],
+            json!([40, 40, 64, 64])
+        );
+        let report = audit(&path, evidence);
+        let metrics = &report.targets[0];
+        assert_eq!(metrics.target_id, "qa:scaled");
+        assert_eq!(metrics.target_rect, [40.0, 40.0, 64.0, 64.0]);
+        assert_eq!(metrics.pixel_area, 4096);
+        assert_eq!(
+            (metrics.bounding_box_width, metrics.bounding_box_height),
+            (64, 64)
+        );
+        assert_eq!(
+            metrics.estimated_target_color_or_median,
+            Some([245, 245, 245, 255])
+        );
+        assert!(metrics.contrast_ratio_estimate.unwrap() > 3.0);
+        assert!(report.findings.is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn visual_audit_saved_uses_screenshot_rect_at_2x_scale() {
+        let root = temp_dir("visual-audit-saved-scaled");
+        let path = root.join("scaled.png");
+        save_png(&path, 160, 160, |x, y| {
+            if (40..104).contains(&x) && (40..104).contains(&y) {
+                [245, 245, 245, 255]
+            } else {
+                [20, 24, 28, 255]
+            }
+        });
+        for evidence in [
+            json!({"target": "qa:scaled", "rect": [20, 20, 32, 32], "rect_screenshot": [40, 40, 64, 64]}),
+            json!({"target": "qa:scaled", "target_rect": [20, 20, 32, 32], "visual_evidence": {"rect": [20, 20, 32, 32], "rect_screenshot": [40, 40, 64, 64]}}),
+            json!({"rect_screenshot": [40, 40, 64, 64]}),
+            json!({"rect": [40, 40, 64, 64]}),
+            json!({"rect": [40, 40, 64, 64], "rect_screenshot": null}),
+        ] {
+            let report = audit(&path, evidence);
+            assert_eq!(report.targets.len(), 1);
+            let metrics = &report.targets[0];
+            assert_eq!(metrics.target_rect, [40.0, 40.0, 64.0, 64.0]);
+            assert_eq!(metrics.pixel_area, 4096);
+            assert_eq!(
+                (metrics.bounding_box_width, metrics.bounding_box_height),
+                (64, 64)
+            );
+            assert_eq!(
+                metrics.estimated_target_color_or_median,
+                Some([245, 245, 245, 255])
+            );
+            assert!(metrics.contrast_ratio_estimate.unwrap() > 3.0);
+            assert!(report.findings.is_empty());
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

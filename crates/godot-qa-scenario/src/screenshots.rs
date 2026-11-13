@@ -13,7 +13,9 @@ use crate::visual_risk::{self, ScreenshotArtifact, VisualRiskOptions};
 
 #[path = "screenshots/burst.rs"]
 mod burst;
+mod output_paths;
 
+const MAX_COMPARISON_PIXELS: u64 = 64_000_000;
 const DEFAULT_SEQUENCE_ENGINE_FPS: f64 = 60.0;
 const MAX_SEQUENCE_REQUESTED_FRAMES: u64 = 100_000;
 const MAX_SEQUENCE_CAPTURED_FRAMES: usize = 1_000;
@@ -800,6 +802,7 @@ pub fn compare_screenshots(
                     | "baseline_not_found"
                     | "image_decode_failed"
                     | "artifact_write_failed"
+                    | "screenshot_compare_resource_limit"
             )
         })
         .unwrap_or(false)
@@ -839,6 +842,29 @@ pub fn compare_screenshot_files(
     )
 }
 
+/// Retain a raw diff for review even when the comparison passes.
+pub(crate) fn compare_screenshot_files_for_review(
+    command: &str,
+    actual_path: &Path,
+    baseline_path: &Path,
+    threshold: f64,
+    diff_path: Option<&Path>,
+    metrics_path: Option<&Path>,
+) -> CommandResult {
+    compare_screenshot_files_inner(
+        command,
+        actual_path,
+        baseline_path,
+        threshold,
+        diff_path,
+        metrics_path,
+        ScreenshotComparison {
+            always_write_diff: true,
+            ..ScreenshotComparison::default()
+        },
+    )
+}
+
 /// Opt-in per-channel tolerance for the isolated presented-startup assertion.
 /// The ordinary screenshot comparator remains exact by default.
 pub fn compare_presented_startup_files(
@@ -859,13 +885,14 @@ pub fn compare_presented_startup_files(
         metrics_path,
         ScreenshotComparison {
             channel_tolerance: Some(channel_tolerance),
-            actual: None,
+            ..ScreenshotComparison::default()
         },
     )
 }
 
 #[derive(Default)]
 struct ScreenshotComparison<'a> {
+    always_write_diff: bool,
     channel_tolerance: Option<u8>,
     actual: Option<Result<&'a ScreenshotAnalysis, String>>,
 }
@@ -947,6 +974,50 @@ fn compare_screenshot_files_inner(
         );
     }
 
+    // Validate every destination before either metrics or the diff can be written.
+    for output in [diff_path, metrics_path].into_iter().flatten() {
+        for input in [actual_path, baseline_path] {
+            match output_paths::aliases_input(output, input) {
+                Ok(false) => {}
+                Ok(true) => {
+                    return result(
+                        false,
+                        command,
+                        "screenshot comparison failed",
+                        actual_path,
+                        baseline_path,
+                        threshold,
+                        None,
+                        None,
+                        vec![FailureDetail {
+                            kind: "screenshot_output_alias".to_string(),
+                            command: Some(command.to_string()),
+                            path: Some(output.to_string_lossy().into_owned()),
+                            message: Some(
+                                "comparison output aliases an input screenshot".to_string(),
+                            ),
+                            expected: Some(json!(
+                                "diff and metrics paths distinct from both input files"
+                            )),
+                            actual: Some(json!({"output": output, "input": input})),
+                            ..FailureDetail::default()
+                        }],
+                    );
+                }
+                Err(error) => {
+                    return artifact_write_failure(
+                        command,
+                        actual_path,
+                        baseline_path,
+                        threshold,
+                        output,
+                        error,
+                    );
+                }
+            }
+        }
+    }
+
     let owned_actual;
     let actual_image = match comparison.actual {
         Some(Ok(analysis)) => &analysis.pixels,
@@ -970,6 +1041,38 @@ fn compare_screenshot_files_inner(
         }
     };
 
+    // Mismatched thin inputs can have a huge union canvas despite each input
+    // being small. Bound both the comparison scan and the RGBA diff allocation.
+    let width = actual_image.width().max(baseline_image.width());
+    let height = actual_image.height().max(baseline_image.height());
+    let pixels = u64::from(width) * u64::from(height);
+    if pixels > MAX_COMPARISON_PIXELS {
+        return result(
+            false,
+            command,
+            "screenshot comparison failed",
+            actual_path,
+            baseline_path,
+            threshold,
+            None,
+            None,
+            vec![FailureDetail {
+                kind: "screenshot_compare_resource_limit".to_string(),
+                command: Some(command.to_string()),
+                path: Some(actual_path.to_string_lossy().into_owned()),
+                message: Some("comparison canvas exceeds the screenshot pixel limit".to_string()),
+                expected: Some(json!({"max_comparison_pixels": MAX_COMPARISON_PIXELS})),
+                actual: Some(json!({
+                    "actual_size": [actual_image.width(), actual_image.height()],
+                    "baseline_size": [baseline_image.width(), baseline_image.height()],
+                    "comparison_size": [width, height],
+                    "comparison_pixels": pixels,
+                })),
+                ..FailureDetail::default()
+            }],
+        );
+    }
+
     let (metrics, ok) =
         compare_images_with_tolerance(actual_image, &baseline_image, threshold, channel_tolerance);
     let mut artifacts = Map::new();
@@ -991,7 +1094,7 @@ fn compare_screenshot_files_inner(
         );
     }
 
-    if !ok || channel_tolerance.is_some() {
+    if !ok || channel_tolerance.is_some() || comparison.always_write_diff {
         if let Some(path) = diff_path {
             if let Err(error) =
                 write_diff_image(path, &comparison_diff_image(actual_image, &baseline_image))

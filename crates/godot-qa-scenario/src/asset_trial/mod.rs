@@ -388,6 +388,9 @@ fn execute_trial(
     verify_owned(j)?;
     check_hash(&scene, j.output_hash.as_deref().unwrap())?;
     evidence::candidate(j, j.candidate.as_ref().unwrap())?;
+    finish_review(config, j)
+}
+fn finish_review(config: &ProjectConfig, j: &mut Journal) -> Result<(), FailureDetail> {
     let mut comparisons = Vec::new();
     for binding in &j.manifest.bindings {
         if binding.evidence.snapshot.is_some() {
@@ -395,7 +398,7 @@ fn execute_trial(
             let after = evidence::capture_artifact(j.candidate.as_ref().unwrap(), binding)?;
             let diff = j.evidence_root.join(format!("{}-diff.png", binding.id));
             let metrics = j.evidence_root.join(format!("{}-metrics.json", binding.id));
-            let comparison = crate::screenshots::compare_screenshot_files(
+            let comparison = crate::screenshots::compare_screenshot_files_for_review(
                 "asset try",
                 &after,
                 &before,
