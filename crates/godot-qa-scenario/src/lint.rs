@@ -361,7 +361,7 @@ fn collect_static_qa_ids(root: &Path, qa_ids: &mut HashSet<String>) {
                 let rest = &text[caps.0 + 3..];
                 let id: String = rest
                     .chars()
-                    .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '/'))
+                    .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '/' | '.'))
                     .collect();
                 if !id.is_empty() {
                     qa_ids.insert(id);
@@ -382,12 +382,12 @@ fn collect_static_qa_ids(root: &Path, qa_ids: &mut HashSet<String>) {
                         {
                             continue;
                         }
-                        if quoted
-                            .chars()
-                            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '/'))
-                            && (quoted.contains('_')
-                                || quoted.contains('-')
-                                || quoted.contains('/'))
+                        if quoted.chars().all(|c| {
+                            c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '/' | '.')
+                        }) && (quoted.contains('_')
+                            || quoted.contains('-')
+                            || quoted.contains('/')
+                            || quoted.contains('.'))
                         {
                             qa_ids.insert(quoted.to_string());
                         }
@@ -422,39 +422,37 @@ fn collect_qa_locators(doc: &Value) -> HashSet<String> {
             }
         }
     }
-    if let Some(asserts) = doc.get("assert").and_then(Value::as_array) {
-        for a in asserts {
-            if let Some(o) = a.as_object() {
-                for key in [
-                    "exists",
-                    "visible",
-                    "hidden",
-                    "text_equals",
-                    "text_contains",
-                    "text_not_contains",
-                    "text_matches",
-                    "text_not_equals",
-                    "visible_pixels",
-                    "not_occluded",
-                    "renders_above",
-                    "renders_below",
-                    "within_seconds",
-                    "never",
-                    "near",
-                    "distance_within",
-                    "surface_probe",
-                    "surface_type",
-                    "screenshot_match",
-                ] {
-                    if let Some(v) = o.get(key) {
-                        if let Some(s) = v.as_str() {
-                            push_qa_locator(&mut out, s);
-                        }
-                        if let Some(vo) = v.as_object() {
-                            for field in ["target", "source", "other", "from", "to"] {
-                                if let Some(s) = vo.get(field).and_then(Value::as_str) {
-                                    push_qa_locator(&mut out, s);
-                                }
+    for a in collect_assertions(doc) {
+        if let Some(o) = a.as_object() {
+            for key in [
+                "exists",
+                "visible",
+                "hidden",
+                "text_equals",
+                "text_contains",
+                "text_not_contains",
+                "text_matches",
+                "text_not_equals",
+                "visible_pixels",
+                "not_occluded",
+                "renders_above",
+                "renders_below",
+                "within_seconds",
+                "never",
+                "near",
+                "distance_within",
+                "surface_probe",
+                "surface_type",
+                "screenshot_match",
+            ] {
+                if let Some(v) = o.get(key) {
+                    if let Some(s) = v.as_str() {
+                        push_qa_locator(&mut out, s);
+                    }
+                    if let Some(vo) = v.as_object() {
+                        for field in ["target", "source", "other", "from", "to"] {
+                            if let Some(s) = vo.get(field).and_then(Value::as_str) {
+                                push_qa_locator(&mut out, s);
                             }
                         }
                     }

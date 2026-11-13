@@ -556,6 +556,116 @@ fn scenario_lint_references_detects_missing_and_known_qa_ids() {
 }
 
 #[test]
+fn scenario_lint_references_accepts_dotted_static_qa_ids() {
+    let root = temp_dir("scenario-lint-dotted-references");
+    write(
+        &root.join("ui/lobby.tscn"),
+        "[gd_scene format=3]\n\n[node name=\"Lobby\" type=\"Control\"]\nmetadata/qa_id = \"lobby.team0\"\n",
+    );
+    write(&root.join("ui/ids.gd"), "# qa:lobby.team1\n");
+    write(
+        &root.join("qa/scenarios/lobby.json"),
+        &json!({
+            "name": "lobby",
+            "scene": "res://ui/lobby.tscn",
+            "steps": [],
+            "assert": [{"visible": "qa:lobby.team0"}, {"visible": "qa:lobby.team1"}]
+        })
+        .to_string(),
+    );
+
+    let result = run_scenario_lint(&config(&root), LintOptions::default());
+    assert!(result.ok);
+    assert!(
+        !result.data["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["rule_id"] == "missing_qa_id_reference"),
+        "dotted static IDs should resolve: {:?}",
+        result.data["findings"]
+    );
+}
+
+#[test]
+fn scenario_lint_references_checks_step_assertions() {
+    let root = temp_dir("scenario-lint-step-assert-references");
+    write(&root.join("ui/ids.gd"), "# qa:known_button\n");
+    for id in ["known_button", "missing_button"] {
+        for assertion in [
+            json!({"visible": format!("qa:{id}")}),
+            json!({"text_equals": {"target": format!("qa:{id}"), "expected": "Ready"}}),
+            json!({"renders_above": {"target": "qa:known_button", "other": format!("qa:{id}")}}),
+        ] {
+            write(
+                &root.join("qa/scenarios/step_assert.json"),
+                &json!({
+                    "name": "step_assert",
+                    "scene": "res://scene.tscn",
+                    "steps": [{"assert": [assertion]}]
+                })
+                .to_string(),
+            );
+
+            let result = run_scenario_lint(&config(&root), LintOptions::default());
+            assert!(result.ok, "{:?}", result.failures);
+            let missing: Vec<_> = result.data["findings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|f| f["rule_id"] == "missing_qa_id_reference")
+                .collect();
+            if id == "known_button" {
+                assert!(missing.is_empty(), "known ID should resolve: {missing:?}");
+            } else {
+                assert_eq!(missing.len(), 1, "findings: {:?}", result.data["findings"]);
+                assert_eq!(missing[0]["target"], "qa:missing_button");
+            }
+        }
+    }
+}
+
+#[test]
+fn scenario_lint_step_assertion_reference_suppression_respects_target() {
+    let root = temp_dir("scenario-lint-step-assert-suppression");
+    write(
+        &root.join("qa/scenarios/step_assert.json"),
+        &json!({
+            "name": "step_assert",
+            "scene": "res://scene.tscn",
+            "lint": {"suppressions": {"missing_qa_id_reference": {
+                "reason": "Created dynamically by the project",
+                "target": "qa:dynamic_button"
+            }}},
+            "steps": [{"assert": [
+                {"visible": "qa:dynamic_button"},
+                {"visible": "qa:missing_button"}
+            ]}]
+        })
+        .to_string(),
+    );
+
+    let result = run_scenario_lint(&config(&root), LintOptions::default());
+    assert!(result.ok);
+    let missing: Vec<_> = result.data["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["rule_id"] == "missing_qa_id_reference")
+        .collect();
+    assert_eq!(missing.len(), 1);
+    assert_eq!(missing[0]["target"], "qa:missing_button");
+    let suppressed = result.data["suppressed_findings"].as_array().unwrap();
+    assert_eq!(suppressed.len(), 1);
+    assert_eq!(suppressed[0]["rule_id"], "missing_qa_id_reference");
+    assert_eq!(suppressed[0]["target"], "qa:dynamic_button");
+    assert_eq!(
+        suppressed[0]["suppression"]["reason"],
+        "Created dynamically by the project"
+    );
+}
+
+#[test]
 fn scenario_lint_missing_extends_base_reports_invalid_scenario_file() {
     let root = temp_dir("scenario-lint-missing-base");
     // A concrete scenario whose `extends` base does not exist now fails at load

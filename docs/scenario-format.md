@@ -225,6 +225,8 @@ Rule IDs and intent:
 - `malformed_suppression` (error): detects malformed or unsupported suppression metadata. Why it matters: malformed suppression should not silently hide findings. Suggested fix: use the documented suppression shape with a non-empty reason.
 - Contract preflight errors also use stable rule IDs such as `invalid_scenario_file`, `project_missing`, `scenarios_dir_missing`, `scenario_not_found`, and `scenario_ambiguous`.
 
+The static QA ID scan recognizes dotted IDs such as `metadata/qa_id = "lobby.team0"` in `.tscn` files. Reference checks use the same supported assertion types and locator fields in top-level `assert` arrays and `steps[].assert` arrays. For example, `steps: [{"assert": [{"visible": "qa:lobby.team0"}]}]` resolves that static ID; an undefined ID in the same assertion emits `missing_qa_id_reference`. These warnings use the existing suppression rules below, including optional target matching.
+
 Suppressions are YAML/JSON-friendly and require a reason:
 
 ```yaml
