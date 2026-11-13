@@ -149,12 +149,74 @@ fn live_gate_manifest_contract_valid_manifests_and_listing_metadata() {
 }
 
 #[test]
-fn live_gate_manifest_contract_missing_live_gates_dir_lists_empty() {
+fn live_gate_manifest_contract_missing_live_gates_dir_reports_failure() {
     let root = temp_dir("live-gate-missing-dir");
     let listed = list_live_gates(&make_config(&root));
     assert!(listed.gates.is_empty());
-    assert!(listed.failures.is_empty());
+    assert_directory_discovery_failure(&listed.failures, &root.join("qa/live_gates"), "NotFound");
     fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn live_gate_manifest_contract_unreadable_live_gates_dir_reports_failure() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = temp_dir("live-gate-unreadable-dir");
+    let dir = root.join("qa/live_gates");
+    fs::create_dir_all(&dir).unwrap();
+    let permissions = fs::metadata(&dir).unwrap().permissions();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o000)).unwrap();
+    let read_error = fs::read_dir(&dir).err();
+    let listed = list_live_gates(&make_config(&root));
+    fs::set_permissions(&dir, permissions).unwrap();
+    fs::remove_dir_all(root).unwrap();
+
+    assert_eq!(
+        read_error
+            .expect("fixture directory must be unreadable")
+            .kind(),
+        std::io::ErrorKind::PermissionDenied
+    );
+    assert!(listed.gates.is_empty());
+    assert_directory_discovery_failure(&listed.failures, &dir, "PermissionDenied");
+}
+
+#[cfg(unix)]
+#[test]
+fn live_gate_manifest_contract_unreadable_nested_dir_reports_failure() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = temp_dir("live-gate-unreadable-nested-dir");
+    let dir = root.join("qa/live_gates/nested");
+    fs::create_dir_all(&dir).unwrap();
+    let permissions = fs::metadata(&dir).unwrap().permissions();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o000)).unwrap();
+    let read_error = fs::read_dir(&dir).err();
+    let listed = list_live_gates(&make_config(&root));
+    fs::set_permissions(&dir, permissions).unwrap();
+    fs::remove_dir_all(root).unwrap();
+
+    assert_eq!(
+        read_error
+            .expect("fixture directory must be unreadable")
+            .kind(),
+        std::io::ErrorKind::PermissionDenied
+    );
+    assert_directory_discovery_failure(&listed.failures, &dir, "PermissionDenied");
+}
+
+fn assert_directory_discovery_failure(failures: &[FailureDetail], dir: &Path, actual: &str) {
+    assert_eq!(failures.len(), 1);
+    let failure = &failures[0];
+    assert_eq!(failure.kind, "live_gate_discovery_failed");
+    assert_eq!(failure.path.as_deref(), dir.to_str());
+    assert_eq!(
+        failure.expected,
+        Some(json!("readable live gate directory"))
+    );
+    assert_eq!(failure.actual, Some(json!(actual)));
+    assert!(failure.message.as_deref().unwrap().contains("live gate"));
 }
 
 #[test]
@@ -274,6 +336,57 @@ fn live_gate_manifest_contract_validates_required_optional_methods_and_probes() 
 }
 
 #[test]
+fn live_gate_manifest_rejects_methods_with_undeclared_anchors() {
+    assert_undeclared_check_anchors_rejected("methods", "qa_get_state");
+}
+
+#[test]
+fn live_gate_manifest_rejects_probes_with_undeclared_anchors() {
+    assert_undeclared_check_anchors_rejected("probes", "qa_probe_surface");
+}
+
+fn assert_undeclared_check_anchors_rejected(field: &str, name: &str) {
+    let path = Path::new("gate.json");
+    for anchors in [
+        json!({}),
+        json!({"required": ["main_menu"], "optional": ["debug_overlay"]}),
+    ] {
+        for check in [
+            json!(format!("main_mneu.{name}")),
+            json!({"anchor": "main_mneu", "name": name}),
+        ] {
+            let document = json!({
+                "name": "gate",
+                "scene": "res://main.tscn",
+                "anchors": anchors,
+                (field): [check],
+            });
+            let err = validate_live_gate_manifest(&document, path).unwrap_err();
+            assert_eq!(err.kind, "live_gate_validation_failed");
+            assert_eq!(err.path.as_deref(), Some("gate.json"));
+            assert_eq!(err.actual, Some(json!("main_mneu")));
+            assert!(err.message.unwrap().contains(field));
+            assert!(err.expected.unwrap().as_str().unwrap().contains("anchors"));
+        }
+    }
+
+    validate_live_gate_manifest(
+        &json!({
+            "name": "gate",
+            "scene": "res://main.tscn",
+            "anchors": {"required": ["main_menu"], "optional": ["debug_overlay"]},
+            (field): [
+                name,
+                format!("main_menu.{name}"),
+                {"anchor": "debug_overlay", "name": name},
+            ],
+        }),
+        path,
+    )
+    .unwrap();
+}
+
+#[test]
 fn live_gate_run_contract() {
     let root = temp_dir("live-gate-run");
     write(
@@ -363,6 +476,64 @@ fn live_gate_run_contract() {
             .any(|failure| failure.kind == "surface_probe_mismatch")
     );
     assert!(result.data["artifacts"]["result"].as_str().is_some());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn live_gate_shutdown_failure_is_persisted_in_final_verdict() {
+    let root = temp_dir("live-gate-shutdown-failure");
+    write(
+        &root.join("qa/live_gates/gate.json"),
+        &json!({
+            "name": "gate",
+            "scene": "res://main.tscn",
+            "anchors": {"required": ["main_menu"]},
+            "methods": ["qa_get_state"],
+            "probes": ["qa_probe_surface"],
+        })
+        .to_string(),
+    );
+    let config = make_run_config(&root);
+    let stop_count = std::cell::Cell::new(0);
+    let hooks = LiveGateRunHooks {
+        session_start: &|_, _, _, _| ok_result("session start", json!({"session_id": "s1"})),
+        session_stop: &|_| {
+            stop_count.set(stop_count.get() + 1);
+            fail_result("session stop", "session_stop_failed", Some("s1"))
+        },
+        load_session: &load_attached_session,
+        protocol: &|_, command, protocol_command, _| match protocol_command {
+            godot_qa_runtime::SESSION_STATUS => ok_result(command, json!({"ready": true})),
+            godot_qa_runtime::ERRORS_READ => ok_result(command, json!({"errors": []})),
+            godot_qa_runtime::NODE_INSPECT => {
+                ok_result(command, json!({"resolved": "path:/root/MainMenu"}))
+            }
+            godot_qa_runtime::ASSERT_STATE_MATCHES | godot_qa_runtime::ASSERT_SURFACE_PROBE => {
+                ok_result(command, json!({}))
+            }
+            other => panic!("unexpected protocol command: {other}"),
+        },
+    };
+
+    let result = run_live_gate_with_hooks(&config, "gate", LiveGateRunOptions::default(), &hooks);
+
+    assert_eq!(stop_count.get(), 1);
+    assert!(!result.ok);
+    assert_eq!(result.exit_code, 1);
+    assert_eq!(result.failures.len(), 1);
+    assert_eq!(result.failures[0].kind, "session_stop_failed");
+    assert_eq!(result.data["anchors"][0]["status"], "passed");
+    for artifact in ["result", "summary"] {
+        let path = result.data["artifacts"][artifact].as_str().unwrap();
+        let persisted: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(persisted["ok"], json!(result.ok), "{path}");
+        if artifact == "result" {
+            assert_eq!(persisted["failures"], json!(result.failures), "{path}");
+        } else {
+            assert_eq!(persisted["failure_count"], json!(result.failures.len()));
+            assert_eq!(persisted["failed_anchor_count"], 0);
+        }
+    }
     fs::remove_dir_all(root).unwrap();
 }
 

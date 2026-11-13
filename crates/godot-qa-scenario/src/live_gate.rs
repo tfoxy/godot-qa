@@ -195,17 +195,37 @@ pub fn validate_live_gate_manifest(data: &Value, path: &Path) -> Result<(), Fail
     let anchors = document.get("anchors");
     require_anchor_refs(anchors, path, "required")?;
     require_anchor_refs(anchors, path, "optional")?;
-    collect_method_checks(document.get("methods"), path)?;
-    collect_probe_checks(document.get("probes"), path)?;
+    let mut declared_anchors = collect_anchor_refs(anchors, path, "required")?;
+    declared_anchors.extend(collect_anchor_refs(anchors, path, "optional")?);
+    let methods = collect_method_checks(document.get("methods"), path)?;
+    let probes = collect_probe_checks(document.get("probes"), path)?;
+    for (field, anchor) in methods
+        .iter()
+        .map(|check| ("methods", &check.anchor))
+        .chain(probes.iter().map(|check| ("probes", &check.anchor)))
+    {
+        if let Some(anchor) = anchor
+            && !declared_anchors.contains(anchor)
+        {
+            return Err(validation_failure(
+                path,
+                &format!("live gate field '{field}' references undeclared anchor '{anchor}'"),
+                json!("anchor declared in anchors.required or anchors.optional"),
+                json!(anchor),
+            ));
+        }
+    }
     Ok(())
 }
 
 pub fn list_live_gates(config: &ProjectConfig) -> LiveGateListResult {
     let mut paths = Vec::new();
-    collect_manifest_paths(&live_gates_dir(config), &mut paths);
+    let mut failures = Vec::new();
+    if let Err(failure) = collect_manifest_paths(&live_gates_dir(config), &mut paths) {
+        failures.push(failure);
+    }
 
     let mut gates = Vec::new();
-    let mut failures = Vec::new();
 
     for path in paths {
         match load_live_gate_manifest(&path).and_then(|value| {
@@ -435,6 +455,13 @@ pub fn run_live_gate_with_hooks(
         session.insert("errors_failure".to_string(), json!(errors.failures));
     }
 
+    if started {
+        let stop = (hooks.session_stop)(config);
+        if !stop.ok {
+            failures.extend(stop.failures);
+        }
+    }
+
     let ok = failures.is_empty();
     let artifact_result = prepare_live_gate_artifacts(
         config,
@@ -452,13 +479,6 @@ pub fn run_live_gate_with_hooks(
         Err(mut failure) => {
             failure.command = Some(command.to_string());
             failures.push(failure);
-        }
-    }
-
-    if started {
-        let stop = (hooks.session_stop)(config);
-        if !stop.ok {
-            failures.extend(stop.failures);
         }
     }
 
@@ -848,20 +868,30 @@ fn check_applies_to_anchor(anchor: Option<&str>, name: &str) -> bool {
         .unwrap_or(true)
 }
 
-fn collect_manifest_paths(dir: &Path, paths: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
+fn collect_manifest_paths(dir: &Path, paths: &mut Vec<PathBuf>) -> Result<(), FailureDetail> {
+    let entries = fs::read_dir(dir).map_err(|error| discovery_failure(dir, error))?;
+    for entry in entries {
+        let path = entry.map_err(|error| discovery_failure(dir, error))?.path();
         if path.is_dir() {
-            collect_manifest_paths(&path, paths);
+            collect_manifest_paths(&path, paths)?;
             continue;
         }
         match path.extension().and_then(|ext| ext.to_str()) {
             Some("json") | Some("yaml") | Some("yml") => paths.push(path),
             _ => {}
         }
+    }
+    Ok(())
+}
+
+fn discovery_failure(path: &Path, error: std::io::Error) -> FailureDetail {
+    FailureDetail {
+        kind: "live_gate_discovery_failed".to_string(),
+        path: Some(path.to_string_lossy().into_owned()),
+        message: Some(format!("unable to read live gate directory: {error}")),
+        expected: Some(json!("readable live gate directory")),
+        actual: Some(json!(format!("{:?}", error.kind()))),
+        ..FailureDetail::default()
     }
 }
 

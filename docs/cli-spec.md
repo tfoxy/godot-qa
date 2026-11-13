@@ -3458,9 +3458,11 @@ Example run success payload:
 
 Failure behavior:
 
-- `live-gate list` exits non-zero when `qa/live_gates/` is missing, manifests are malformed, gate names are duplicated, or paths are unsafe.
+- `live-gate list` exits non-zero when `qa/live_gates/` is missing or unreadable (including nested directories), manifests are malformed, gate names are duplicated, or paths are unsafe. Directory discovery I/O errors use `live_gate_discovery_failed` with the failing directory path, expected `readable live gate directory`, and the actual I/O error kind (for example, `PermissionDenied`). The CLI's missing-directory preflight uses `missing_live_gates_dir`.
 - `live-gate run` exits non-zero when the gate is missing or ambiguous, required anchors cannot resolve, an optional anchor is missing under `--strict`, a QA method is rejected, a probe fails, `session.status` reports stale or invalid session metadata, `errors.read` reports runtime errors, or overlay-hidden verification cannot be proven through documented project-owned QA surfaces.
 - Optional anchors produce structured warnings by default and do not hide required-anchor failures.
+- Method and probe checks that target an anchor must name one declared in `anchors.required` or `anchors.optional`; undeclared references fail manifest validation with `live_gate_validation_failed`.
+- A gate stops the session it started before writing its final verdict. Shutdown failures fail the command and are included in `result.json` failures and the `summary.json` failure count; both artifacts record `ok: false`. Attached sessions are left running.
 - Failure payloads identify `command: "live-gate run"`, the gate name, anchor name, locator, expected state, actual state, bridge command when applicable, and artifact paths when available.
 
 ## Android live sessions
