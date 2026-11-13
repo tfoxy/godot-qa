@@ -41,6 +41,8 @@ Still planned, not implemented in S1:
 
 ## Project Configuration
 
+Project discovery starts from `--project` when supplied, otherwise from the current directory. It selects the nearest ancestor (including that directory) containing `project.godot`, even when a nearer directory contains `Cargo.toml`. Only when no Godot ancestor exists does the nearest Cargo root serve as a fallback; without either marker, the starting directory is used. Config, scenarios, and relative artifact paths resolve against the selected project root. For example, running from `game/native/` with `game/native/Cargo.toml` and `game/project.godot` loads `game/qa/config.yaml` and resolves `--artifact-dir qa/output` to `game/qa/output`. An explicit `--project` starts discovery from that path instead of the current directory; a nonexistent path remains selected so commands can report it as missing.
+
 Projects may define optional `godot-qa` settings in `qa/config.yaml`. Projects may also define uncommitted local overrides in `qa/config.local.yaml`.
 
 ```yaml
@@ -1333,7 +1335,7 @@ With `--verbose`, `doctor` also adds:
 Usage/parse failures return `command: "parse"` with `type: "usage_error"` and exit status `2`.
 This includes unknown commands and missing required nested subcommands such as `godot-qa scenario`.
 
-`import` runs Godot asset import and returns the normal `CommandResult` envelope with structured launch/import failures. It intentionally validates only the prerequisites it needs: Godot binary discovery, project-root existence, and writable artifact output. Launch failures and non-zero exits keep artifact paths attached so follow-up automation can inspect logs and result payloads.
+`import` runs Godot asset import and returns the normal `CommandResult` envelope with structured launch/import failures. It intentionally validates only the prerequisites it needs: Godot binary discovery, project-root existence, and writable artifact output. Launch failures and non-zero exits keep artifact paths attached so follow-up automation can inspect logs and result payloads. Import scans Godot output with the shared log scanner and project `logs.ignore` patterns before deciding success: an unignored `ERROR:` or `SCRIPT ERROR:` line fails with `type: "godot_log_error"` even when Godot exits with status zero. Warning lines remain advisory.
 
 Example success shape:
 
@@ -1385,6 +1387,8 @@ Script enumeration rules for `--all-scripts`:
 
 `check` and `check --scene` return one bounded scene result under `data`; bare `check` uses `run/main_scene` from `project.godot`. `check --all-scenes` keeps per-scene status under `data.scenes`, `check --script` and `check --all-scripts` keep per-script status under `data.scripts`, and `check --tests` keeps per-test status under `data.tests`. Actionable validation failures are expected to identify the command family, target, expected state, actual state, and artifact paths when available.
 
+Import and scene/script checks require their artifact directories, metadata, and final `result.json` writes to succeed. A failed required write returns `type: "artifact_write_failed"` with the failed path and OS error, `ok: false`, and a non-zero exit, even when validation otherwise passed; a reported artifact path alone is not proof that the file was saved.
+
 A missing or empty `qa/scenarios` directory is a valid startup state for `check`. `check --all-scenes` can still enumerate zero or more project scenes, and `check --tests` reports manifest-specific setup failures such as `test_manifest_missing` rather than stopping at scenario scaffold validation.
 
 `check --tests` requires:
@@ -1409,7 +1413,7 @@ A missing or empty `qa/scenarios` directory is a valid startup state for `check`
 - `--profile <name>` selects one manifest profile. Profiles may contain `tests`, `tags`, or both; their selected tests are also a union.
 - bare `--profile` enables diagnostic profiling for the selected manifest tests. It may be combined with `--test <id>`, `--tag <tag>`, or `--profile <name>`, for example `check --tests --profile --tag smoke` or `check --tests --profile --profile smoke`.
 - `--batch` is an additive, explicit opt-in for `check --tests`. It is not the default and trades per-test Godot process isolation for one shared Godot process.
-- `--timeout-seconds <positive-number>` sets a run-level timeout for each selected manifest test. Values must be positive finite numbers; zero, negative values, non-numbers, and unsupported duration strings fail before Godot launch with `type: "invalid_params"`.
+- `--timeout-seconds <positive-number>` sets a run-level timeout for each selected manifest test. Values must be positive finite numbers representable as a Rust `Duration` and as an `Instant` deadline on the current platform; zero, negative values, non-numbers, and unsupported duration strings fail before Godot launch with `type: "invalid_params"`. Overflowing finite values (for example `1e100`, or `1e19` on platforms where adding it to `Instant::now()` overflows) fail the same way. The same checked conversion applies to `--script` and `--all-scripts` timeouts.
 
 `--test`, `--tag`, and `--profile` are mutually exclusive selection modes. Ambiguous combinations fail before Godot launch with `type: "test_selection_invalid"`. Unfiltered `check --tests` remains the compatibility default and runs the full manifest.
 Batch mode is compatible with the same `--test`, `--tag`, and `--profile` selection filters. Selected manifest entries may opt out with `"batch": false`; if such an entry is selected while `--batch` is present, the command fails before launch with `type: "test_selection_invalid"` and identifies the rejected test id and target instead of falling back to isolated execution.

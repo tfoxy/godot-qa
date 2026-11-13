@@ -42,11 +42,13 @@ pub(crate) fn check_tests_result(cli: &Cli, args: &CheckArgs) -> CommandResult {
     } else {
         scenario_check::CheckTestExecutionMode::Isolated
     };
-    let timeout_override = match args.timeout_seconds {
-        Some(seconds) if seconds.is_finite() && seconds > 0.0 => {
-            Some(std::time::Duration::from_secs_f64(seconds))
-        }
-        Some(seconds) => {
+    let timeout_override = match args
+        .timeout_seconds
+        .map(|seconds| checked_check_timeout("check", seconds))
+        .transpose()
+    {
+        Ok(timeout) => timeout,
+        Err(failure) => {
             return CommandResult {
                 ok: false,
                 command: "check".to_string(),
@@ -55,21 +57,10 @@ pub(crate) fn check_tests_result(cli: &Cli, args: &CheckArgs) -> CommandResult {
                     ("project_root".to_string(), json!(config.project_root)),
                     ("mode".to_string(), json!("tests")),
                 ]),
-                failures: vec![FailureDetail {
-                    kind: "test_manifest_invalid".to_string(),
-                    command: Some("check".to_string()),
-                    message: Some(
-                        "check --tests --timeout-seconds must be a positive finite number"
-                            .to_string(),
-                    ),
-                    expected: Some(json!("positive finite seconds")),
-                    actual: Some(json!(seconds)),
-                    ..FailureDetail::default()
-                }],
+                failures: vec![failure],
                 exit_code: 1,
             };
         }
-        None => None,
     };
     let parsed_profile = match check_tests_profile_args(args) {
         Ok(parsed_profile) => parsed_profile,
@@ -290,6 +281,7 @@ pub(crate) struct CheckSceneArtifacts {
     request_path: std::path::PathBuf,
     result_path: std::path::PathBuf,
     logs_path: std::path::PathBuf,
+    preparation_failure: Option<FailureDetail>,
 }
 
 impl CheckSceneArtifacts {
@@ -435,7 +427,10 @@ pub(crate) fn check_result(cli: &Cli) -> CommandResult {
         vec![scene]
     };
 
-    let artifacts = prepare_check_artifacts(&config, command);
+    let artifacts = match prepare_check_artifacts(&config, command) {
+        Ok(artifacts) => artifacts,
+        Err(failure) => return artifact_preparation_failed(&config, command, failure),
+    };
     let import_summary = json!({"ok": false, "artifacts": {"logs": artifacts.import_logs_path}});
     let import_run = match godot_qa_process::launch_godot_import(
         config.godot_binary.as_deref().unwrap_or_default(),
@@ -471,8 +466,7 @@ pub(crate) fn check_result(cli: &Cli) -> CommandResult {
                 }],
                 exit_code: 1,
             };
-            let _ = write_result_artifact(&artifacts.result_path, &result);
-            return result;
+            return finalize_result_artifact(&artifacts.result_path, result);
         }
         Err(failure) => {
             let result = CommandResult {
@@ -490,8 +484,7 @@ pub(crate) fn check_result(cli: &Cli) -> CommandResult {
                 failures: vec![failure],
                 exit_code: 1,
             };
-            let _ = write_result_artifact(&artifacts.result_path, &result);
-            return result;
+            return finalize_result_artifact(&artifacts.result_path, result);
         }
     };
 
@@ -574,12 +567,34 @@ pub(crate) fn check_result(cli: &Cli) -> CommandResult {
         exit_code,
     };
     let _ = import_run;
-    let _ = write_result_artifact(&artifacts.result_path, &result);
-    append_config_warnings(result, &config)
+    append_config_warnings(
+        finalize_result_artifact(&artifacts.result_path, result),
+        &config,
+    )
 }
 
 pub(crate) fn default_script_check_timeout() -> Duration {
     Duration::from_secs_f64(DEFAULT_SCRIPT_CHECK_TIMEOUT_SECONDS)
+}
+
+fn checked_check_timeout(command: &str, seconds: f64) -> Result<Duration, FailureDetail> {
+    Duration::try_from_secs_f64(seconds)
+        .ok()
+        .filter(|_| seconds > 0.0)
+        .filter(|duration| Instant::now().checked_add(*duration).is_some())
+        .ok_or_else(|| FailureDetail {
+            kind: "invalid_params".to_string(),
+            command: Some(command.to_string()),
+            message: Some(
+                "check --timeout-seconds must be positive finite seconds representable as a Duration and an Instant deadline"
+                    .to_string(),
+            ),
+            expected: Some(json!(
+                "positive finite seconds representable as a Duration and an Instant deadline"
+            )),
+            actual: Some(json!(seconds)),
+            ..FailureDetail::default()
+        })
 }
 
 pub(crate) fn check_timeout_for_mode(
@@ -588,19 +603,7 @@ pub(crate) fn check_timeout_for_mode(
     script_mode: bool,
 ) -> Result<Option<Duration>, FailureDetail> {
     match (timeout_seconds, script_mode) {
-        (Some(seconds), true) if seconds.is_finite() && seconds > 0.0 => {
-            Ok(Some(Duration::from_secs_f64(seconds)))
-        }
-        (Some(seconds), true) => Err(FailureDetail {
-            kind: "invalid_params".to_string(),
-            command: Some(command.to_string()),
-            message: Some(
-                "check --timeout-seconds must be a positive finite number".to_string(),
-            ),
-            expected: Some(json!("positive finite seconds")),
-            actual: Some(json!(seconds)),
-            ..FailureDetail::default()
-        }),
+        (Some(seconds), true) => checked_check_timeout(command, seconds).map(Some),
         (Some(_), false) => Err(FailureDetail {
             kind: "invalid_params".to_string(),
             command: Some(command.to_string()),
@@ -679,7 +682,10 @@ pub(crate) fn check_scripts_result(
         vec![script]
     };
 
-    let artifacts = prepare_check_artifacts(config, command);
+    let artifacts = match prepare_check_artifacts(config, command) {
+        Ok(artifacts) => artifacts,
+        Err(failure) => return artifact_preparation_failed(config, command, failure),
+    };
     let mut script_payloads = Vec::new();
     let mut failures = Vec::new();
     for script in &scripts {
@@ -737,15 +743,19 @@ pub(crate) fn check_scripts_result(
         failures,
         exit_code,
     };
-    let _ = write_result_artifact(&artifacts.result_path, &result);
-    result
+    finalize_result_artifact(&artifacts.result_path, result)
 }
 
-pub(crate) fn prepare_check_artifacts(config: &ProjectConfig, command: &str) -> CheckArtifacts {
+pub(crate) fn prepare_check_artifacts(
+    config: &ProjectConfig,
+    command: &str,
+) -> Result<CheckArtifacts, FailureDetail> {
     let root_dir = config.artifacts_dir.join("check").join(unique_run_id());
-    let _ = std::fs::create_dir_all(root_dir.join("import"));
-    let _ = std::fs::create_dir_all(root_dir.join("scenes"));
-    let _ = std::fs::create_dir_all(root_dir.join("scripts"));
+    for name in ["import", "scenes", "scripts"] {
+        let path = root_dir.join(name);
+        std::fs::create_dir_all(&path)
+            .map_err(|error| artifact_write_failure(command, &path, error))?;
+    }
     let artifacts = CheckArtifacts {
         root_dir: root_dir.clone(),
         meta_path: root_dir.join("meta.json"),
@@ -754,14 +764,15 @@ pub(crate) fn prepare_check_artifacts(config: &ProjectConfig, command: &str) -> 
         scenes_dir: root_dir.join("scenes"),
         scripts_dir: root_dir.join("scripts"),
     };
-    let _ = std::fs::write(
+    std::fs::write(
         &artifacts.meta_path,
         serde_json::to_string_pretty(
             &json!({"tool": "godot-qa", "project_root": config.project_root, "command": command}),
         )
         .unwrap_or_else(|_| "{}".to_string()),
-    );
-    artifacts
+    )
+    .map_err(|error| artifact_write_failure(command, &artifacts.meta_path, error))?;
+    Ok(artifacts)
 }
 
 pub(crate) fn ensure_check_prerequisites(
@@ -1155,6 +1166,14 @@ pub(crate) fn run_scene_check(
     command: &str,
 ) -> (serde_json::Value, Vec<FailureDetail>) {
     let scene_artifacts = prepare_scene_artifacts(check_artifacts, scene);
+    if let Some(failure) = scene_artifacts.preparation_failure.clone() {
+        return (
+            json!({"scene": scene, "startup_frames": STARTUP_FRAMES, "ok": false, "duration_ms": Value::Null,
+                "runtime_errors": [], "artifacts": scene_artifacts.to_json(),
+                "failures": [normalized_failure(scene, &scene_artifacts, &failure)]}),
+            vec![failure],
+        );
+    }
     let request = json!({
         "check": {"scene": scene, "startup_frames": STARTUP_FRAMES},
         "artifacts": scene_artifacts.to_json(),
@@ -1224,6 +1243,14 @@ pub(crate) fn run_script_compile_check(
     timeout: Duration,
 ) -> (serde_json::Value, Vec<FailureDetail>) {
     let script_artifacts = prepare_script_artifacts(check_artifacts, script);
+    if let Some(failure) = script_artifacts.preparation_failure.clone() {
+        return (
+            json!({"target": script, "status": "failed", "ok": false, "duration_ms": Value::Null,
+                "runtime_errors": [], "artifacts": script_artifacts.to_json(),
+                "failures": [normalized_failure(script, &script_artifacts, &failure)]}),
+            vec![failure],
+        );
+    }
     let request = json!({
         "check": {"id": script, "kind": "script_compile", "target": script},
         "artifacts": script_artifacts.to_json(),
@@ -1306,19 +1333,25 @@ pub(crate) fn prepare_scene_artifacts(
     scene: &str,
 ) -> CheckSceneArtifacts {
     let root_dir = check_artifacts.scenes_dir.join(slug_value(scene));
-    let _ = std::fs::create_dir_all(&root_dir);
-    let artifacts = CheckSceneArtifacts {
+    let preparation_failure = std::fs::create_dir_all(&root_dir)
+        .err()
+        .map(|error| artifact_write_failure("check", &root_dir, error));
+    let mut artifacts = CheckSceneArtifacts {
         root_dir: root_dir.clone(),
         meta_path: root_dir.join("meta.json"),
         request_path: root_dir.join("request.json"),
         result_path: root_dir.join("result.json"),
         logs_path: root_dir.join("logs.txt"),
+        preparation_failure,
     };
-    let _ = std::fs::write(
+    let metadata_failure = std::fs::write(
         &artifacts.meta_path,
         serde_json::to_string_pretty(&json!({"scene": scene, "startup_frames": STARTUP_FRAMES}))
             .unwrap_or_else(|_| "{}".to_string()),
-    );
+    )
+    .err()
+    .map(|error| artifact_write_failure("check", &artifacts.meta_path, error));
+    artifacts.preparation_failure = artifacts.preparation_failure.or(metadata_failure);
     artifacts
 }
 
@@ -1327,19 +1360,25 @@ pub(crate) fn prepare_script_artifacts(
     script: &str,
 ) -> CheckSceneArtifacts {
     let root_dir = check_artifacts.scripts_dir.join(slug_value(script));
-    let _ = std::fs::create_dir_all(&root_dir);
-    let artifacts = CheckSceneArtifacts {
+    let preparation_failure = std::fs::create_dir_all(&root_dir)
+        .err()
+        .map(|error| artifact_write_failure("check", &root_dir, error));
+    let mut artifacts = CheckSceneArtifacts {
         root_dir: root_dir.clone(),
         meta_path: root_dir.join("meta.json"),
         request_path: root_dir.join("request.json"),
         result_path: root_dir.join("result.json"),
         logs_path: root_dir.join("logs.txt"),
+        preparation_failure,
     };
-    let _ = std::fs::write(
+    let metadata_failure = std::fs::write(
         &artifacts.meta_path,
         serde_json::to_string_pretty(&json!({"script": script, "kind": "script_compile"}))
             .unwrap_or_else(|_| "{}".to_string()),
-    );
+    )
+    .err()
+    .map(|error| artifact_write_failure("check", &artifacts.meta_path, error));
+    artifacts.preparation_failure = artifacts.preparation_failure.or(metadata_failure);
     artifacts
 }
 
@@ -1945,6 +1984,34 @@ mod tests {
     }
 
     #[test]
+    fn check_target_metadata_write_failure_is_reported() {
+        let root = temp_project("blocked-meta");
+        let config = load_project_config(Some(&root), None, None, false, None);
+        let artifacts = prepare_check_artifacts(&config, "check").unwrap();
+        for (directory, target, script) in [
+            (&artifacts.scenes_dir, "res://probe.tscn", false),
+            (&artifacts.scripts_dir, "res://probe.gd", true),
+        ] {
+            let blocked = directory.join(slug_value(target)).join("meta.json");
+            fs::create_dir_all(&blocked).unwrap();
+            let (_, failures) = if script {
+                run_script_compile_check(
+                    &config,
+                    target,
+                    &artifacts,
+                    "check",
+                    Duration::from_secs(1),
+                )
+            } else {
+                run_scene_check(&config, target, &artifacts, "check")
+            };
+            assert_eq!(failures[0].kind, "artifact_write_failed");
+            assert_eq!(failures[0].path.as_deref(), blocked.to_str());
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn check_uses_project_main_scene_when_scene_is_omitted() {
         let contents = r#"
 ; comment
@@ -2052,7 +2119,7 @@ run/main_scene="res://ui/menu\"quoted.tscn"
             log_ignore_patterns: Vec::new(),
             config_warnings: Vec::new(),
         };
-        let check_artifacts = prepare_check_artifacts(&config, "check");
+        let check_artifacts = prepare_check_artifacts(&config, "check").unwrap();
         let script_artifacts = prepare_script_artifacts(&check_artifacts, "res://src/main.gd");
         fs::write(
             &script_artifacts.result_path,

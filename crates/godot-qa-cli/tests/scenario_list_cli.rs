@@ -121,3 +121,34 @@ fn scenario_list_excludes_abstract_templates_and_lists_children() {
     // The abstract base template (menu_smoke.base.yaml) is excluded from listing.
     assert!(!names.iter().any(|name| name == "menu_smoke.base"));
 }
+
+#[test]
+fn nested_cargo_directory_discovers_godot_project_unless_project_is_explicit() {
+    let project_root = make_project_root("scenario-list-nested-cargo");
+    let native = project_root.join("native");
+    let selected = project_root.join("other-project");
+    fs::create_dir_all(&native).unwrap();
+    fs::create_dir_all(&selected).unwrap();
+    fs::create_dir_all(project_root.join("qa/scenarios")).unwrap();
+    fs::write(native.join("Cargo.toml"), "[package]\n").unwrap();
+    fs::write(selected.join("project.godot"), "[application]\n").unwrap();
+
+    for (project, scenarios_exist) in [(None, true), (Some(&selected), false)] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_godot-qa"));
+        command.current_dir(&native);
+        if let Some(project) = project {
+            command.arg("--project").arg(project);
+        }
+        let output = command
+            .args(["--json", "--verbose", "scenario", "list"])
+            .output()
+            .unwrap();
+        let body: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(output.status.success(), "{body:#}");
+        assert_eq!(
+            body["data"]["diagnostics"]["paths"]["scenarios_dir_exists"], scenarios_exist,
+            "{body:#}"
+        );
+    }
+    fs::remove_dir_all(project_root).unwrap();
+}

@@ -66,7 +66,10 @@ pub(crate) fn import_result(cli: &Cli) -> CommandResult {
         };
     }
 
-    let artifacts = prepare_import_artifacts(&config, command);
+    let artifacts = match prepare_import_artifacts(&config, command) {
+        Ok(artifacts) => artifacts,
+        Err(failure) => return artifact_preparation_failed(&config, command, failure),
+    };
     let started = std::time::Instant::now();
     let completed = godot_qa_process::launch_godot_import_with_args(
         config.godot_binary.as_deref().unwrap_or_default(),
@@ -77,7 +80,22 @@ pub(crate) fn import_result(cli: &Cli) -> CommandResult {
         &artifacts.logs_path,
     );
 
-    let result = match completed {
+    if let Ok(run) = &completed {
+        let scan = godot_qa_core::godot_logs::scan_output(
+            &artifacts.logs_path,
+            &run.stdout,
+            &run.stderr,
+            &config.log_ignore_patterns,
+        );
+        for mut diagnostic in scan.diagnostics(command, &artifacts.logs_path, None) {
+            if diagnostic.severity.as_deref() == Some("error") {
+                diagnostic.message = Some("Godot emitted an error during import".to_string());
+                diagnostic.artifacts = value_as_object_map(artifacts.to_json());
+                failures.push(diagnostic);
+            }
+        }
+    }
+    let mut result = match completed {
         Ok(run) if run.returncode == 0 => CommandResult {
             ok: true,
             command: command.to_string(),
@@ -146,9 +164,14 @@ pub(crate) fn import_result(cli: &Cli) -> CommandResult {
             exit_code: 1,
         },
     };
+    result.failures.extend(failures);
+    if !result.failures.is_empty() {
+        result.ok = false;
+        result.exit_code = 1;
+        result.message = "project import failed".to_string();
+    }
     let result = append_config_warnings(result, &config);
-    let _ = write_result_artifact(&artifacts.result_path, &result);
-    result
+    finalize_result_artifact(&artifacts.result_path, result)
 }
 
 #[derive(Debug)]
@@ -170,16 +193,20 @@ impl ImportArtifacts {
     }
 }
 
-pub(crate) fn prepare_import_artifacts(config: &ProjectConfig, command: &str) -> ImportArtifacts {
+pub(crate) fn prepare_import_artifacts(
+    config: &ProjectConfig,
+    command: &str,
+) -> Result<ImportArtifacts, FailureDetail> {
     let root_dir = config.artifacts_dir.join("import").join(unique_run_id());
-    let _ = std::fs::create_dir_all(&root_dir);
+    std::fs::create_dir_all(&root_dir)
+        .map_err(|error| artifact_write_failure(command, &root_dir, error))?;
     let artifacts = ImportArtifacts {
         root_dir: root_dir.clone(),
         meta_path: root_dir.join("meta.json"),
         result_path: root_dir.join("result.json"),
         logs_path: root_dir.join("logs.txt"),
     };
-    let _ = std::fs::write(
+    std::fs::write(
         &artifacts.meta_path,
         serde_json::to_string_pretty(&json!({
             "tool": "godot-qa",
@@ -187,8 +214,59 @@ pub(crate) fn prepare_import_artifacts(config: &ProjectConfig, command: &str) ->
             "command": command,
         }))
         .unwrap_or_else(|_| "{}".to_string()),
-    );
-    artifacts
+    )
+    .map_err(|error| artifact_write_failure(command, &artifacts.meta_path, error))?;
+    Ok(artifacts)
+}
+
+pub(crate) fn artifact_write_failure(
+    command: &str,
+    path: &Path,
+    error: io::Error,
+) -> FailureDetail {
+    FailureDetail {
+        kind: "artifact_write_failed".to_string(),
+        command: Some(command.to_string()),
+        path: Some(path.to_string_lossy().into_owned()),
+        message: Some(format!(
+            "failed to write required artifact {}: {error}",
+            path.display()
+        )),
+        expected: Some(json!("writable required artifact path")),
+        actual: Some(json!(error.to_string())),
+        ..FailureDetail::default()
+    }
+}
+
+pub(crate) fn artifact_preparation_failed(
+    config: &ProjectConfig,
+    command: &str,
+    failure: FailureDetail,
+) -> CommandResult {
+    CommandResult {
+        ok: false,
+        command: command.to_string(),
+        message: format!("project {command} failed"),
+        data: Map::from_iter([("project_root".to_string(), json!(config.project_root))]),
+        failures: vec![failure],
+        exit_code: 1,
+    }
+}
+
+pub(crate) fn finalize_result_artifact(path: &Path, mut result: CommandResult) -> CommandResult {
+    if let Err(error) = write_result_artifact(path, &result) {
+        let mut failure = artifact_write_failure(&result.command, path, error);
+        failure.artifacts = result
+            .data
+            .get("artifacts")
+            .and_then(Value::as_object)
+            .cloned();
+        result.failures.push(failure);
+        result.ok = false;
+        result.exit_code = 1;
+        result.message = format!("project {} failed", result.command);
+    }
+    result
 }
 
 pub(crate) fn unique_run_id() -> String {

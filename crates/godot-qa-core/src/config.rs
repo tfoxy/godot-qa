@@ -168,12 +168,16 @@ pub fn find_project_root(start: Option<&Path>) -> PathBuf {
         current = current.parent().map(Path::to_path_buf).unwrap_or(current);
     }
 
+    let mut cargo_root = None;
     for candidate in current.ancestors() {
-        if candidate.join("Cargo.toml").exists() || candidate.join("project.godot").exists() {
+        if candidate.join("project.godot").exists() {
             return candidate.to_path_buf();
         }
+        if cargo_root.is_none() && candidate.join("Cargo.toml").exists() {
+            cargo_root = Some(candidate.to_path_buf());
+        }
     }
-    current
+    cargo_root.unwrap_or(current)
 }
 
 pub fn load_project_config(
