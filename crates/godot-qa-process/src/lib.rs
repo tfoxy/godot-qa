@@ -13,7 +13,7 @@ use serde_json::json;
 use std::env;
 use std::fs;
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::Path;
@@ -1596,6 +1596,7 @@ fn run_godot_command_with_timeout_monitor(
         completion_path,
         Some(logs_path),
         timeout_monitor,
+        None,
     ) {
         Ok(child_output) => {
             let OwnedChildOutput {
@@ -1795,6 +1796,7 @@ fn run_owned_child_output(
         completion_path,
         file_capture_path,
         None,
+        None,
     )
 }
 
@@ -1805,6 +1807,7 @@ fn run_owned_child_output_with_timeout_monitor(
     completion_path: Option<&Path>,
     file_capture_path: Option<&Path>,
     mut timeout_monitor: Option<&mut dyn FnMut() -> Option<Duration>>,
+    input: Option<&[u8]>,
 ) -> std::io::Result<OwnedChildOutput> {
     let started = Instant::now();
     let expected = completion_path.and_then(CompletionIdentity::read);
@@ -1817,6 +1820,9 @@ fn run_owned_child_output_with_timeout_monitor(
     let mut child_command = Command::new(executable);
     apply_joypad_isolation(&mut child_command, joypad_isolation);
     child_command.args(command.iter().skip(1));
+    if input.is_some() {
+        child_command.stdin(Stdio::piped());
+    }
     let file_paths = if let Some(path) = file_capture_path {
         let stdout_path = path.with_extension("stdout.txt");
         let stderr_path = path.with_extension("stderr.txt");
@@ -1841,7 +1847,7 @@ fn run_owned_child_output_with_timeout_monitor(
         use std::os::windows::process::CommandExt;
         child_command.creation_flags(windows_sys::Win32::System::Threading::CREATE_SUSPENDED);
     }
-    let mut child = child_command.spawn()?;
+    let mut child = spawn_probe_child(&mut child_command)?;
     let mut process_timing = ProcessTiming {
         spawn_ms: duration_millis_u64(started.elapsed()),
         ..ProcessTiming::default()
@@ -1895,6 +1901,21 @@ fn run_owned_child_output_with_timeout_monitor(
             output_truncation,
         });
     }
+    // Keep ownership across every fallible poll, stdin write, and output read.
+    let mut cleanup_guard = OwnedChildErrorCleanup {
+        child: &mut child,
+        armed: true,
+    };
+    let child = &mut *cleanup_guard.child;
+    let mut input_writer = input.map(|input| {
+        let mut stdin = child.stdin.take().expect("piped stdin is available");
+        let input = input.to_vec();
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = sender.send(stdin.write_all(&input));
+        });
+        receiver
+    });
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let stdout_reader = stdout.map(|mut stdout| {
@@ -1919,6 +1940,20 @@ fn run_owned_child_output_with_timeout_monitor(
     let mut completion_deadline = None;
     let mut result_observed_at = None;
     loop {
+        if let Some(writer) = &input_writer {
+            match writer.try_recv() {
+                Ok(result) => {
+                    result?;
+                    input_writer = None;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Err(std::io::Error::other(
+                        "owned child stdin writer disconnected",
+                    ));
+                }
+            }
+        }
         let monitored_timeout = timeout_monitor.as_mut().and_then(|monitor| monitor());
         if process_timing.runtime_started_observed_ms.is_none()
             && expected
@@ -1944,9 +1979,18 @@ fn run_owned_child_output_with_timeout_monitor(
                 result_observed_at.map(|at| duration_millis_u64(exit_observed.duration_since(at)));
             #[cfg(windows)]
             owned_job.terminate()?;
+            if let Some(writer) = input_writer.take() {
+                writer.recv_timeout(Duration::from_secs(3)).map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "owned child stdin writer did not finish",
+                    )
+                })??;
+            }
             let (stdout, stderr, output_truncation) =
                 collected_child_output(&file_paths, stdout_reader, stderr_reader)?;
             process_timing.total_ms = duration_millis_u64(started.elapsed());
+            cleanup_guard.armed = false;
             return Ok(OwnedChildOutput {
                 status_code: status.code().unwrap_or(-1),
                 termination: Some(process_termination(status, false)),
@@ -1989,7 +2033,7 @@ fn run_owned_child_output_with_timeout_monitor(
             let cleanup_started = Instant::now();
             #[cfg(windows)]
             owned_job.terminate()?;
-            let cleanup = terminate_owned_child_after_timeout(&mut child, pid, process_group);
+            let cleanup = terminate_owned_child_after_timeout(child, pid, process_group);
             let termination = child
                 .wait()
                 .ok()
@@ -2002,6 +2046,7 @@ fn run_owned_child_output_with_timeout_monitor(
             let (stdout, stderr, output_truncation) =
                 collected_child_output(&file_paths, stdout_reader, stderr_reader)?;
             process_timing.total_ms = duration_millis_u64(started.elapsed());
+            cleanup_guard.armed = false;
             return Ok(OwnedChildOutput {
                 status_code: -1,
                 termination,
@@ -2023,6 +2068,22 @@ fn run_owned_child_output_with_timeout_monitor(
             });
         }
         thread::sleep(Duration::from_millis(10));
+    }
+}
+
+struct OwnedChildErrorCleanup<'a> {
+    child: &'a mut std::process::Child,
+    armed: bool,
+}
+
+impl Drop for OwnedChildErrorCleanup<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            #[cfg(unix)]
+            let _ = send_process_group_signal(self.child.id() as i64, libc::SIGKILL);
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
     }
 }
 

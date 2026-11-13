@@ -4,7 +4,6 @@ use std::collections::BTreeMap;
 use std::env;
 use std::ffi::OsString;
 use std::fs::{self, File};
-use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
@@ -121,8 +120,16 @@ fn adb_leaf() -> &'static str {
 }
 
 fn find_on_path(name: &str, path: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
+    find_on_path_with_candidates(name, path, crate::executable_candidates)
+}
+
+fn find_on_path_with_candidates(
+    name: &str,
+    path: Option<&std::ffi::OsStr>,
+    candidates: fn(&Path, &str) -> Vec<PathBuf>,
+) -> Option<PathBuf> {
     env::split_paths(path?)
-        .map(|entry| entry.join(name))
+        .flat_map(|entry| candidates(&entry, name))
         .find(|candidate| candidate.is_file())
 }
 
@@ -512,7 +519,8 @@ fn validate_package_name(package: &str) -> Result<(), FailureDetail> {
 fn parse_config_sections(contents: &str) -> BTreeMap<String, BTreeMap<String, String>> {
     let mut sections = BTreeMap::<String, BTreeMap<String, String>>::new();
     let mut current = String::new();
-    for raw_line in contents.lines() {
+    let mut lines = contents.lines();
+    while let Some(raw_line) = lines.next() {
         let line = raw_line.trim();
         if line.is_empty() || line.starts_with(';') || line.starts_with('#') {
             continue;
@@ -528,8 +536,44 @@ fn parse_config_sections(contents: &str) -> BTreeMap<String, BTreeMap<String, St
         let Some((key, raw_value)) = line.split_once('=') else {
             continue;
         };
-        let value = serde_json::from_str::<String>(raw_value.trim())
-            .unwrap_or_else(|_| raw_value.trim().to_string());
+        let mut value = raw_value.trim().to_string();
+        let mut depth = 0_usize;
+        let mut quoted = false;
+        let mut escaped = false;
+        let mut value_line = raw_value.trim();
+        loop {
+            // ConfigFile containers and constructors can span lines. Delimiters
+            // inside strings or comments do not change the value's nesting.
+            for character in value_line.chars() {
+                if escaped {
+                    escaped = false;
+                } else if quoted {
+                    match character {
+                        '\\' => escaped = true,
+                        '"' => quoted = false,
+                        _ => {}
+                    }
+                } else {
+                    match character {
+                        '"' => quoted = true,
+                        ';' | '#' => break,
+                        '{' | '[' | '(' => depth += 1,
+                        '}' | ']' | ')' => depth = depth.saturating_sub(1),
+                        _ => {}
+                    }
+                }
+            }
+            if depth == 0 && !quoted {
+                break;
+            }
+            let Some(next_line) = lines.next() else {
+                break;
+            };
+            value.push('\n');
+            value.push_str(next_line);
+            value_line = next_line;
+        }
+        let value = serde_json::from_str::<String>(&value).unwrap_or(value);
         sections
             .entry(current.clone())
             .or_default()
@@ -1011,7 +1055,8 @@ pub fn stop_logcat_with_identity(pid: i64, identity: Option<u64>) -> Result<(), 
             Ok(command_line)
                 if !command_line
                     .windows(b"logcat".len())
-                    .any(|window| window == b"logcat") =>
+                    .any(|window| window == b"logcat")
+                    && !crate::is_zombie_process(pid) =>
             {
                 return Err(FailureDetail {
                     kind: "android_logcat_stop_failed".into(),
@@ -1022,7 +1067,7 @@ pub fn stop_logcat_with_identity(pid: i64, identity: Option<u64>) -> Result<(), 
                     ..FailureDetail::default()
                 });
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => {
                 return Err(FailureDetail {
                     kind: "android_logcat_stop_failed".into(),
@@ -1038,23 +1083,33 @@ pub fn stop_logcat_with_identity(pid: i64, identity: Option<u64>) -> Result<(), 
     }
     #[cfg(unix)]
     {
-        let result = unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGTERM) };
-        if result == 0 {
-            return Ok(());
-        }
-        let error = std::io::Error::last_os_error();
-        if error.raw_os_error() == Some(libc::ESRCH) {
-            return Ok(());
-        }
-        Err(FailureDetail {
+        let stop_failure = |message: String| FailureDetail {
             kind: "android_logcat_stop_failed".into(),
-            message: Some(error.to_string()),
-            expected: Some(json!("owned logcat process group stops")),
-            actual: Some(json!("signal failed")),
+            command: Some(format!("session stop (logcat pid={pid})")),
+            message: Some(message),
+            expected: Some(json!(
+                "owned logcat helper and process group exit within 2 seconds"
+            )),
+            actual: Some(json!("logcat cleanup incomplete")),
             details: [("pid".into(), json!(pid))].into_iter().collect(),
             ..FailureDetail::default()
-        })
+        };
+        for signal in [libc::SIGTERM, libc::SIGKILL] {
+            if unsafe { libc::kill(-(pid as libc::pid_t), signal) } != 0 {
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() != Some(libc::ESRCH) {
+                    return Err(stop_failure(error.to_string()));
+                }
+            }
+            if wait_for_logcat_exit(pid).map_err(|error| stop_failure(error.to_string()))? {
+                return Ok(());
+            }
+        }
+        Err(stop_failure(
+            "logcat helper or process group remained alive after SIGTERM and SIGKILL".into(),
+        ))
     }
+
     #[cfg(windows)]
     {
         if !crate::pid_is_running(pid) {
@@ -1076,6 +1131,64 @@ pub fn stop_logcat_with_identity(pid: i64, identity: Option<u64>) -> Result<(), 
             ..FailureDetail::default()
         })
     }
+}
+
+#[cfg(unix)]
+fn wait_for_logcat_exit(pid: i64) -> std::io::Result<bool> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    loop {
+        // Reap when this CLI launched the helper; another CLI may own its wait.
+        unsafe {
+            libc::waitpid(pid as libc::pid_t, std::ptr::null_mut(), libc::WNOHANG);
+        }
+        if crate::wait_for_godot_process_exit(pid, 0.0) && !logcat_group_is_running(pid)? {
+            return Ok(true);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Ok(false);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[cfg(unix)]
+fn logcat_group_is_running(pid: i64) -> std::io::Result<bool> {
+    if unsafe { libc::kill(-(pid as libc::pid_t), 0) } != 0 {
+        let error = std::io::Error::last_os_error();
+        return if error.raw_os_error() == Some(libc::ESRCH) {
+            Ok(false)
+        } else {
+            Err(error)
+        };
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // Orphaned zombies can keep a process group present after every helper
+        // has exited. Count live members rather than treating zombies as leaks.
+        for entry in fs::read_dir("/proc")? {
+            let entry = entry?;
+            if entry.file_name().to_string_lossy().parse::<u32>().is_err() {
+                continue;
+            }
+            let stat = match fs::read_to_string(entry.path().join("stat")) {
+                Ok(stat) => stat,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
+            };
+            if let Some((_, fields)) = stat.rsplit_once(") ") {
+                let fields: Vec<_> = fields.split_whitespace().take(3).collect();
+                if fields.len() == 3
+                    && fields[2].parse::<i64>() == Ok(pid)
+                    && !matches!(fields[0], "Z" | "X")
+                {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+    #[cfg(not(target_os = "linux"))]
+    Ok(true)
 }
 
 pub fn force_stop(
@@ -1289,67 +1402,66 @@ fn run_command_bytes(
     command: &[String],
     input: Option<&[u8]>,
 ) -> Result<BinaryCommandOutput, std::io::Error> {
-    let Some(executable) = command.first() else {
+    run_command_bytes_with_timeout(command, input, command_timeout(command))
+}
+
+fn command_timeout(command: &[String]) -> std::time::Duration {
+    let args = command.get(1..).unwrap_or_default();
+    let seconds = if args.iter().any(|arg| arg == "--export-debug") {
+        600
+    } else if args
+        .get(2)
+        .is_some_and(|arg| matches!(arg.as_str(), "install" | "exec-out"))
+    {
+        120
+    } else {
+        30
+    };
+    std::time::Duration::from_secs(seconds)
+}
+
+fn run_command_bytes_with_timeout(
+    command: &[String],
+    input: Option<&[u8]>,
+    timeout: std::time::Duration,
+) -> Result<BinaryCommandOutput, std::io::Error> {
+    let output = crate::run_owned_child_output_with_timeout_monitor(
+        command,
+        false,
+        Some(timeout),
+        None,
+        None,
+        None,
+        Some(input.unwrap_or_default()),
+    )?;
+    if output.timed_out {
+        // Private stdin may contain a session token echoed by an ADB wrapper.
+        let diagnostics = if input.is_none() {
+            format!(
+                "; stdout: {}; stderr: {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+        } else {
+            String::new()
+        };
         return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "empty command",
+            std::io::ErrorKind::TimedOut,
+            format!(
+                "command {} exceeded {} ms deadline; cleanup: {:?}{}",
+                crate::format_command(command),
+                timeout.as_millis(),
+                output.cleanup,
+                diagnostics,
+            ),
         ));
-    };
-    let mut spawn_attempt = 0;
-    let mut child = loop {
-        let mut child = Command::new(executable);
-        child
-            .args(command.iter().skip(1))
-            .stdin(if input.is_some() {
-                Stdio::piped()
-            } else {
-                Stdio::null()
-            })
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        match child.spawn() {
-            Ok(child) => break child,
-            Err(error) if executable_is_temporarily_busy(&error) && spawn_attempt < 4 => {
-                spawn_attempt += 1;
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-            Err(error) => return Err(error),
-        }
-    };
-    let _project_child = match crate::project_access::register_child(child.id() as i64) {
-        Ok(receipt) => receipt,
-        Err(error) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(error);
-        }
-    };
-    if let Some(input) = input {
-        child
-            .stdin
-            .take()
-            .expect("piped stdin is available")
-            .write_all(input)?;
     }
-    let output = child.wait_with_output()?;
     Ok(BinaryCommandOutput {
         command: command.to_vec(),
-        status: output.status.code().unwrap_or(-1),
+        status: output.status_code,
         stdout: output.stdout,
         stderr: output.stderr,
     })
-}
-
-fn executable_is_temporarily_busy(error: &std::io::Error) -> bool {
-    #[cfg(unix)]
-    {
-        error.raw_os_error() == Some(libc::ETXTBSY)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = error;
-        false
-    }
 }
 
 fn command_failure(kind: &str, command: &[String], status: i32, stderr: &str) -> FailureDetail {
@@ -1370,8 +1482,10 @@ fn spawn_failure(kind: &str, command: &[String], error: std::io::Error) -> Failu
         command: Some(crate::format_command(command)),
         path: command.first().cloned(),
         message: Some(error.to_string()),
-        expected: Some(json!("command starts successfully")),
-        actual: Some(json!("OSError")),
+        expected: Some(json!(
+            "command starts and completes within its operation deadline"
+        )),
+        actual: Some(json!(error.kind().to_string())),
         ..FailureDetail::default()
     }
 }
@@ -1413,6 +1527,224 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    #[cfg(unix)]
+    #[test]
+    fn android_command_timeout_preserves_partial_diagnostics_and_reaps_helper() {
+        let temp = unique_temp_dir();
+        fs::create_dir_all(&temp).unwrap();
+        let pid_path = temp.join("pid");
+        let adb = write_executable(
+            &temp.join("adb"),
+            &format!(
+                "#!/bin/sh\necho $$ > '{}'\necho partial-out\necho partial-error >&2\nexec sleep 60\n",
+                pid_path.display()
+            ),
+        );
+        let command = vec![adb.to_string_lossy().into_owned(), "devices".into()];
+        let expected_command = crate::format_command(&command);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let started = std::time::Instant::now();
+        std::thread::spawn(move || {
+            let result = run_command_bytes_with_timeout(
+                &command,
+                None,
+                std::time::Duration::from_millis(100),
+            );
+            let _ = sender.send(result);
+        });
+        let result = receiver.recv_timeout(std::time::Duration::from_secs(4));
+        let pid: i64 = fs::read_to_string(&pid_path)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let gone = !crate::pid_is_running(pid);
+        if !gone {
+            unsafe {
+                libc::kill(pid as libc::pid_t, libc::SIGKILL);
+            }
+        }
+        assert!(result.is_ok(), "Android command exceeded its deadline");
+        let error = result.unwrap().err().expect("timeout must fail");
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        let diagnostic = error.to_string();
+        assert!(diagnostic.contains(&expected_command), "{diagnostic}");
+        assert!(diagnostic.contains("partial-out"), "{diagnostic}");
+        assert!(diagnostic.contains("partial-error"), "{diagnostic}");
+        assert!(gone, "helper {pid} was not reaped");
+        assert!(started.elapsed() < std::time::Duration::from_secs(4));
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_logcat_waits_and_escalates_for_term_ignoring_helper() {
+        let temp = unique_temp_dir();
+        fs::create_dir_all(&temp).unwrap();
+        let adb = write_executable(
+            &temp.join("adb"),
+            "#!/bin/sh\ntrap '' TERM\necho ready\nwhile :; do sleep 1; done\n",
+        );
+        let logs = temp.join("logcat.txt");
+        let sidecar = start_logcat(adb.to_str().unwrap(), "serial-1", 4321, &logs).unwrap();
+        let ready_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !fs::read_to_string(&logs).unwrap().contains("ready") {
+            assert!(
+                std::time::Instant::now() < ready_deadline,
+                "logcat did not start"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let started = std::time::Instant::now();
+        let result = stop_logcat_with_identity(sidecar.pid, sidecar.process_identity);
+        let exited = crate::wait_for_godot_process_exit(sidecar.pid, 0.0);
+        // Always clean up the fixture, including when testing the original bug.
+        unsafe {
+            libc::kill(-(sidecar.pid as libc::pid_t), libc::SIGKILL);
+            libc::waitpid(sidecar.pid as libc::pid_t, std::ptr::null_mut(), 0);
+        }
+        assert!(result.is_ok(), "{result:?}");
+        assert!(
+            exited,
+            "stop_logcat reported success while its helper was still alive"
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(4));
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn stop_logcat_waits_for_group_after_leader_exits() {
+        for leader_already_exited in [false, true] {
+            let temp = unique_temp_dir();
+            fs::create_dir_all(&temp).unwrap();
+            let child_pid_path = temp.join("child-pid");
+            let ending = if leader_already_exited {
+                "exit 0"
+            } else {
+                "trap 'exit 0' TERM\nwait"
+            };
+            let adb = write_executable(
+                &temp.join("adb"),
+                &format!(
+                    "#!/bin/sh\n(trap '' TERM; echo child-ready; exec sleep 60) &\necho $! > '{}'\n{ending}\n",
+                    child_pid_path.display()
+                ),
+            );
+            let logs = temp.join("logcat.txt");
+            let sidecar = start_logcat(adb.to_str().unwrap(), "serial-1", 4321, &logs).unwrap();
+            let ready_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while !fs::read_to_string(&logs).unwrap().contains("child-ready")
+                || !child_pid_path.is_file()
+            {
+                assert!(
+                    std::time::Instant::now() < ready_deadline,
+                    "logcat child did not start"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            let child_pid: i64 = fs::read_to_string(child_pid_path)
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            if leader_already_exited {
+                unsafe {
+                    libc::waitpid(sidecar.pid as libc::pid_t, std::ptr::null_mut(), 0);
+                }
+            }
+            let result = stop_logcat(sidecar.pid);
+            let child_exited = crate::wait_for_godot_process_exit(child_pid, 0.0);
+            unsafe {
+                libc::kill(-(sidecar.pid as libc::pid_t), libc::SIGKILL);
+                libc::waitpid(sidecar.pid as libc::pid_t, std::ptr::null_mut(), 0);
+            }
+            assert!(result.is_ok(), "{result:?}");
+            assert!(
+                child_exited,
+                "logcat's child survived after its leader exited"
+            );
+            fs::remove_dir_all(temp).unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_logcat_reports_failure_when_helper_remains_alive() {
+        let temp = unique_temp_dir();
+        fs::create_dir_all(&temp).unwrap();
+        let adb = write_executable(
+            &temp.join("logcat-helper"),
+            "#!/bin/sh\necho ready\nread line\n",
+        );
+        let logs = temp.join("logcat.txt");
+        // Deliberately omit a private process group: signals must not target the
+        // test runner's group, and cleanup must report the helper still alive.
+        let mut child = Command::new(adb)
+            .arg("logcat")
+            .stdin(Stdio::piped())
+            .stdout(File::create(&logs).unwrap())
+            .spawn()
+            .unwrap();
+        let pid = child.id() as i64;
+        let ready_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !fs::read_to_string(&logs).unwrap().contains("ready") {
+            assert!(
+                std::time::Instant::now() < ready_deadline,
+                "logcat did not start"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let started = std::time::Instant::now();
+        let result = stop_logcat(pid);
+        let alive = child.try_wait().unwrap().is_none();
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let failure = result.expect_err("live helper must retain cleanup metadata");
+        assert_eq!(failure.kind, "android_logcat_stop_failed");
+        assert_eq!(failure.details["pid"], pid);
+        assert!(alive, "fixture must stay alive until explicit cleanup");
+        assert!(started.elapsed() < std::time::Duration::from_secs(4));
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn android_command_stdin_failure_reaps_helper() {
+        let temp = unique_temp_dir();
+        fs::create_dir_all(&temp).unwrap();
+        let pid_path = temp.join("pid");
+        let adb = write_executable(
+            &temp.join("adb"),
+            &format!(
+                "#!/bin/sh\nexec 0<&-\necho $$ > '{}'\nexec sleep 60\n",
+                pid_path.display()
+            ),
+        );
+        let command = vec![adb.to_string_lossy().into_owned()];
+        let result = run_command_bytes(&command, Some(&vec![b'x'; 1024 * 1024]));
+        let pid: i64 = fs::read_to_string(&pid_path)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let gone = !crate::pid_is_running(pid);
+        if !gone {
+            unsafe {
+                libc::kill(pid as libc::pid_t, libc::SIGKILL);
+            }
+            unsafe {
+                libc::waitpid(pid as libc::pid_t, std::ptr::null_mut(), 0);
+            }
+        }
+        assert_eq!(
+            result.err().expect("closed stdin fails").kind(),
+            std::io::ErrorKind::BrokenPipe
+        );
+        assert!(gone, "helper {pid} survived stdin failure");
+        fs::remove_dir_all(temp).unwrap();
+    }
 
     #[test]
     fn parses_adb_devices_with_states_and_descriptions() {
@@ -1518,6 +1850,47 @@ mod tests {
             path_adb.to_string_lossy()
         );
         fs::remove_dir_all(temp).expect("cleanup");
+    }
+
+    #[test]
+    fn adb_lookup_uses_executable_candidates_without_batch_shells() {
+        let temp = unique_temp_dir();
+        let batch_dir = temp.join("batch wrappers");
+        let native_dir = temp.join("native tools");
+        write_executable(&batch_dir.join("adb.cmd"), "@echo wrapper");
+        write_executable(&batch_dir.join("adb.bat"), "@echo wrapper");
+        let executable = write_executable(&native_dir.join("adb.exe"), "native fixture");
+        let path = env::join_paths([batch_dir, native_dir]).expect("PATH");
+        // Exercise Windows candidate ordering even when these tests run on Unix.
+        let windows_candidates: fn(&Path, &str) -> Vec<PathBuf> =
+            |directory, name| vec![directory.join(format!("{name}.exe")), directory.join(name)];
+        let resolved = find_on_path_with_candidates("adb", Some(&path), windows_candidates);
+        fs::remove_file(&executable).expect("remove native fixture");
+        let batch_only = find_on_path_with_candidates("adb", Some(&path), windows_candidates);
+        fs::remove_dir_all(temp).expect("cleanup");
+        assert_eq!(resolved, Some(executable));
+        assert_eq!(batch_only, None, "batch files require an explicit shell");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn bare_adb_override_resolves_windows_executable() {
+        let temp = unique_temp_dir();
+        let executable = write_executable(&temp.join("adb.exe"), "native fixture");
+        let path = env::join_paths([&temp]).expect("PATH");
+        let explicit =
+            resolve_adb_binary_with_env(Some("adb"), None, None, None, Some(path.clone()));
+        let from_env =
+            resolve_adb_binary_with_env(None, Some("adb".into()), None, None, Some(path));
+        fs::remove_dir_all(temp).expect("cleanup");
+        assert_eq!(
+            explicit.expect("bare explicit override"),
+            executable.to_string_lossy()
+        );
+        assert_eq!(
+            from_env.expect("bare ADB override"),
+            executable.to_string_lossy()
+        );
     }
 
     #[test]
@@ -1653,6 +2026,53 @@ package/unique_name="org.example.$genname"
             "android_export_preset_invalid"
         );
         fs::remove_dir_all(temp).expect("cleanup");
+    }
+
+    #[test]
+    fn preset_validation_rejects_multiline_customized_files() {
+        let fixture = r#"[preset.0]
+name="Android QA"
+platform="Android"
+export_filter="customized"
+customized_files={
+"res://scenes/main.tscn": 0,
+"res://addons/godot_qa/qa_bridge.gd": 3
+}
+
+[preset.0.options]
+permissions/internet=true
+package/unique_name="dev.qa.app"
+"#;
+        let temp = valid_project(fixture, "Sample");
+        let result = load_export_preset(&temp, "Android QA", None);
+        fs::remove_dir_all(&temp).expect("cleanup");
+        let failure = result.expect_err("multiline filter excludes the bridge");
+        assert_eq!(failure.kind, "android_export_preset_invalid");
+        assert_eq!(
+            failure.actual,
+            Some(json!(
+                "the QA addon is removed by the customized export filter"
+            ))
+        );
+
+        let temp = valid_project(&fixture.replace(": 3", ": 0"), "Sample");
+        let result = load_export_preset(&temp, "Android QA", None);
+        fs::remove_dir_all(temp).expect("cleanup");
+        result.expect("multiline filter retaining the addon is valid");
+    }
+
+    #[test]
+    fn config_sections_accumulate_nested_multiline_values() {
+        let array = r#"PackedStringArray(
+"brackets: }])",
+"escaped quote: \" # ;"
+)"#;
+        let dictionary = "{\n\"nested\": [1,\n2] ; comment with }\n}";
+        let fixture = format!("[section]\narray={array}\ndictionary={dictionary}\nafter=\"ok\"\n");
+        let sections = parse_config_sections(&fixture);
+        assert_eq!(sections["section"]["array"], array);
+        assert_eq!(sections["section"]["dictionary"], dictionary);
+        assert_eq!(sections["section"]["after"], "ok");
     }
 
     #[test]

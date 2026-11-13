@@ -282,7 +282,10 @@ fn walk_dir(
     depth: usize,
 ) -> Result<(), String> {
     if depth > MAX_WALK_DEPTH {
-        return Ok(());
+        return Err(format!(
+            "project manifest exceeds directory depth limit {MAX_WALK_DEPTH} at {} (depth {depth}); refusing incomplete APK cache key",
+            dir.display()
+        ));
     }
     let entries =
         fs::read_dir(dir).map_err(|error| format!("read dir {}: {error}", dir.display()))?;
@@ -451,6 +454,47 @@ mod tests {
             "removing the added file restores the key"
         );
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn manifest_depth_limit_bypasses_incomplete_cache_keys() {
+        let root = unique_temp_dir("depth-limit");
+        build_project(&root);
+        let mut boundary = root.clone();
+        for _ in 0..MAX_WALK_DEPTH {
+            boundary.push("d");
+        }
+        fs::create_dir_all(&boundary).expect("boundary directory");
+        fs::write(boundary.join("resource.tres"), b"at boundary").expect("boundary resource");
+        let inputs = key_inputs(&root, &[]);
+        let boundary_key = compute_cache_key(&inputs).expect("depth limit is inclusive");
+        assert_eq!(manifest_file_count(&inputs).expect("complete manifest"), 3);
+
+        let beyond = boundary.join("d");
+        fs::create_dir_all(&beyond).expect("over-depth directory");
+        let resource = beyond.join("resource.tres");
+        fs::write(&resource, b"before").expect("deep resource");
+        let first = compute_cache_key(&inputs);
+        fs::write(&resource, b"after change").expect("deep resource update");
+        let second = compute_cache_key(&inputs);
+        let count = manifest_file_count(&inputs);
+
+        fs::write(beyond.join(".gdignore"), b"").expect("exclude deep directory");
+        let ignored_key = compute_cache_key(&inputs).expect("ignored trees need not be walked");
+        fs::remove_dir_all(&root).expect("cleanup");
+        assert_eq!(ignored_key, boundary_key);
+        for result in [first, second] {
+            let reason = result.expect_err("incomplete manifests must bypass the cache");
+            assert!(reason.contains(&MAX_WALK_DEPTH.to_string()), "{reason}");
+            assert!(
+                reason.contains(beyond.to_string_lossy().as_ref()),
+                "{reason}"
+            );
+        }
+        assert!(
+            count.is_err(),
+            "file counts must reject incomplete manifests too"
+        );
     }
 
     #[test]

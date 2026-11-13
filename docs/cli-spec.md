@@ -3493,7 +3493,9 @@ godot-qa session start \
 defaults. Android requires `--preset`. `--device` is optional only when ADB
 reports exactly one authorized device. `--package` overrides the package derived
 from the preset for custom Gradle configurations. ADB resolution order is `ADB`,
-`ANDROID_SDK_ROOT`, `ANDROID_HOME`, then `PATH`.
+`ANDROID_SDK_ROOT`, `ANDROID_HOME`, then `PATH`. Bare ADB override names use
+native executable candidates on `PATH`, including `ADB=adb` resolving `adb.exe`
+on Windows, without implicitly selecting `.cmd` or `.bat` wrappers.
 
 Android rejects `--headless`, an explicit `--viewport`, `--hot-reload`,
 `--fastest`, `--fixed-fps`, and `--no-audio`. These conflicts return a non-zero
@@ -3502,6 +3504,9 @@ validation additionally use stable failure kinds including
 `android_preset_required`, `android_export_preset_invalid`, `android_package_invalid`,
 `android_device_not_found`, `android_device_ambiguous`,
 `android_device_unauthorized`, and `android_device_unavailable`.
+Preset validation reads complete multiline ConfigFile values. A customized export
+filter excluding the QA addon, including a multiline `customized_files`
+dictionary, fails with `android_export_preset_invalid` before APK export.
 
 Start performs debug APK export, `adb install -r`, private stdin bootstrap
 provisioning, an exact per-session `adb forward`, a fresh launcher start, device
@@ -3511,12 +3516,22 @@ installation or immediate device revalidation fails. A wireless `host:port` or
 discovered ADB mDNS service serial is reconnected after export because an
 exporter may restart the ADB daemon; pairing is not managed.
 
+Android helper commands have wall-clock deadlines: debug export gets 10 minutes,
+APK installation and binary artifact pulls get 2 minutes, and other ADB operations
+get 30 seconds. A timeout fails the current operation with its existing failure
+kind, the command, deadline, cleanup result, and partial stdout/stderr. Private
+stdin operations suppress captured output to avoid exposing session tokens.
+Helpers are killed and reaped on errors, including failed or stalled stdin writes.
+
 Start caches the debug-APK export so an unchanged project skips the export on the
 next start. The cache key is a SHA-256 of the Godot binary path and version, the
 preset name, the resolved package, and a sorted manifest of project file paths,
 sizes, and mtimes; the manifest mirrors the exporter's exclusions (hidden `.`
 directories such as `.git`/`.godot`, any directory holding a `.gdignore`, and the
-artifacts directory when it resolves inside the project root). Entries live at
+artifacts directory when it resolves inside the project root). If traversal needs
+to descend beyond 32 directory levels, manifest collection fails and caching is
+bypassed (`project_manifest_failed`), so an incomplete manifest cannot reuse a
+stale APK. Entries live at
 `.qa/cache/android/<key>/session-debug.apk` with a `meta.json` sidecar. A hit
 copies the cached APK into the session deployment directory, so
 install/`retained_apk`/cleanup behavior is unchanged; the newest four keys are
@@ -3536,7 +3551,10 @@ device artifact root, but never the session token.
 Android `session stop` first requests `session.stop`, then falls back to
 `am force-stop`, removes only the recorded forward, stops the logcat helper,
 removes only the session's private QA directory, and clears local metadata after
-successful cleanup. A disconnected device is reported as unavailable and its
+successful cleanup. Logcat cleanup waits for exit, escalating from SIGTERM to
+SIGKILL on Unix with a one-second grace for each signal. If the helper or its
+process group remains alive, `android_logcat_stop_failed` retains the session
+metadata for retry. A disconnected device is reported as unavailable and its
 recoverable metadata is retained. Plain `session reload` reloads packaged device
 content. `session watch` and script/resource/structural host-file reload return
 explicit Android unsupported failures.
