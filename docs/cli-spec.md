@@ -33,6 +33,17 @@ Global flags:
 --verbose               Include command-specific diagnostic details under `data.diagnostics`
 ```
 
+If a literal `--json` appears anywhere in argv, parse/usage failures print the standard
+JSON failure envelope to stdout and exit `2`, even when parsing fails before reaching
+that flag. The envelope and failure use `command: "cli"` because dispatch has not
+occurred. The failure has `type: "cli_usage_error"`, Clap's diagnostic in `message`,
+a valid-arguments hint in `expected`, and the supplied arguments (excluding the
+executable) in `actual`. For example, `godot-qa --json input joy motion left_x` and
+`godot-qa input joy motion left_x --json` both return this structured error. Without
+`--json`, usage errors keep Clap's plain-text stderr output and exit `2`. Successful
+`--help` and `--version` requests keep their plain-text stdout output and exit `0`,
+including when combined with `--json`.
+
 Still planned, not implemented in S1:
 
 ```text

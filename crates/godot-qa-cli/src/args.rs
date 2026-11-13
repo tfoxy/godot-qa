@@ -792,6 +792,7 @@ pub(crate) struct SessionFrameArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct SessionTimeScaleArgs {
+    #[arg(allow_negative_numbers = true)]
     pub(crate) time_scale: f64,
     #[arg(long = "physics-ticks-per-second")]
     pub(crate) physics_ticks_per_second: Option<i64>,
@@ -1037,6 +1038,7 @@ pub(crate) struct InputJoyButtonArgs {
 #[derive(Debug, Args)]
 pub(crate) struct InputJoyMotionArgs {
     pub(crate) axis: String,
+    #[arg(allow_negative_numbers = true)]
     pub(crate) value: f64,
     #[arg(long, default_value_t = 0)]
     pub(crate) device: i64,

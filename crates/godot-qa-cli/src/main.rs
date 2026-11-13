@@ -107,14 +107,45 @@ where
     I: IntoIterator<Item = T>,
     T: Into<std::ffi::OsString> + Clone,
 {
-    let cli = match Cli::try_parse_from(args) {
+    let args: Vec<std::ffi::OsString> = args.into_iter().map(Into::into).collect();
+    let as_json = args.iter().skip(1).any(|arg| arg == "--json");
+    let cli = match Cli::try_parse_from(&args) {
         Ok(cli) => cli,
         Err(error) => {
-            let _ = error.print();
-            return match error.kind() {
-                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => Ok(0),
-                _ => Err(2),
-            };
+            if matches!(
+                error.kind(),
+                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
+            ) {
+                let _ = error.print();
+                return Ok(0);
+            }
+            if as_json {
+                let message = error.to_string();
+                let result = CommandResult {
+                    ok: false,
+                    command: "cli".to_string(),
+                    message: message.clone(),
+                    data: serde_json::Map::new(),
+                    failures: vec![FailureDetail {
+                        kind: "cli_usage_error".to_string(),
+                        command: Some("cli".to_string()),
+                        message: Some(message),
+                        expected: Some(json!("valid CLI arguments (see --help)")),
+                        actual: Some(json!(
+                            args.iter()
+                                .skip(1)
+                                .map(|arg| arg.to_string_lossy())
+                                .collect::<Vec<_>>()
+                        )),
+                        ..FailureDetail::default()
+                    }],
+                    exit_code: 2,
+                };
+                print_result(&result, true).map_err(|_| 2)?;
+            } else {
+                let _ = error.print();
+            }
+            return Err(2);
         }
     };
 
@@ -471,7 +502,7 @@ fn error_kind_name(error: &std::io::Error, path: &Path) -> &'static str {
     }
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 fn command_path(command: &Commands) -> &'static str {
     match command {
         Commands::Doctor(_) => "doctor",

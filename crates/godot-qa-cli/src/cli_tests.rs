@@ -23,6 +23,84 @@ use godot_qa_core::config::ProjectConfig;
 use godot_qa_core::results::{CommandResult, FailureDetail};
 
 #[test]
+fn command_path_helper_is_test_only() {
+    let source = include_str!("main.rs");
+    let (prefix, _) = source.split_once("\nfn command_path(").unwrap();
+    assert!(
+        prefix.ends_with("#[cfg(test)]"),
+        "command_path must be excluded from production builds without a dead_code allowance"
+    );
+}
+
+#[test]
+fn input_joy_motion_parses_negative_integer_with_trailing_flags() {
+    assert_negative_joy_motion_parses("-1", -1.0);
+}
+
+#[test]
+fn input_joy_motion_parses_negative_fraction_with_trailing_flags() {
+    assert_negative_joy_motion_parses("-0.5", -0.5);
+}
+
+fn assert_negative_joy_motion_parses(value: &str, expected: f64) {
+    let cli = Cli::try_parse_from([
+        "godot-qa", "input", "joy", "motion", "left_x", value, "--device", "2", "--frames", "3",
+        "--json",
+    ])
+    .expect("negative joy axis values must parse with trailing flags");
+    assert!(cli.json);
+    let Commands::Input(input) = cli.command else {
+        panic!("expected input command");
+    };
+    let InputCommands::Joy(joy) = input.command else {
+        panic!("expected joy command");
+    };
+    let InputJoyCommands::Motion(motion) = joy.command else {
+        panic!("expected motion command");
+    };
+    assert_eq!(motion.axis, "left_x");
+    assert_eq!(motion.value, expected);
+    assert_eq!(motion.device, 2);
+    assert_eq!(motion.frames, 3);
+}
+
+#[test]
+fn session_time_scale_parses_negative_integer_for_validation() {
+    assert_negative_time_scale_reaches_validation("-1", -1.0);
+}
+
+#[test]
+fn session_time_scale_parses_negative_fraction_for_validation() {
+    assert_negative_time_scale_reaches_validation("-0.5", -0.5);
+}
+
+fn assert_negative_time_scale_reaches_validation(value: &str, expected: f64) {
+    let cli = Cli::try_parse_from([
+        "godot-qa",
+        "session",
+        "time-scale",
+        value,
+        "--physics-ticks-per-second",
+        "60",
+        "--json",
+    ])
+    .expect("negative time scales must parse before validation");
+    assert!(cli.json);
+    let Commands::Session(session) = cli.command else {
+        panic!("expected session command");
+    };
+    let SessionCommands::TimeScale(args) = session.command else {
+        panic!("expected time-scale command");
+    };
+    assert_eq!(args.time_scale, expected);
+    assert_eq!(args.physics_ticks_per_second, Some(60));
+    let failure = session_time_scale_params(&args).unwrap_err();
+    assert_eq!(failure.kind, "invalid_params");
+    assert_eq!(failure.command.as_deref(), Some("session time-scale"));
+    assert_eq!(failure.actual, Some(json!(expected)));
+}
+
+#[test]
 fn presented_startup_channel_tolerance_defaults_exact_and_is_scoped() {
     let base = [
         "godot-qa",
@@ -227,7 +305,6 @@ fn audio_cli_analyze_parses_window_options() {
     ]);
 
     assert!(cli.json);
-    assert_eq!(command_path(&cli.command), "audio analyze");
     let Commands::Audio(args) = cli.command else {
         panic!("expected audio command");
     };
@@ -238,6 +315,7 @@ fn audio_cli_analyze_parses_window_options() {
     assert_eq!(args.window_seconds, Some(0.25));
     assert_eq!(args.hop_seconds, Some(0.125));
     assert!(args.strict_warnings);
+    assert_eq!(audio_analyze_result(&args).command, "audio analyze");
 }
 
 #[test]

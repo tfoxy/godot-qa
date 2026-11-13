@@ -13,6 +13,19 @@ fn read(relative_path: &str) -> String {
 }
 
 #[test]
+fn cli_json_usage_errors_are_documented() {
+    let cli = read("docs/cli-spec.md");
+    for contract in [
+        "cli_usage_error",
+        "command: \"cli\"",
+        "parse/usage failures",
+        "exit `2`",
+    ] {
+        assert!(cli.contains(contract), "CLI contract missing {contract}");
+    }
+}
+
+#[test]
 fn native_process_and_cold_timing_evidence_are_documented() {
     let cli = read("docs/cli-spec.md");
     let artifacts = read("docs/artifact-format.md");
