@@ -15,6 +15,8 @@ const QaRuntime = preload("res://addons/godot_qa/qa_runtime.gd")
 # joy_connect/joy_disconnect exercises under headless QA.
 var _connected_pads: Dictionary = {}
 var _connection_events: Array[Dictionary] = []
+var _backspace_frames := 0
+var _concurrent_key_joy_frames := 0
 
 
 func _ready() -> void:
@@ -27,6 +29,22 @@ func _ready() -> void:
 	result_label.text = "ready"
 	input_probe_button.grab_focus()
 	Input.joy_connection_changed.connect(_on_joy_connection_changed)
+
+
+func _process(_delta: float) -> void:
+	if Input.is_key_pressed(KEY_BACKSPACE):
+		_backspace_frames += 1
+		if Input.is_joy_button_pressed(0, JOY_BUTTON_A):
+			_concurrent_key_joy_frames += 1
+
+
+func get_qa_key_state() -> Dictionary:
+	return {
+		"backspace_pressed": Input.is_key_pressed(KEY_BACKSPACE),
+		"backspace_frames": _backspace_frames,
+		"concurrent_key_joy_frames": _concurrent_key_joy_frames,
+		"joy_a_pressed": Input.is_joy_button_pressed(0, JOY_BUTTON_A),
+	}
 
 
 func _on_joy_connection_changed(device: int, connected: bool) -> void:

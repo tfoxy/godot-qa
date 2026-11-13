@@ -150,14 +150,16 @@ var _scene_root: Node = null
 var _root_window: Window = null
 var _runtime_errors: Array = []
 var _held_actions: Dictionary = {}
+var _held_keys: Dictionary = {}
 var _assertions: RefCounted = null
 
 
-func _init(scene_root: Node, root_window: Window, runtime_errors := [], held_actions := {}) -> void:
+func _init(scene_root: Node, root_window: Window, runtime_errors := [], held_actions := {}, held_keys := {}) -> void:
 	_scene_root = scene_root
 	_root_window = root_window
 	_runtime_errors = runtime_errors if runtime_errors is Array else []
 	_held_actions = held_actions if held_actions is Dictionary else {}
+	_held_keys = held_keys if held_keys is Dictionary else {}
 	_assertions = QaAssertions.new(self, _root_window, _runtime_errors)
 
 
@@ -233,7 +235,11 @@ func execute(command_name: String, params := {}) -> Dictionary:
 		"input.drag":
 			return await _drag(command_params)
 		"input.key":
-			return await _press_key(str(command_params.get("key", "")))
+			return await _press_key(command_params)
+		"input.key_hold":
+			return await _hold_key(command_params)
+		"input.key_release":
+			return await _release_key(str(command_params.get("key", "")))
 		"input.text":
 			return await _type_text(command_params)
 		"input.joy_button":
@@ -982,6 +988,15 @@ func release_held_actions() -> Array[Dictionary]:
 	return failures
 
 
+func release_held_keys() -> Array[Dictionary]:
+	var failures: Array[Dictionary] = []
+	for key_name in _held_keys.keys():
+		var result := await _release_key(str(key_name))
+		if not bool(result.get("ok", false)):
+			failures.append((result.get("error", {}) as Dictionary).duplicate(true))
+	return failures
+
+
 # Zero every non-zero joypad axis injected during this process so a held
 # trigger/stick cannot leak into the next warm scenario. Joypad axis state is
 # process-global, so this clears the shared tracking set across runtime
@@ -1078,13 +1093,14 @@ func release_faked_joypads() -> Array[Dictionary]:
 	return []
 
 
-# Full input reset: release all held actions, zero all touched joypad axes,
+# Full input reset: release all held actions and keys, zero all touched joypad axes,
 # release all pressed joypad buttons, lift all held screen touches, and
 # disconnect all QA-faked joypads. Returns any release failures. Exposed as the
 # input.reset bridge command and called from scenario finalize so each scenario
 # self-cleans its injected input and faked pad connections.
 func reset_input() -> Array[Dictionary]:
 	var failures: Array[Dictionary] = await release_held_actions()
+	failures.append_array(await release_held_keys())
 	failures.append_array(await release_held_axes())
 	failures.append_array(await release_held_buttons())
 	failures.append_array(await release_held_touches())
@@ -1100,6 +1116,7 @@ func teardown() -> void:
 	_root_window = null
 	_runtime_errors = []
 	_held_actions = {}
+	_held_keys = {}
 
 
 func _tap_action(action: String) -> Dictionary:
@@ -5532,7 +5549,8 @@ func _drag(params: Dictionary) -> Dictionary:
 	})
 
 
-func _press_key(raw_key: String) -> Dictionary:
+func _press_key(params: Dictionary) -> Dictionary:
+	var raw_key := str(params.get("key", ""))
 	var normalized := _normalize_key(raw_key)
 	if normalized.is_empty():
 		return _error(
@@ -5545,10 +5563,14 @@ func _press_key(raw_key: String) -> Dictionary:
 			},
 		)
 
+	var frames := _non_negative_int_param(params, "frames", 1, "input.key")
+	if not bool(frames.get("ok", false)):
+		return frames
+
 	var key_name := str(normalized.get("name", ""))
 	var keycode := int(normalized.get("keycode", 0))
 	var unicode := int(normalized.get("unicode", 0))
-	await _tap_key(keycode, unicode)
+	await _tap_key(keycode, unicode, int(frames.get("value", 1)))
 	var data := {
 		"device": "keyboard",
 		"key": key_name,
@@ -5556,6 +5578,58 @@ func _press_key(raw_key: String) -> Dictionary:
 	}
 	_append_focus_owner(data)
 	return _ok(data)
+
+
+func _hold_key(params: Dictionary) -> Dictionary:
+	var raw_key := str(params.get("key", ""))
+	var normalized := _normalize_key(raw_key)
+	if normalized.is_empty():
+		return _error(
+			"invalid_params",
+			"input.key_hold requires a supported named key",
+			{"command": "input.key_hold", "expected": _supported_key_names(), "actual": raw_key},
+		)
+	var frames := _non_negative_int_param(params, "frames", 1, "input.key_hold")
+	if not bool(frames.get("ok", false)):
+		return frames
+
+	var key_name := str(normalized.get("name", ""))
+	_emit_key_event(int(normalized.get("keycode", 0)), true, int(normalized.get("unicode", 0)))
+	_held_keys[key_name] = true
+	await _process_frames(int(frames.get("value", 1)))
+	var held_keys: Array = _held_keys.keys()
+	held_keys.sort()
+	return _ok({
+		"device": "keyboard",
+		"key": key_name,
+		"frames": int(frames.get("value", 1)),
+		"held": true,
+		"held_keys": held_keys,
+	})
+
+
+func _release_key(raw_key: String) -> Dictionary:
+	var normalized := _normalize_key(raw_key)
+	if normalized.is_empty():
+		return _error(
+			"invalid_params",
+			"input.key_release requires a supported named key",
+			{"command": "input.key_release", "expected": _supported_key_names(), "actual": raw_key},
+		)
+	var key_name := str(normalized.get("name", ""))
+	if not _held_keys.has(key_name):
+		return _error(
+			"key_not_held",
+			"input.key_release requires a currently held key",
+			{"key": key_name, "expected": "held key tracked by the runtime", "actual": "not_held"},
+		)
+
+	_emit_key_event(int(normalized.get("keycode", 0)), false, int(normalized.get("unicode", 0)))
+	_held_keys.erase(key_name)
+	await _process_frames(1)
+	var held_keys: Array = _held_keys.keys()
+	held_keys.sort()
+	return _ok({"device": "keyboard", "key": key_name, "held": false, "held_keys": held_keys})
 
 
 func _type_text(params: Dictionary) -> Dictionary:
@@ -6022,10 +6096,13 @@ func _note_touch_emulation() -> void:
 		print("[godot-qa] injected touch also synthesizes mouse events (input_devices/pointing/emulate_mouse_from_touch is enabled)")
 
 
-func _tap_key(keycode: int, unicode: int = 0) -> void:
+func _tap_key(keycode: int, unicode: int = 0, frames: int = 1) -> void:
 	_emit_key_event(keycode, true, unicode)
-	await _process_frames(1)
+	await _process_frames(frames)
 	_emit_key_event(keycode, false, unicode)
+	for key_name in _held_keys.keys():
+		if int(_normalize_key(str(key_name)).get("keycode", 0)) == keycode:
+			_held_keys.erase(key_name)
 	await _process_frames(1)
 
 

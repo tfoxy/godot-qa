@@ -29,6 +29,29 @@ This folder contains the Godot-side bootstrap layer for `godot-qa`.
 - `qa_session_runner.gd` handles the live-session path used by `session start`: it loads one scene, presents the initial resized viewport frame to the window, binds `127.0.0.1:<random-port>`, serves one JSON-line request per TCP connection, and keeps the process alive until `session.stop`. Live sessions are realtime by default; CLI `session start --fastest` and live-script `session_start.frame_pacing` opt into launch-time `--fixed-fps`/`--disable-vsync` pacing without using `Engine.time_scale`.
 - Screenshot-producing CLI flows use windowed Godot sessions by default. In forced `--headless` snapshot runs where Godot does not expose viewport pixels, generic screenshot capture may stage a visible diagnostic PNG artifact so the snapshot contract stays stable without accepting blank transparent images. Visual assertions opt out of this fallback and fail unless real viewport pixels are available.
 
+## Keyboard input
+
+The runtime command `input.key` accepts `{ "key": "Backspace", "frames": 75 }`:
+press the named key, wait the requested process frames, release it, then wait one
+delivery frame. `frames` is a non-negative integer and defaults to `1`.
+`input.key_hold` accepts the same parameters and leaves the key pressed after the
+wait, returning `held: true` and sorted canonical `held_keys` names. Repeating a
+hold emits another press and waits again, matching action holds.
+`input.key_release` accepts `{ "key": "Backspace" }`, releases a tracked key,
+waits one delivery frame, and returns the remaining `held_keys`. Releasing a key
+that is not held fails with `key_not_held`; unsupported names fail with
+`invalid_params` on all three commands.
+
+Held keys persist across live commands within a bridge. `input.reset`, live scene
+replacement, and session stop release them. Mouse input, key chords, modifiers,
+and repeat (`echo`) events are outside this keyboard command contract.
+
+Run the headless runtime regression test after `cargo xtask prepare-sample`:
+
+```bash
+godot --headless --path examples/sample_project --script res://qa/tests/key_lifecycle_test.gd
+```
+
 ## Assertion examples
 
 ```json

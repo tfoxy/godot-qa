@@ -629,26 +629,52 @@ pub(crate) fn run_session_script_step(
         "errors" => {
             runtime::run_live_protocol_command(config, "errors", runtime::ERRORS_READ, Map::new())
         }
-        "input_key" => {
+        "input_key" | "input_key_hold" | "input_key_release" => {
+            let release = op == "input_key_release";
+            if let Some(object) = value.as_object()
+                && object
+                    .keys()
+                    .any(|field| field != "key" && (release || field != "frames"))
+            {
+                return invalid_session_script_step(
+                    index,
+                    &format!("{op} step contains unsupported fields"),
+                    if release {
+                        json!(["key"])
+                    } else {
+                        json!(["key", "frames"])
+                    },
+                    value.clone(),
+                );
+            }
             let key = value
                 .as_object()
                 .and_then(|v| v.get("key"))
                 .and_then(Value::as_str)
-                .or_else(|| value.as_str());
+                .or_else(|| value.as_str())
+                .filter(|key| !key.trim().is_empty());
             let Some(key) = key else {
                 return invalid_session_script_step(
                     index,
-                    "input_key step requires a key",
+                    &format!("{op} step requires a non-empty key"),
                     json!("string or {key: string}"),
                     value.clone(),
                 );
             };
-            runtime::run_live_protocol_command(
-                config,
-                "input key",
-                runtime::INPUT_KEY,
-                Map::from_iter([("key".to_string(), json!(key))]),
-            )
+            let (command_name, protocol) = match op.as_str() {
+                "input_key_hold" => ("input key-hold", runtime::INPUT_KEY_HOLD),
+                "input_key_release" => ("input key-release", runtime::INPUT_KEY_RELEASE),
+                _ => ("input key", runtime::INPUT_KEY),
+            };
+            let mut params = Map::from_iter([("key".to_string(), json!(key))]);
+            if !release {
+                let frames = match script_non_negative_int_field(value, index, &op, "frames", 1) {
+                    Ok(frames) => frames,
+                    Err(result) => return result,
+                };
+                params.insert("frames".to_string(), json!(frames));
+            }
+            runtime::run_live_protocol_command(config, command_name, protocol, params)
         }
         "input_text" => {
             let text = value
@@ -1017,7 +1043,7 @@ pub(crate) fn run_session_script_step(
     }
 }
 
-pub(crate) const SESSION_SCRIPT_OPS: [&str; 42] = [
+pub(crate) const SESSION_SCRIPT_OPS: [&str; 44] = [
     "session_start",
     "session_stop",
     "session_change_scene",
@@ -1041,6 +1067,8 @@ pub(crate) const SESSION_SCRIPT_OPS: [&str; 42] = [
     "logs",
     "errors",
     "input_key",
+    "input_key_hold",
+    "input_key_release",
     "input_text",
     "input_joy_button",
     "input_joy_motion",

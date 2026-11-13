@@ -1746,6 +1746,8 @@ input.touch_up
 input.touch_tap
 input.drag
 input.key
+input.key_hold
+input.key_release
 input.text
 input.joy_button
 input.joy_motion
@@ -1764,7 +1766,37 @@ input.joy_state
 
 `input.drag` is a convenience gesture that presses at (`from_x`, `from_y`), interpolates to (`to_x`, `to_y`) over `max(frames, 1)` steps (`pos_i = from.lerp(to, i / steps)`, the final step forced exactly onto the target), then releases. Coordinates may be integer or float; both endpoints must lie inside `viewport_rect()` or the command fails with `invalid_params` (the failing endpoint is reported in `actual`). `frames` defaults to `8`, must be at least `1`, and is capped at `MAX_INPUT_GESTURE_FRAMES` = `1800` (below or above fails with `invalid_params`). `index` is coerced as a non-negative integer (default `0`) and applies only to the touch pointer. `pointer` (default `"touch"`) must be `"touch"` or `"mouse"`. The touch pointer rejects an already-held `index` with `touch_index_held`, then emits an `InputEventScreenTouch` press, one `InputEventScreenDrag` per step (each carrying `relative` and `velocity = relative / frame_delta`), and a release, waiting one frame after each event. The mouse pointer emits an initial `InputEventMouseMotion`, a left `InputEventMouseButton` press, one `InputEventMouseMotion` per step carrying `relative`, `velocity`, and `button_mask = MOUSE_BUTTON_MASK_LEFT` (the plain motion emitter sets no mask, so Control drag detection needs this masked variant), and a left button release, again waiting one frame per event. Success `data` carries `device` (`"touch"` or `"mouse"`), `pointer`, `from`, `to`, `frames`, and `steps` (`max(frames, 1)`), plus `index` for the touch pointer only; the mouse path never touches held-touch state.
 
-`input.key` accepts a single `key` string using the same named-key vocabulary as `godot-qa input key` (`Enter`, `Escape`, `Space`, `Tab`, `Backspace`, `Up`, `Down`, `Left`, `Right`, `0-9`, `A-Z`, plus aliases such as `Return`, `Esc`, and `ArrowUp`/`ArrowDown`/`ArrowLeft`/`ArrowRight`). The runtime emits an `InputEventKey` press, waits one frame, emits release, then waits one frame. Printable keys carry the matching `unicode` codepoint (`Space`=32, digits 48-57, letters lowercase 97-122) so a focused text control inserts the character; letters emit lowercase unicode with no Shift synthesis, and control keys keep `unicode` `0`. An unknown key fails with `invalid_params`. Success `data` carries `device`, `key`, the additive `unicode` field (the emitted codepoint, or `0` for control keys), and `focus_owner`. Engine caveat: `Enter` submits a focused `LineEdit` and ends its editing state (default `keep_editing_on_text_submit`), so subsequent key/text input is dropped by that control until it is re-activated (for example via `input.click_target`).
+`input.key` accepts a `key` string and optional `frames` using the same named-key vocabulary as `godot-qa input key` (`Enter`, `Escape`, `Space`, `Tab`, `Backspace`, `Up`, `Down`, `Left`, `Right`, `0-9`, `A-Z`, plus aliases such as `Return`, `Esc`, and `ArrowUp`/`ArrowDown`/`ArrowLeft`/`ArrowRight`). `frames` must be a non-negative integer and defaults to `1`, matching `input.joy_button` validation. The runtime emits an `InputEventKey` press, waits `frames` process frames, emits release, then waits one delivery frame, including for `frames: 0`. Printable keys carry the matching `unicode` codepoint (`Space`=32, digits 48-57, letters lowercase 97-122) so a focused text control inserts the character; letters emit lowercase unicode with no Shift synthesis, and control keys keep `unicode` `0`. An unknown key or invalid frames fails with `invalid_params`. Success `data` carries `device`, `key`, the additive `unicode` field (the emitted codepoint, or `0` for control keys), and `focus_owner`. Engine caveat: `Enter` submits a focused `LineEdit` and ends its editing state (default `keep_editing_on_text_submit`), so subsequent key/text input is dropped by that control until it is re-activated (for example via `input.click_target`).
+
+`input.key_hold` accepts `{key, frames}` with the same names and frame validation,
+defaulting to one frame. It emits a press, records the canonical key name in the
+bridge's held-key dictionary, waits the requested process frames, and returns
+with the key still pressed. Holding an already-held key emits another press and
+waits again, matching `input.hold_action`. Success data contains
+`device: "keyboard"`, canonical `key`, `frames`, `held: true`, and sorted `held_keys`.
+Tapping a held key through `input.key` (including aliases) or `input.text` releases it and removes it from `held_keys`, so a later `input.key_release` fails with `key_not_held`.
+`input.key_release` accepts `{key}`. It fails with `key_not_held` if the canonical
+key is not tracked, otherwise emits release, removes the key, waits one delivery
+frame, and returns `device`, canonical `key`, `held: false`, and sorted remaining
+`held_keys`. Unknown names fail with `invalid_params` on both commands.
+
+Held-key state belongs to each bridge and survives separate live requests.
+`input.reset`, `reset_input()`, live scene replacement (`session.change_scene`
+or reload), and session stop release tracked keys. Mouse gestures, key chords,
+modifiers, and repeat (`echo`) events are outside these keyboard commands; key
+events always have `echo: false`. The Rust transport derives tap/hold request
+timeouts as `max(5s, ceil(total_frames / 30fps) + 5s)`, capped at 120 seconds,
+where tap uses `frames + 1` for the release delivery frame and hold uses `frames`.
+
+Example sequential requests and success data:
+
+```json
+{"command": "input.key", "params": {"key": "Backspace", "frames": 75}}
+{"command": "input.key_hold", "params": {"key": "Backspace", "frames": 75}}
+{"device": "keyboard", "key": "Backspace", "frames": 75, "held": true, "held_keys": ["Backspace"]}
+{"command": "input.key_release", "params": {"key": "Backspace"}}
+{"device": "keyboard", "key": "Backspace", "held": false, "held_keys": []}
+```
 
 `input.text` accepts a non-empty `text` string (at most `900` characters; empty or over-length fails with `invalid_params`). The runtime emits one `InputEventKey` press/release pair per codepoint of `text`, setting `unicode` from the codepoint on both press and release and a best-effort keycode (`OS.find_keycode_from_string` on the uppercased character, `KEY_NONE` fallback), waiting one frame after each event (2 frames per character against the `MAX_INPUT_GESTURE_FRAMES` = `1800` cap). Text entry is case-sensitive and supports punctuation and non-ASCII characters, and no modifiers (Shift/Ctrl/Alt) are synthesized. Success `data` carries `device`, `text`, `characters`, and `focus_owner`.
 

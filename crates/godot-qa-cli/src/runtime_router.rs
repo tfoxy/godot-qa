@@ -559,6 +559,24 @@ pub(crate) fn runtime_result(cli: &Cli) -> Option<CommandResult> {
                 &config,
                 "input key",
                 runtime::INPUT_KEY,
+                serde_json::Map::from_iter([
+                    ("key".to_string(), json!(args.key.clone())),
+                    ("frames".to_string(), json!(args.frames)),
+                ]),
+            ),
+            InputCommands::KeyHold(args) => runtime::run_live_protocol_command(
+                &config,
+                "input key-hold",
+                runtime::INPUT_KEY_HOLD,
+                serde_json::Map::from_iter([
+                    ("key".to_string(), json!(args.key.clone())),
+                    ("frames".to_string(), json!(args.frames)),
+                ]),
+            ),
+            InputCommands::KeyRelease(args) => runtime::run_live_protocol_command(
+                &config,
+                "input key-release",
+                runtime::INPUT_KEY_RELEASE,
                 serde_json::Map::from_iter([("key".to_string(), json!(args.key.clone()))]),
             ),
             InputCommands::Type(args) => runtime::run_live_protocol_command(

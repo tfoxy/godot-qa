@@ -156,6 +156,8 @@ input touch up
 input touch tap
 input drag
 input key
+input key-hold
+input key-release
 input type
 input joy button
 input joy motion
@@ -2635,6 +2637,25 @@ errors.json
 
 `session run-script <path>` executes a declarative live-session script sequentially. The script is JSON/YAML data with a `steps` array; each step is a single operation such as `session_start`, `session_pause`, `session_resume`, `tree`, `ui`, `node_inspect`, `input_key`, `input_text`, `input_joy_button`, `input_joy_motion`, `call_method`, `fixture_call`, `screenshot`, `logs`, `errors`, `assert`, or `session_stop`. `input_text` accepts either a text string or `{text: string}`; `input_joy_button` accepts either a button string or `{button, optional device, optional frames}`; `input_joy_motion` accepts `{axis, value, optional device, optional frames}`. `pause_session` and `resume_session` are accepted aliases for `session_pause` and `session_resume`. `session_start` may include `project_args: [...]`, passed after Godot's `--` separator. It may also request fastest live pacing with either `frame_pacing: {mode: fastest, fixed_fps: 60}` or shorthand `fastest: true` plus optional `fixed_fps: 60`; omitted `fixed_fps` uses the same project-setting derivation as `session start --fastest`. If a script reuses an already-running session, the existing session's pacing is reported; a requested fastest pacing mismatch fails with `type: "session_frame_pacing_mismatch"` instead of silently reusing the session. When `session_start` requests a windowed session but the existing session is headless, the runner stops the incompatible session and starts a windowed one instead of reusing it for screenshot-producing steps. `call_method` dispatches the same live `setup.call_method` fixture operation as saved scenarios and only allows project-owned methods beginning with `qa_`; `fixture_call` dispatches the same setup-only `fixture.call` registered driver operation as saved scenarios and uses `driver`, `action`, and optional object `params`. The runner stops at the first failed step and returns per-step JSON evidence, which avoids overlapping live-bridge requests and the resulting `session_bridge_busy` failures. `session.wait_frames` requests use a frame-derived timeout of `max(5s, ceil(frames / 30fps) + 5s)`, capped at 120 seconds, so long waits can complete without splitting scripts into many short waits. Transient live-bridge transport failures such as `session_bridge_busy` and `session_connect_failed` with `Resource temporarily unavailable (os error 11)` are retried before the step fails; assertion, target, timeout, and gameplay failures are not retried. When bridge-busy diagnostics identify an in-progress `session.wait_frames`, retry metadata includes `wait_aware: true`, `backoff_milliseconds`, and the in-progress wait diagnostics. Use `assert: {state_matches: {...}}` for read-only project QA state such as `get_qa_lobby_state()` instead of `edit-live call`.
 Live scripts also accept `joy_connect` and `joy_disconnect` with the saved-scenario `{devices: [...]}` shape (optional `name` on connect), `session_change_scene` with a scene path or `{scene: path}`, and `session_reload_scene`. This permits a single bounded script to check virtual-pad cleanup across a scene replacement and session stop; see `examples/sample_project/qa/live_scripts/joy_lifecycle_cleanup_smoke.yaml`.
+Live-script keyboard operations are `input_key`, `input_key_hold`, and `input_key_release`.
+All accept a non-empty key string or an object with `key`. Tap and hold objects
+also accept `frames` (non-negative integer, default `1`); release accepts only
+`key`. Unknown fields, empty keys, and invalid frame values fail with
+`invalid_session_script` before sending input. Key names are checked by Godot.
+Hold persists across script steps and separate live commands; release removes
+the key or fails with `key_not_held`. These operations use the keyboard semantics
+documented below. For example, against an existing session:
+
+```json
+{
+  "steps": [
+    {"input_key_hold": {"key": "Backspace", "frames": 75}},
+    {"input_key_release": "Backspace"},
+    {"input_key": {"key": "A", "frames": 3}}
+  ]
+}
+```
+
 Direct live commands such as `snapshot`, `tree`, `ui`, `node inspect`, `physics inspect`, `surface audit`, `trace record`, `event trace`, `audio capture`, `session profile`, `errors`, `logs`, and live `assert` commands also perform a bounded retry when the bridge reports transient command contention: `session_bridge_busy`, `resource_unavailable`, `resource_busy`, `bridge_busy`, or `session_connect_failed` containing `Resource temporarily unavailable` / `os error 11`. Bridge-busy diagnostics that include an in-progress command window are used to choose a less aggressive retry delay. JSON output includes `data.retry` with attempts, backoff, observed retryable failures, final status, and exhaustion state when a retry was attempted. Assertion failures, target-resolution failures, malformed runtime payloads, invalid tokens, stale sessions, and other non-transient failures are not retried.
 `screenshot capture` requires an active windowed live session. `--setup-script <path>` may be supplied to run a `session run-script` fixture/setup script before capture starts; setup scripts may include `session_start`, `call_method`, or registered-driver `fixture_call` steps. `--require-visible <locator>`, `--require-hidden <locator>`, and `--require-state '<json>'` are optional state guards evaluated immediately before capture; failed guards prevent capture and return structured diagnostics with current session status, visible anchor context, and the mismatched state assertion. Godot stages one PNG under the current session artifact root, the CLI quality-checks it, and the CLI copies it to the requested `--out` path only when the staged image is not low-information. Successful JSON includes `data.setup_script` when setup was requested and records passed state guards when supplied.
 
@@ -2763,6 +2784,9 @@ godot-qa input touch up
 godot-qa input touch tap --x 640 --y 360
 godot-qa input drag --from-x 600 --from-y 300 --to-x 200 --to-y 300
 godot-qa input key Enter
+godot-qa input key Backspace --frames 75
+godot-qa input key-hold Backspace --frames 75 --json
+godot-qa input key-release Backspace --json
 godot-qa input type "127.0.0.1"
 godot-qa input joy button start --device 2 --frames 2
 godot-qa input joy motion right_x 1.0 --frames 2 --device 0
@@ -2779,13 +2803,24 @@ Action-level input is still preferred for stable menu tests, but the live sessio
   - low-level screen-touch primitives for a single held finger per `--index`; see the S78 additive contract below for semantics and payloads
 - `input drag --from-x --from-y --to-x --to-y [--frames <n>] [--pointer <touch|mouse>] [--index <n>]`
   - convenience one-shot drag from one point to another over `--frames` interpolated steps; see the S78 additive contract below for the `--pointer` enum and payloads
-- `input key <key>`
+- `input key <key> [--frames <n>]`
   - one named key press/release, not freeform text entry
+  - `--frames` is a non-negative integer, default `1`; press, wait that many process frames, release, then wait one delivery frame (including when `--frames 0`)
   - supported canonical keys: `Enter`, `Escape`, `Space`, `Tab`, `Backspace`, `Up`, `Down`, `Left`, `Right`, `0-9`, `A-Z`
   - aliases include `Return`, `Esc`, and `ArrowUp`/`ArrowDown`/`ArrowLeft`/`ArrowRight`
   - printable keys (`Space`, `0-9`, `A-Z`) now carry the matching `unicode` codepoint (space=32, digits 48-57, letters lowercase 97-122) so a focused `LineEdit`/text control inserts the character; control keys (`Enter`, `Escape`, `Tab`, `Backspace`, arrows) stay `0`
   - letters emit lowercase `unicode` with no Shift synthesis, so `input key A` inserts `a`; use `input type` for case-sensitive or punctuated text
   - success `data` now includes an additive `unicode` field (the emitted codepoint, or `0` for control keys)
+- `input key-hold <key> [--frames <n>]`
+  - press a supported named key, wait the non-negative integer frame count (default `1`), and leave it held; repeating a hold emits another press and waits again, matching action holds
+  - returns `device`, canonical `key`, `frames`, `held: true`, and sorted canonical `held_keys`
+  - tapping a held key through `input key` (including aliases) or `input type` releases it and removes it from `held_keys`, so a later `input key-release` fails with `key_not_held`
+- `input key-release <key>`
+  - release a tracked key and wait one delivery frame; returns `device`, canonical `key`, `held: false`, and the remaining sorted `held_keys`
+  - releasing a key that is not held fails with `key_not_held`; unknown names on tap, hold, or release fail with `invalid_params`
+  - held keys persist per live bridge across separate commands; `input.reset`, live scene replacement, and session stop release them
+  - tap and hold request timeouts use `max(5s, ceil(total_frames / 30fps) + 5s)`, capped at 120 seconds; `total_frames` is `frames + 1` for tap and `frames` for hold
+  - mouse gestures, key chords, modifiers, and key-repeat (`echo`) events are outside this keyboard command contract
 - `input type <text>`
   - freeform text entry: injects a per-character `InputEventKey` press/release for each codepoint of `<text>`, with `unicode` set from the text's codepoints and a best-effort keycode (`OS.find_keycode_from_string` on the uppercased character, `KEY_NONE` fallback)
   - case-sensitive and supports punctuation and non-ASCII characters, unlike `input key`

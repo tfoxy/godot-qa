@@ -1,0 +1,146 @@
+{
+  "name": "saved_keyboard_input_demo",
+  "scene": "res://ui/fixtures/live_input_probe.tscn",
+  "determinism": {
+    "fixed_fps": 60,
+    "seed": 123,
+    "test_mode": true
+  },
+  "steps": [
+    {
+      "input_key": "Enter"
+    },
+    {
+      "assert": [
+        {
+          "text_equals": {
+            "target": "qa:input_probe_result",
+            "expected": "key:Enter"
+          }
+        }
+      ]
+    },
+    {
+      "input_key": {
+        "key": "Backspace",
+        "frames": 3
+      }
+    },
+    {
+      "assert": [
+        {
+          "state_matches": {
+            "source": "method",
+            "target": "qa:live_input_probe",
+            "method": "get_qa_key_state",
+            "matches": [
+              {
+                "path": "backspace_pressed",
+                "operator": "equals",
+                "expected": false
+              },
+              {
+                "path": "backspace_frames",
+                "operator": "greater_than",
+                "expected": 1
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "input_joy_state": {
+        "inputs": [
+          {
+            "device": 0,
+            "button": {
+              "name": "a",
+              "pressed": true
+            }
+          }
+        ],
+        "frames": 0
+      }
+    },
+    {
+      "input_key_hold": {
+        "key": "Backspace",
+        "frames": 75
+      }
+    },
+    {
+      "wait_frames": 1
+    },
+    {
+      "assert": [
+        {
+          "state_matches": {
+            "source": "method",
+            "target": "qa:live_input_probe",
+            "method": "get_qa_key_state",
+            "matches": [
+              {
+                "path": "backspace_pressed",
+                "operator": "equals",
+                "expected": true
+              },
+              {
+                "path": "concurrent_key_joy_frames",
+                "operator": "greater_than",
+                "expected": 74
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "input_key_release": {
+        "key": "Backspace"
+      }
+    },
+    {
+      "assert": [
+        {
+          "state_matches": {
+            "source": "method",
+            "target": "qa:live_input_probe",
+            "method": "get_qa_key_state",
+            "matches": [
+              {
+                "path": "backspace_pressed",
+                "operator": "equals",
+                "expected": false
+              },
+              {
+                "path": "joy_a_pressed",
+                "operator": "equals",
+                "expected": true
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "input_joy_state": {
+        "inputs": [
+          {
+            "device": 0,
+            "button": {
+              "name": "a",
+              "pressed": false
+            }
+          }
+        ],
+        "frames": 1
+      }
+    }
+  ],
+  "assert": [
+    {
+      "no_errors": true
+    }
+  ]
+}

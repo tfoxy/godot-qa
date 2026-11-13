@@ -154,6 +154,94 @@ fn write_session_files(root: &Path, session_id: &str, port: u16) {
 }
 
 #[test]
+fn keyboard_cli_and_live_script_forward_keys_and_frames() {
+    let mut cases = Vec::new();
+    for (leaf, op, protocol) in [
+        ("key", "input_key", "input.key"),
+        ("key-hold", "input_key_hold", "input.key_hold"),
+        ("key-release", "input_key_release", "input.key_release"),
+    ] {
+        let mut defaults = json!({"key": "Backspace"});
+        if leaf != "key-release" {
+            defaults["frames"] = json!(1);
+        }
+        cases.push((
+            vec![
+                "input".to_string(),
+                leaf.to_string(),
+                "Backspace".to_string(),
+            ],
+            None,
+            protocol,
+            defaults.clone(),
+        ));
+        for value in [json!("Backspace"), json!({"key": "Backspace"})] {
+            cases.push((
+                Vec::new(),
+                Some(json!({op: value})),
+                protocol,
+                defaults.clone(),
+            ));
+        }
+        if leaf != "key-release" {
+            for frames in [0, 75] {
+                let params = json!({"key": "Backspace", "frames": frames});
+                cases.push((
+                    vec![
+                        "input".to_string(),
+                        leaf.to_string(),
+                        "Backspace".to_string(),
+                        "--frames".to_string(),
+                        frames.to_string(),
+                    ],
+                    None,
+                    protocol,
+                    params.clone(),
+                ));
+                cases.push((Vec::new(), Some(json!({op: params})), protocol, params));
+            }
+        }
+    }
+    for (index, (args, step, protocol, expected)) in cases.into_iter().enumerate() {
+        let root = unique_temp_root(&format!("keyboard-{index}"));
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        write_session_files(&root, "session-keyboard-test", port);
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut request)
+                .unwrap();
+            let payload: Value = serde_json::from_str(&request).unwrap();
+            assert_eq!(payload["command"], protocol);
+            assert_eq!(payload["token"], "token-test");
+            assert_eq!(payload["params"], expected);
+            stream.write_all(b"{\"protocol_version\":\"0.1\",\"ok\":true,\"data\":{\"device\":\"keyboard\"}}\n").unwrap();
+        });
+        let mut command = Command::new(env!("CARGO_BIN_EXE_godot-qa"));
+        command.arg("--project").arg(&root).arg("--json");
+        if let Some(step) = step {
+            let script = root.join("keyboard-script.json");
+            fs::write(
+                &script,
+                serde_json::to_vec(&json!({"steps": [step]})).unwrap(),
+            )
+            .unwrap();
+            command.args(["session", "run-script"]).arg(script);
+        } else {
+            command.args(args);
+        }
+        let output = command.output().unwrap();
+        server.join().unwrap();
+        let body: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(output.status.success(), "case {index}: {body}");
+        assert_eq!(body["ok"], true);
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[test]
 fn input_touch_down_sends_protocol_command_and_reports_payload() {
     let root = unique_temp_root("input-touch-down");
 

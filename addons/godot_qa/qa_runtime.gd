@@ -5,8 +5,8 @@ const QaRuntimeImpl = preload("res://addons/godot_qa/qa_runtime_impl.gd")
 var _impl: RefCounted = null
 
 
-func _init(scene_root: Node, root_window: Window, runtime_errors := [], held_actions := {}) -> void:
-	_impl = QaRuntimeImpl.new(scene_root, root_window, runtime_errors, held_actions)
+func _init(scene_root: Node, root_window: Window, runtime_errors := [], held_actions := {}, held_keys := {}) -> void:
+	_impl = QaRuntimeImpl.new(scene_root, root_window, runtime_errors, held_actions, held_keys)
 
 
 func execute(command_name: String, params := {}) -> Dictionary:
@@ -131,6 +131,10 @@ func stable_locator_for_node(node: Node) -> String:
 
 func release_held_actions() -> Array[Dictionary]:
 	return _impl.release_held_actions()
+
+
+func release_held_keys() -> Array[Dictionary]:
+	return await _impl.release_held_keys()
 
 
 func release_held_axes() -> Array[Dictionary]:

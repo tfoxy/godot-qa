@@ -24,6 +24,9 @@ const KNOWN_STEP_KEYS: &[&str] = &[
     "tap_action",
     "hold_action",
     "release_action",
+    "input_key",
+    "input_key_hold",
+    "input_key_release",
     "input_joy_button",
     "input_joy_motion",
     "input_joy_state",
@@ -1080,6 +1083,11 @@ fn validate_supported_step_payloads(steps: &[Value], path: &Path) -> Result<(), 
             }
         }
 
+        for kind in ["input_key", "input_key_hold", "input_key_release"] {
+            if let Some(value) = step.get(kind) {
+                validate_input_key_step(value, kind, path)?;
+            }
+        }
         if let Some(input_joy_button) = step.get("input_joy_button") {
             validate_input_joy_button_step(input_joy_button, path)?;
         }
@@ -2366,6 +2374,15 @@ fn normalize_step(step: &Value) -> Value {
     if let Some(fixture_call) = normalized.get_mut("fixture_call") {
         trim_step_fields(fixture_call, &["driver", "action"]);
     }
+    for kind in ["input_key", "input_key_hold", "input_key_release"] {
+        if let Some(value) = normalized.get_mut(kind) {
+            if let Some(key) = value.as_str() {
+                *value = json!(key.trim());
+            } else {
+                trim_step_fields(value, &["key"]);
+            }
+        }
+    }
     if let Some(input_joy_button) = normalized.get_mut("input_joy_button") {
         if let Some(button) = input_joy_button.as_str() {
             *input_joy_button = json!(button.trim());
@@ -2391,6 +2408,47 @@ fn normalize_step(step: &Value) -> Value {
         }
     }
     Value::Object(normalized)
+}
+
+fn validate_input_key_step(value: &Value, kind: &str, path: &Path) -> Result<(), ScenarioError> {
+    if is_non_empty_string(value) {
+        return Ok(());
+    }
+    let Some(object) = value.as_object() else {
+        return Err(validation_failure(
+            path,
+            &format!("{kind} step value must be a non-empty string or object"),
+            json!("non-empty string or object"),
+            value.clone(),
+        ));
+    };
+    let allowed: &[&str] = if kind == "input_key_release" {
+        &["key"]
+    } else {
+        &["key", "frames"]
+    };
+    for field in object.keys() {
+        if !allowed.contains(&field.as_str()) {
+            return Err(validation_failure(
+                path,
+                &format!("{kind} step uses unsupported field '{field}'"),
+                json!(allowed),
+                json!({"unknown_key": field}),
+            ));
+        }
+    }
+    if !object.get("key").map(is_non_empty_string).unwrap_or(false) {
+        return Err(validation_failure(
+            path,
+            &format!("{kind} step field 'key' must be a non-empty string"),
+            json!("non-empty string"),
+            object.get("key").cloned().unwrap_or(Value::Null),
+        ));
+    }
+    if kind != "input_key_release" {
+        validate_optional_non_negative_int_field(path, kind, object, "frames")?;
+    }
+    Ok(())
 }
 
 fn validate_input_joy_button_step(value: &Value, path: &Path) -> Result<(), ScenarioError> {

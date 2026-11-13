@@ -126,12 +126,25 @@ fn live_request_timeout(protocol_command: &str, params: &Map<String, Value>) -> 
             LIVE_SESSION_WAIT_TIMEOUT_MAX_SECONDS,
         ));
     }
-    if protocol_command == SESSION_WAIT_FRAMES {
+    if matches!(
+        protocol_command,
+        SESSION_WAIT_FRAMES | INPUT_KEY | INPUT_KEY_HOLD
+    ) {
         let frames = params
             .get("frames")
             .and_then(Value::as_i64)
-            .unwrap_or(0)
+            .unwrap_or(if protocol_command == SESSION_WAIT_FRAMES {
+                0
+            } else {
+                1
+            })
             .max(0) as f64;
+        let frames = frames
+            + if protocol_command == INPUT_KEY {
+                1.0
+            } else {
+                0.0
+            };
         let wait_seconds = (frames / LIVE_SESSION_WAIT_TIMEOUT_FPS).ceil()
             + LIVE_SESSION_WAIT_TIMEOUT_GRACE_SECONDS;
         return Duration::from_secs_f64(wait_seconds.clamp(
@@ -664,6 +677,33 @@ mod transport_tests {
         assert_eq!(
             live_request_timeout(SCENARIO_RUN, &params),
             Duration::from_secs_f64(2000.0 + 15.0)
+        );
+    }
+    #[test]
+    fn keyboard_timeouts_include_press_and_delivery_frames() {
+        for command in ["input.key", "input.key_hold"] {
+            for (frames, tap_seconds, hold_seconds) in
+                [(0, 6, 5), (75, 8, 8), (900, 36, 35), (i64::MAX, 120, 120)]
+            {
+                let params = Map::from_iter([("frames".to_string(), json!(frames))]);
+                let expected = if command == "input.key" {
+                    tap_seconds
+                } else {
+                    hold_seconds
+                };
+                assert_eq!(
+                    live_request_timeout(command, &params),
+                    Duration::from_secs(expected)
+                );
+            }
+            assert_eq!(
+                live_request_timeout(command, &Map::new()),
+                Duration::from_secs(6)
+            );
+        }
+        assert_eq!(
+            live_request_timeout("input.key_release", &Map::new()),
+            Duration::from_secs(5)
         );
     }
 }

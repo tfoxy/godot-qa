@@ -17,6 +17,9 @@ const SUPPORTED_STEP_TYPES: Array[String] = [
 	"tap_action",
 	"hold_action",
 	"release_action",
+	"input_key",
+	"input_key_hold",
+	"input_key_release",
 	"input_joy_button",
 	"input_joy_motion",
 	"drive_policy",
@@ -91,6 +94,7 @@ var _scene_instance: Node = null
 var _runtime: RefCounted = null
 var _bridge: Node = null
 var _held_actions := {}
+var _held_keys := {}
 var _last_snapshot_name := ""
 var _last_snapshot_artifacts: Dictionary = {}
 var _started_at_msec := 0
@@ -275,7 +279,7 @@ func _run_scenario(request_path: String) -> Dictionary:
 			},
 		))
 		return await _finalize_scenario_outcome()
-	_runtime = (qa_runtime_script as GDScript).new(_scene_instance, _tree.get_root(), _runtime_errors, _held_actions)
+	_runtime = (qa_runtime_script as GDScript).new(_scene_instance, _tree.get_root(), _runtime_errors, _held_actions, _held_keys)
 	qa_runtime_script = null
 
 	var steps_timing_started := Time.get_ticks_usec()
@@ -1452,6 +1456,15 @@ func _runtime_command_for_step(step: Dictionary) -> Dictionary:
 				"action": str(step.get("release_action", "")),
 			},
 		}
+	for key_step in ["input_key", "input_key_hold", "input_key_release"]:
+		if step.has(key_step):
+			var key_value = step.get(key_step)
+			var key_params: Dictionary = {"key": str(key_value)}
+			if key_value is Dictionary:
+				key_params = {"key": str(key_value.get("key", ""))}
+			if key_step != "input_key_release":
+				key_params["frames"] = key_value.get("frames", 1) if key_value is Dictionary else 1
+			return {"command": key_step.replace("input_", "input."), "params": key_params}
 	if step.has("input_joy_button"):
 		var joy_button = step.get("input_joy_button", "")
 		if joy_button is Dictionary:
@@ -2632,9 +2645,25 @@ func _finalize_result() -> int:
 
 
 func _finalize_result_payload(write_result: bool) -> Dictionary:
+	if not _held_keys.is_empty():
+		var held_keys: Array = _held_keys.keys()
+		held_keys.sort()
+		_failures.append(_failure(
+			"runtime_contamination_detected",
+			"keyboard keys still held at scenario finalization: %s" % ", ".join(held_keys),
+			{
+				"command": "input.key_release",
+				"target": str(_scenario.get("name", _check.get("id", "check"))),
+				"expected": [],
+				"actual": held_keys,
+			},
+		))
 	if _runtime != null:
 		var release_started_usec := _profile_now_usec()
 		var failure_count := _failures.size()
+		var key_release_failures: Array = await _runtime.release_held_keys()
+		for key_failure in key_release_failures:
+			_failures.append(_runtime_error_to_failure(key_failure))
 		var release_failures: Array = await _runtime.release_held_actions()
 		for release_failure in release_failures:
 			_failures.append(_runtime_error_to_failure(release_failure))
@@ -2843,6 +2872,7 @@ func _reset_check_runtime_state() -> void:
 	_runtime = null
 	_scene_instance = null
 	_held_actions.clear()
+	_held_keys.clear()
 
 
 func _artifact_run_root() -> String:
@@ -2971,6 +3001,7 @@ func _teardown_runtime_scene() -> void:
 		_runtime.call("teardown")
 	_runtime = null
 	_held_actions.clear()
+	_held_keys.clear()
 	QaRuntime.clear_provider_registry()
 	if _scene_instance == null:
 		return

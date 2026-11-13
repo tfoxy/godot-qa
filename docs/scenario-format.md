@@ -6,7 +6,7 @@ JSON scenario files are always supported. The CLI also supports a built-in YAML 
 
 Current implemented support is intentionally narrower than the full format below:
 
-- steps: `wait_frames`, `wait_until`, `snapshot`, `tap_action`, `hold_action`, `release_action`, `input_joy_button`, `input_joy_motion`, `input_joy_state`, `drive_policy`, `click`, `node_inspect`, `record_state`, `teleport_node`, `fixture_teleport`, `spawn_scene`, `set_property`, `joy_connect`, `joy_disconnect`, `call_method`, `fixture_call`, `audio_capture`, `audio_export`, `physics_overlay`
+- steps: `wait_frames`, `wait_until`, `snapshot`, `tap_action`, `hold_action`, `release_action`, `input_key`, `input_key_hold`, `input_key_release`, `input_joy_button`, `input_joy_motion`, `input_joy_state`, `drive_policy`, `click`, `node_inspect`, `record_state`, `teleport_node`, `fixture_teleport`, `spawn_scene`, `set_property`, `joy_connect`, `joy_disconnect`, `call_method`, `fixture_call`, `audio_capture`, `audio_export`, `physics_overlay`
 - assertions: `exists`, `not_exists`, `visible`, `hidden`, `enabled`, `disabled`, `focused`, `text_equals`, `text_contains`, `inside_viewport`, `no_overlap`, `no_errors`, `state_matches`, `surface_probe`, `surface_matches`, `layout_audit`, `screenshot_match`, `visible_pixels`, `saved_snapshot_pixels`, `not_occluded`, `renders_above`, `renders_below`
 - `snapshot` writes `screenshot.png`, `tree.json`, `ui.json`, `focus.json`, and `errors.json` under `snapshots/<snapshot-name>/`
 
@@ -30,6 +30,7 @@ Snapshot capture settles the runtime before the final draw, then copies viewport
   - `wait_until` must be an object with `source` (`provider` or `method`), the matching `provider` or `target`+`method`, a non-empty dot-separated `path`, a supported `operator`, `expected` for value operators, and a positive integer `timeout_frames`; optional `poll_every_frames` must be a positive integer
   - `tap_action`, `release_action`, `click`, `node_inspect`, and `exists|not_exists|visible|hidden|enabled|disabled|focused|inside_viewport` must use non-empty strings
   - `hold_action` must be an object with non-empty string `action` plus non-negative integer `frames`
+  - `input_key` and `input_key_hold` accept a non-empty key string or `{key, optional frames}`; `frames` is a non-negative integer (default `1`, including string shorthand). `input_key_release` accepts a non-empty key string or `{key}`. Unknown object fields are rejected.
   - `input_joy_button` must be either a non-empty button string or `{button, optional device, optional frames}` with non-negative integer `device`/`frames`
   - `input_joy_motion` must use `{axis, value, optional device, optional frames}` with a non-empty axis string, numeric value from `-1.0` to `1.0`, and non-negative integer `device`/`frames`
   - `input_joy_state` must use `{inputs, optional frames}` where `inputs` is a non-empty list and each entry is `{device, motion|button}` with a non-negative integer `device` and exactly one of `motion` (`{axis, value}`, non-empty axis string, numeric value from `-1.0` to `1.0`) or `button` (`{name, pressed}`, non-empty name string, boolean `pressed`); optional `frames` must be a non-negative integer. Unknown top-level fields are rejected. The whole list is validated before anything is injected
@@ -530,6 +531,14 @@ Slow summaries are informational. `slow_summary_threshold_ms` and `slow_summary.
     action: ui_down
     frames: 4
 - release_action: ui_down
+- input_key: Enter
+- input_key:
+    key: Backspace
+    frames: 5
+- input_key_hold:
+    key: Backspace
+    frames: 75
+- input_key_release: Backspace
 - input_joy_button:
     button: start
     device: 2
@@ -596,6 +605,10 @@ Slow summaries are informational. `slow_summary_threshold_ms` and `slow_summary.
 ```
 
 `snapshot` names become artifact path segments under `snapshots/<snapshot-name>/`, so they follow the same Unicode safe-artifact-segment rule as scenario `name` (including the first-alphanumeric requirement). This rule also applies to `record_state`, `audio_capture`, and `audio_export` names, bundle names and references, and live-gate names and anchors.
+`input_key` presses a key, waits `frames` process frames, releases it, then waits one delivery frame. `input_key_hold` presses a key and waits `frames` process frames while leaving it held across subsequent steps; holding an already-held key repeats the wait without adding another held entry. `input_key_release` releases a held key and waits one delivery frame; releasing a key that is not held fails with `key_not_held`. Both tap and hold default to one frame and accept zero. Key names and aliases use the live keyboard command's supported keys (for example `Enter`, `Backspace`, `A`); unknown keys fail at runtime. Mouse input, chords, modifiers, and key-repeat/echo events are outside this keyboard feature.
+
+Release every held key explicitly before the scenario ends. Finalization fails with `runtime_contamination_detected` and names unreleased keys, then releases them so they cannot leak into the next warm scenario. Live `input.reset` / `reset_input` and scene changes also clear held keys. A hold can overlap joypad input: start an `input_joy_state` button hold, use `input_key_hold`, assert the concurrent game state, then release both. See `examples/sample_project/qa/scenarios/examples/saved_keyboard_input_demo.json`, which observes at least 75 concurrent Backspace/joypad frames in the sample game.
+
 `tap_action` and `release_action` take a single action name string. `hold_action` takes an object so the scenario can make the hold duration explicit without inventing a separate wait step. `input_joy_button` accepts a button string shorthand or an object with explicit `device` and `frames`; `input_joy_motion` always uses an object with `axis`, `value`, and optional `device`/`frames`, matching the live `input joy` command semantics. `input_joy_state` is open-loop batch joypad input for concurrent multi-device holds; see "Concurrent joypad state (`input_joy_state` step)" below. `drive_policy` is closed-loop joypad input computed by a registered policy each tick; see "Policy-driven input" below. `click` and `node_inspect` take a single locator string and resolve it with the same runtime locator rules used by assertions. `node_inspect` records bounded node evidence under `node_inspections` in `result.json` and command JSON, keyed by step index plus target. `record_state` is a read-only observation step that captures a state VALUE as run evidence under `state_records`; see "Recording state evidence (`record_state` step)" below. `joy_connect` and `joy_disconnect` are setup-class steps that simulate joypad hardware connection state by firing the engine's `joy_connection_changed` signal so a local-multiplayer lobby's connect/disconnect handlers run, with a `QaRuntime.effective_connected_joypads()` shim for lobbies that poll the roster instead (a documented Godot 4.x limitation means `Input.get_connected_joypads()` itself cannot be faked); see "Joypad connection simulation (`joy_connect` / `joy_disconnect` steps)" below. Step-local `assert` runs the listed assertions immediately at that point in the scenario; top-level `assert` still runs after all steps.
 
 `click` targets a Control in the active root Window. Its local center is converted

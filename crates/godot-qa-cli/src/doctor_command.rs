@@ -699,6 +699,8 @@ pub(crate) fn public_command_surface() -> Vec<&'static str> {
         "input touch tap",
         "input drag",
         "input key",
+        "input key-hold",
+        "input key-release",
         "input type",
         "input joy button",
         "input joy motion",

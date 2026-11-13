@@ -579,6 +579,75 @@ fn validate_scenario_document_rejects_invalid_operation_payloads() {
 }
 
 #[test]
+fn saved_keyboard_steps_accept_and_normalize_strings_and_objects() {
+    let path = Path::new("keyboard.json");
+    for kind in ["input_key", "input_key_hold", "input_key_release"] {
+        let mut payloads = vec![json!(" Backspace "), json!({"key": " Backspace "})];
+        if kind != "input_key_release" {
+            payloads.extend([
+                json!({"key": " Backspace ", "frames": 0}),
+                json!({"key": " Backspace ", "frames": 75}),
+            ]);
+        }
+        for payload in payloads {
+            let document = json!({"name": "keyboard", "scene": "res://probe.tscn", "steps": [{kind: payload}]});
+            validate_scenario_document(&document, path).unwrap();
+            let normalized = normalize_scenario_document(&document);
+            let value = &normalized["steps"][0][kind];
+            if payload.is_string() {
+                assert_eq!(value, "Backspace");
+            } else {
+                assert_eq!(value["key"], "Backspace");
+                assert_eq!(value.get("frames"), payload.get("frames"));
+            }
+        }
+    }
+}
+
+#[test]
+fn saved_keyboard_steps_reject_invalid_payloads() {
+    let path = Path::new("keyboard.json");
+    for kind in ["input_key", "input_key_hold", "input_key_release"] {
+        let mut invalid = vec![
+            json!(""),
+            json!("  "),
+            json!(null),
+            json!(true),
+            json!(3),
+            json!([]),
+            json!({}),
+            json!({"key": " "}),
+            json!({"key": 3}),
+            json!({"key": "Backspace", "typo": 1}),
+        ];
+        if kind == "input_key_release" {
+            invalid.push(json!({"key": "Backspace", "frames": 1}));
+        } else {
+            for frames in [json!(-1), json!(1.5), json!("2"), json!(true), json!(null)] {
+                let payload = json!({"key": "Backspace", "frames": frames});
+                let document = json!({"name": "keyboard", "scene": "res://probe.tscn", "steps": [{kind: payload}]});
+                let failure =
+                    failure_json(validate_scenario_document(&document, path).unwrap_err());
+                assert_eq!(
+                    failure["message"],
+                    format!("{kind} step field 'frames' must be a non-negative integer")
+                );
+                assert_eq!(failure["actual"], frames);
+            }
+        }
+        for payload in invalid {
+            let document = json!({"name": "keyboard", "scene": "res://probe.tscn", "steps": [{kind: payload}]});
+            let failure = failure_json(validate_scenario_document(&document, path).unwrap_err());
+            assert_eq!(failure["type"], "scenario_validation_failed");
+            assert!(
+                failure["message"].as_str().unwrap().starts_with(kind),
+                "{failure}"
+            );
+        }
+    }
+}
+
+#[test]
 fn validate_scenario_document_accepts_saved_joypad_input_steps() {
     let root = temp_dir("scenario-validate-joypad-input");
     let scenario_path = root.join("scenario.json");

@@ -320,6 +320,33 @@ fn scenario_lint_treats_drive_policy_as_player_input() {
 }
 
 #[test]
+fn scenario_lint_treats_keyboard_steps_as_player_input() {
+    for kind in ["input_key", "input_key_hold", "input_key_release"] {
+        let root = temp_dir(kind);
+        write(
+            &root.join("qa/scenarios/keyboard.json"),
+            &json!({
+                "name": "keyboard", "scene": "res://scene.tscn",
+                "steps": [
+                    {kind: "Backspace"},
+                    {"set_property": {"target": "qa:player", "property": "visible", "value": true}}
+                ],
+                "assert": [{"no_errors": true}]
+            })
+            .to_string(),
+        );
+        let result = run_scenario_lint(&config(&root), LintOptions::default());
+        let findings = result.data["findings"].as_array().unwrap();
+        let masking: Vec<_> = findings
+            .iter()
+            .filter(|f| f["rule_id"] == "GQA-LINT-001")
+            .collect();
+        assert_eq!(masking.len(), 1, "{kind}: {findings:?}");
+        assert_eq!(masking[0]["step_index"], 1);
+    }
+}
+
+#[test]
 fn scenario_lint_treats_input_joy_state_as_player_input() {
     let root = temp_dir("scenario-lint-joy-state-input");
     // input_joy_state is open-loop real joypad input: it must never be flagged

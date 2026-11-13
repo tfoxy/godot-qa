@@ -1661,6 +1661,41 @@ fn snapshot_filter_params_preserve_empty_params_when_unfiltered() {
 }
 
 #[test]
+fn keyboard_commands_parse_frames_and_command_paths() {
+    for (leaf, expected) in [
+        ("key", "input key"),
+        ("key-hold", "input key-hold"),
+        ("key-release", "input key-release"),
+    ] {
+        let cli = Cli::try_parse_from(["godot-qa", "input", leaf, "Backspace"]).unwrap();
+        assert_eq!(command_path(&cli.command), expected);
+        if leaf != "key-release" {
+            for frames in ["0", "75"] {
+                let cli = Cli::try_parse_from([
+                    "godot-qa",
+                    "input",
+                    leaf,
+                    "Backspace",
+                    "--frames",
+                    frames,
+                ])
+                .unwrap();
+                assert_eq!(command_path(&cli.command), expected);
+            }
+            assert!(
+                Cli::try_parse_from(["godot-qa", "input", leaf, "Backspace", "--frames", "1.5",])
+                    .is_err()
+            );
+        } else {
+            assert!(
+                Cli::try_parse_from(["godot-qa", "input", leaf, "Backspace", "--frames", "1",])
+                    .is_err()
+            );
+        }
+    }
+}
+
+#[test]
 fn input_joy_motion_parses_axis_value_device_and_frames() {
     let cli = Cli::parse_from([
         "godot-qa", "input", "joy", "motion", "right_x", "1.0", "--frames", "2", "--device", "0",

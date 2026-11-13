@@ -178,6 +178,69 @@ fn session_script_fixture_call_rejects_invalid_shape_before_live_command() {
 }
 
 #[test]
+fn session_script_keyboard_ops_accept_string_and_object_shapes() {
+    let root = temp_dir("keyboard-shapes");
+    let config = test_project_config(root.clone());
+    for (op, command) in [
+        ("input_key", "input key"),
+        ("input_key_hold", "input key-hold"),
+        ("input_key_release", "input key-release"),
+    ] {
+        assert!(super::SESSION_SCRIPT_OPS.contains(&op));
+        let mut values = vec![json!("Backspace"), json!({"key": "Backspace"})];
+        if op != "input_key_release" {
+            values.extend([
+                json!({"key": "Backspace", "frames": 0}),
+                json!({"key": "Backspace", "frames": 75}),
+            ]);
+        }
+        for value in values {
+            let result = super::run_session_script_step(&config, &json!({op: value}), 2);
+            assert_eq!(result.command, command);
+            assert_ne!(
+                result.failures[0].kind, "invalid_session_script",
+                "{result:?}"
+            );
+        }
+    }
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn session_script_keyboard_ops_reject_invalid_payloads_before_live_command() {
+    let root = temp_dir("keyboard-invalid-payloads");
+    let config = test_project_config(root.clone());
+    for op in ["input_key", "input_key_hold", "input_key_release"] {
+        let mut values = vec![
+            json!(null),
+            json!(5),
+            json!(""),
+            json!("  "),
+            json!({}),
+            json!({"key": false}),
+            json!({"key": "Backspace", "extra": true}),
+        ];
+        if op != "input_key_release" {
+            for frames in [json!(-1), json!(1.5), json!("2"), json!(true), json!(null)] {
+                values.push(json!({"key": "Backspace", "frames": frames}));
+            }
+        } else {
+            values.push(json!({"key": "Backspace", "frames": 1}));
+        }
+        for value in values {
+            let result = super::run_session_script_step(&config, &json!({op: value}), 3);
+            assert!(!result.ok);
+            assert_eq!(result.data["step_index"], 3);
+            assert_eq!(
+                result.failures[0].kind, "invalid_session_script",
+                "{result:?}"
+            );
+        }
+    }
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn session_script_input_joy_button_accepts_object_shape() {
     let root = temp_dir("input-joy-button-object-shape");
     let config = test_project_config(root.clone());

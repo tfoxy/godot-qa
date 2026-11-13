@@ -50,6 +50,7 @@ var runtime_options := {}
 var _scenario_user_args: PackedStringArray = PackedStringArray()
 var _scenario_user_args_override := false
 var _held_actions := {}
+var _held_keys := {}
 var _runtime_errors: Array = []
 var _live_session := {}
 var _live_edit: RefCounted = null
@@ -72,6 +73,8 @@ const RECORDED_INPUT_COMMANDS := {
 	"input.release_action": true,
 	"input.click_target": true,
 	"input.key": true,
+	"input.key_hold": true,
+	"input.key_release": true,
 	"input.text": true,
 	"input.mouse_click": true,
 	"input.joy_button": true,
@@ -563,7 +566,7 @@ func _bridge_busy_error(command_name: String, request_id: String, reason: String
 
 
 func _dispatch_authenticated_command(command: Dictionary, request_id: String, command_name: String) -> Dictionary:
-	var runtime := QaRuntime.new(_resolve_scene_root(), get_tree().get_root(), _runtime_errors, _held_actions)
+	var runtime := QaRuntime.new(_resolve_scene_root(), get_tree().get_root(), _runtime_errors, _held_actions, _held_keys)
 	var params := command.get("params", {})
 	var live_session_enabled := not _live_session.is_empty()
 	if live_session_enabled and command_name == "session.status":
@@ -1314,7 +1317,7 @@ func _swap_live_scene(scene_path: String, command_name: String, request_id: Stri
 	var old_scene := _resolve_scene_root()
 	var old_scene_path := str(old_scene.get_path()) if old_scene != null else ""
 	var was_paused := tree.paused
-	var cleanup_runtime := QaRuntime.new(old_scene, tree.get_root(), _runtime_errors, _held_actions)
+	var cleanup_runtime := QaRuntime.new(old_scene, tree.get_root(), _runtime_errors, _held_actions, _held_keys)
 	var input_cleanup_failures: Array = await cleanup_runtime.reset_input()
 	if not input_cleanup_failures.is_empty():
 		return QaProtocol.error(
@@ -1518,7 +1521,7 @@ func _handle_soak_start(params: Variant, request_id: String) -> Dictionary:
 	if root == "":
 		return QaProtocol.error("artifact_root_missing", "live session has no artifact root", {}, request_id)
 	_soak = QaSoak.new()
-	var state_runtime := QaRuntime.new(_resolve_scene_root(), get_tree().get_root(), _runtime_errors, _held_actions)
+	var state_runtime := QaRuntime.new(_resolve_scene_root(), get_tree().get_root(), _runtime_errors, _held_actions, _held_keys)
 	var result: Dictionary = _soak.start((params as Dictionary).get("spec", {}), state_runtime, root.path_join("profiles").path_join(id), id, "", Callable(), {"display_server": DisplayServer.get_name(), "vsync_mode": DisplayServer.window_get_vsync_mode(), "renderer": RenderingServer.get_current_rendering_method(), "rendering_driver": RenderingServer.get_current_rendering_driver_name(), "window_size": [DisplayServer.window_get_size().x, DisplayServer.window_get_size().y], "viewport_size": [get_viewport().get_visible_rect().size.x, get_viewport().get_visible_rect().size.y], "time_scale": Engine.time_scale, "max_fps": Engine.max_fps, "physics_ticks_per_second": Engine.physics_ticks_per_second, "pacing": "realtime", "instrumentation": "soak", "exclusions": ["warmup", "before_sampler_start", "after_sampler_stop"], "monitor_source": "cached_godot_performance", "monitor_every_frames": int((params as Dictionary).get("spec", {}).get("monitor_every_frames", 60))})
 	if not bool(result.get("ok", false)):
 		_soak = null
@@ -1745,7 +1748,7 @@ func _reinitialize_recorder() -> void:
 	_recorder = QaRecorder.new(
 		_resolve_scene_root(),
 		tree.get_root(),
-		QaRuntime.new(_resolve_scene_root(), tree.get_root(), _runtime_errors, _held_actions),
+		QaRuntime.new(_resolve_scene_root(), tree.get_root(), _runtime_errors, _held_actions, _held_keys),
 		recorder_options,
 	)
 	_recorder.name = "GodotQaRecorder"

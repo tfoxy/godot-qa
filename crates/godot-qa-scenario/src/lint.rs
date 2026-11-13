@@ -994,6 +994,9 @@ fn is_player_input_step(step: &Value) -> bool {
         || step.get("tap_action").is_some()
         || step.get("hold_action").is_some()
         || step.get("release_action").is_some()
+        || step.get("input_key").is_some()
+        || step.get("input_key_hold").is_some()
+        || step.get("input_key_release").is_some()
         || step.get("input_joy_button").is_some()
         || step.get("input_joy_motion").is_some()
         // input_joy_state emits an open-loop batch of per-device joypad input

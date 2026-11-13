@@ -845,6 +845,8 @@ pub(crate) enum InputCommands {
     Touch(InputTouchArgs),
     Drag(InputDragArgs),
     Key(InputKeyArgs),
+    KeyHold(InputKeyArgs),
+    KeyRelease(InputKeyReleaseArgs),
     Type(InputTextArgs),
     Joy(InputJoyArgs),
 }
@@ -991,6 +993,13 @@ pub(crate) struct InputDragArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct InputKeyArgs {
+    pub(crate) key: String,
+    #[arg(long, default_value_t = 1)]
+    pub(crate) frames: i64,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct InputKeyReleaseArgs {
     pub(crate) key: String,
 }
 

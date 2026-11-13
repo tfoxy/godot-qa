@@ -556,6 +556,8 @@ fn command_path(command: &Commands) -> &'static str {
             },
             InputCommands::Drag(_) => "input drag",
             InputCommands::Key(_) => "input key",
+            InputCommands::KeyHold(_) => "input key-hold",
+            InputCommands::KeyRelease(_) => "input key-release",
             InputCommands::Type(_) => "input type",
             InputCommands::Joy(ref joy) => match joy.command {
                 InputJoyCommands::Button(_) => "input joy button",
