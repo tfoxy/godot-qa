@@ -280,9 +280,8 @@ impl Drop for ChildRegistration {
 fn tracked_identity(pid: i64) -> Option<u64> {
     #[cfg(target_os = "linux")]
     {
-        let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-        let fields = stat.get(stat.rfind(')')? + 2..)?;
-        fields.split_whitespace().nth(19)?.parse().ok()
+        let stat = fs::read(format!("/proc/{pid}/stat")).ok()?;
+        crate::proc_stat::fields(&stat)?.nth(19)?.parse().ok()
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -292,11 +291,10 @@ fn tracked_identity(pid: i64) -> Option<u64> {
 
 fn tracked_alive(pid: i64) -> bool {
     #[cfg(target_os = "linux")]
-    if let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat"))
-        && let Some(end) = stat.rfind(')')
-        && stat
-            .get(end + 2..)
-            .is_some_and(|s| s.starts_with('Z') || s.starts_with('X'))
+    if let Ok(stat) = fs::read(format!("/proc/{pid}/stat"))
+        && crate::proc_stat::fields(&stat)
+            .and_then(|mut fields| fields.next())
+            .is_some_and(|state| matches!(state, "Z" | "X"))
     {
         return false;
     }

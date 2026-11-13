@@ -3124,6 +3124,7 @@ fn spawn_debug_host(
         ..FailureDetail::default()
     })?;
     let child_pid = child.id() as i64;
+    godot_qa_process::reap_background_child(child);
     let deadline = SystemTime::now() + Duration::from_secs_f64(DEBUG_HOST_READY_TIMEOUT_SECONDS);
     loop {
         if let Some(mut record) = load_debug_host_record(config)
@@ -3320,6 +3321,30 @@ fn latest_link_tmp_path(latest_path: &Path) -> PathBuf {
 #[cfg(test)]
 mod granular_reload_reporting_tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn stale_session_identity_leaves_unrelated_process_untouched() {
+        let root = std::env::temp_dir().join(format!("gqa-stale-identity-{}", unique_session_id()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("project.godot"), "[application]\n").unwrap();
+        let config =
+            godot_qa_core::config::load_project_config(Some(&root), None, None, false, None);
+        let mut prepared =
+            prepare_live_session(&config, "res://main.tscn", vec![1280, 720], true, &[], None)
+                .unwrap();
+        let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        prepared.record.pid = i64::from(child.id());
+        prepared.record.process_identity = Some(0);
+        persist_session(&config, &prepared.record, &prepared.token).unwrap();
+        let result = session_stop_result(&config);
+        let survived = !godot_qa_process::wait_for_godot_process_exit(prepared.record.pid, 0.1);
+        let _ = child.kill();
+        child.wait().unwrap();
+        fs::remove_dir_all(root).unwrap();
+        assert!(survived, "stale session metadata signalled an unrelated process");
+        assert!(result.ok, "stale metadata cleanup failed: {result:?}");
+    }
 
     #[test]
     fn debug_host_arguments_use_resolved_launch_scene() {

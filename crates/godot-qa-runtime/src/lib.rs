@@ -197,7 +197,7 @@ pub struct LiveAudioRenderRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionRecord {
-    /// Windows process creation time, used to reject reused PIDs during cleanup.
+    /// Linux start ticks or Windows creation time, used to reject reused PIDs during cleanup.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub process_identity: Option<u64>,
     pub protocol_version: String,

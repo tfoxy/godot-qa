@@ -2559,7 +2559,9 @@ Computed execution/transport allowances, including command-specific grace but ex
 }
 ```
 
-On Windows, saved session metadata also includes optional `process_identity`, an opaque unsigned 64-bit process-creation timestamp (Windows FILETIME). The same field is stored for the sidecar in `.qa/debug_host.json`. Unix records omit it, and older records without it remain readable. Windows process checks compare the saved creation identity as well as the PID: a reused PID is stale and must never be terminated as the original session. Legacy records without identity cannot authorize fallback process termination; an authenticated bridge stop can still succeed, otherwise restart the session to establish current metadata.
+Saved session metadata includes optional `process_identity`, an opaque unsigned 64-bit process birth identity: Linux `/proc/<pid>/stat` field 22 (start time in clock ticks) or Windows FILETIME creation time. The same field is stored for the sidecar in `.qa/debug_host.json`. Existing records without it remain readable. When an identity is saved, process checks require an exact match as well as a live PID; mismatched or unreadable identity cannot authorize fallback signalling. A reused PID is stale and must never be terminated as the original session. Legacy Unix records retain PID-only checks and fallback signals, but cannot authorize signalling a process group. This also applies to Android logcat sidecars: saved birth identities must match before signalling, and legacy logcat records retain the command-line ownership check with PID-only signals. A missing or zombie logcat leader already counts as stopped and cannot authorize group signals. Legacy Windows records cannot authorize fallback process termination; an authenticated bridge stop can still succeed, otherwise restart the session to establish current metadata.
+
+In a long-lived CLI, owned background session, debug-host, and Android logcat children are reaped after exit. Detached sessions can still outlive the CLI that launched them.
 
 The token value itself lives only in `.qa/session.token` and should not be printed in normal human output. `frame_pacing` is omitted for default realtime sessions. `session status` and `session list` include the persisted `frame_pacing` metadata when present. Live commands first use the primary `.qa/session.json` pointer. If that file is missing, the CLI can recover from live artifact metadata while `.qa/session.token` still exists. When `--artifact-dir` is provided, the CLI treats it as either a live session root containing `session.json`/legacy `request.json`, or as an artifact root containing `live/*/session.json`, and uses the newest valid live session metadata found there.
 `session start` launches windowed by default so live screenshot commands capture real viewport pixels. `--headless` remains available for non-visual live inspection and input automation, but any command that writes screenshot evidence fails against a headless session with `type: "headless_screenshot_unsupported"`.
@@ -3520,6 +3522,9 @@ validation additionally use stable failure kinds including
 Preset validation reads complete multiline ConfigFile values. A customized export
 filter excluding the QA addon, including a multiline `customized_files`
 dictionary, fails with `android_export_preset_invalid` before APK export.
+Exclusion values are parsed as integers, accepting whitespace, newlines, and
+ConfigFile comments around the entry's colon and before the value (for example,
+`"res://addons/godot_qa/qa_bridge.gd":3` or a value of `3` on the next line).
 
 Start performs debug APK export, `adb install -r`, private stdin bootstrap
 provisioning, an exact per-session `adb forward`, a fresh launcher start, device

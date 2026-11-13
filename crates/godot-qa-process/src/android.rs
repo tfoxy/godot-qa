@@ -432,18 +432,37 @@ fn customized_filter_removes_addon(filter: &str) -> bool {
     .iter()
     .any(|path| {
         let quoted = format!("\"{path}\"");
-        filter.match_indices(&quoted).any(|(index, _)| {
-            filter[index + quoted.len()..]
-                .trim_start()
-                .starts_with(": 3")
-        })
+        filter
+            .match_indices(&quoted)
+            .any(|(index, _)| customized_entry_is_excluded(&filter[index + quoted.len()..]))
     }) || filter
         .match_indices("\"res://addons/godot_qa/")
         .any(|(index, _)| {
             let rest = &filter[index + 1..];
             rest.find('"')
-                .is_some_and(|end| rest[end + 1..].trim_start().starts_with(": 3"))
+                .is_some_and(|end| customized_entry_is_excluded(&rest[end + 1..]))
         })
+}
+
+fn customized_entry_is_excluded(suffix: &str) -> bool {
+    let Some(value) = skip_config_whitespace_and_comments(suffix).strip_prefix(':') else {
+        return false;
+    };
+    let token = skip_config_whitespace_and_comments(value)
+        .split(|character: char| character.is_whitespace() || matches!(character, ',' | '}' | ';'))
+        .next()
+        .unwrap_or_default();
+    token.parse::<i64>() == Ok(3)
+}
+
+fn skip_config_whitespace_and_comments(mut value: &str) -> &str {
+    loop {
+        value = value.trim_start();
+        if !value.starts_with(';') {
+            return value;
+        }
+        value = value.split_once('\n').map_or("", |(_, rest)| rest);
+    }
 }
 
 fn preset_invalid(path: &Path, expected: &str, actual: &str) -> FailureDetail {
@@ -1030,12 +1049,14 @@ pub fn start_logcat(
     let child = child
         .spawn()
         .map_err(|error| spawn_failure("android_logcat_start_failed", &command, error))?;
-    Ok(AndroidLogcatSidecar {
+    let sidecar = AndroidLogcatSidecar {
         process_identity: crate::process_identity(i64::from(child.id())),
         command,
         pid: child.id() as i64,
         logs_path: logs_path.to_string_lossy().into_owned(),
-    })
+    };
+    crate::reap_background_child(child);
+    Ok(sidecar)
 }
 
 pub fn stop_logcat(pid: i64) -> Result<(), FailureDetail> {
@@ -1043,10 +1064,27 @@ pub fn stop_logcat(pid: i64) -> Result<(), FailureDetail> {
 }
 
 pub fn stop_logcat_with_identity(pid: i64, identity: Option<u64>) -> Result<(), FailureDetail> {
-    #[cfg(not(windows))]
-    let _ = identity;
     if pid <= 0 {
         return Ok(());
+    }
+    #[cfg(unix)]
+    let ownership_mismatch = || FailureDetail {
+        kind: "android_logcat_stop_failed".into(),
+        command: Some(format!("session stop (logcat pid={pid})")),
+        message: Some("recorded logcat PID is now owned by a different process".into()),
+        expected: Some(json!("owned adb logcat helper process")),
+        actual: Some(json!("PID ownership mismatch")),
+        details: [("pid".into(), json!(pid))].into_iter().collect(),
+        ..FailureDetail::default()
+    };
+    #[cfg(unix)]
+    {
+        if !crate::pid_is_running(pid) || crate::is_zombie_process(pid) {
+            return Ok(());
+        }
+        if identity.is_some_and(|expected| crate::process_identity(pid) != Some(expected)) {
+            return Err(ownership_mismatch());
+        }
     }
     #[cfg(target_os = "linux")]
     {
@@ -1058,16 +1096,9 @@ pub fn stop_logcat_with_identity(pid: i64, identity: Option<u64>) -> Result<(), 
                     .any(|window| window == b"logcat")
                     && !crate::is_zombie_process(pid) =>
             {
-                return Err(FailureDetail {
-                    kind: "android_logcat_stop_failed".into(),
-                    message: Some("recorded logcat PID is now owned by a different process".into()),
-                    expected: Some(json!("owned adb logcat helper process")),
-                    actual: Some(json!("PID ownership mismatch")),
-                    details: [("pid".into(), json!(pid))].into_iter().collect(),
-                    ..FailureDetail::default()
-                });
+                return Err(ownership_mismatch());
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(error) => {
                 return Err(FailureDetail {
                     kind: "android_logcat_stop_failed".into(),
@@ -1083,31 +1114,38 @@ pub fn stop_logcat_with_identity(pid: i64, identity: Option<u64>) -> Result<(), 
     }
     #[cfg(unix)]
     {
+        let check_group = identity.is_some();
+        let target = if check_group {
+            "owned logcat helper and process group"
+        } else {
+            "owned logcat helper"
+        };
         let stop_failure = |message: String| FailureDetail {
             kind: "android_logcat_stop_failed".into(),
             command: Some(format!("session stop (logcat pid={pid})")),
             message: Some(message),
-            expected: Some(json!(
-                "owned logcat helper and process group exit within 2 seconds"
-            )),
+            expected: Some(json!(format!("{target} exit within 2 seconds"))),
             actual: Some(json!("logcat cleanup incomplete")),
             details: [("pid".into(), json!(pid))].into_iter().collect(),
             ..FailureDetail::default()
         };
+        let signal_target = if check_group { -pid } else { pid };
         for signal in [libc::SIGTERM, libc::SIGKILL] {
-            if unsafe { libc::kill(-(pid as libc::pid_t), signal) } != 0 {
+            if unsafe { libc::kill(signal_target as libc::pid_t, signal) } != 0 {
                 let error = std::io::Error::last_os_error();
                 if error.raw_os_error() != Some(libc::ESRCH) {
                     return Err(stop_failure(error.to_string()));
                 }
             }
-            if wait_for_logcat_exit(pid).map_err(|error| stop_failure(error.to_string()))? {
+            if wait_for_logcat_exit(pid, check_group)
+                .map_err(|error| stop_failure(error.to_string()))?
+            {
                 return Ok(());
             }
         }
-        Err(stop_failure(
-            "logcat helper or process group remained alive after SIGTERM and SIGKILL".into(),
-        ))
+        Err(stop_failure(format!(
+            "{target} remained alive after SIGTERM and SIGKILL"
+        )))
     }
 
     #[cfg(windows)]
@@ -1134,14 +1172,16 @@ pub fn stop_logcat_with_identity(pid: i64, identity: Option<u64>) -> Result<(), 
 }
 
 #[cfg(unix)]
-fn wait_for_logcat_exit(pid: i64) -> std::io::Result<bool> {
+fn wait_for_logcat_exit(pid: i64, check_group: bool) -> std::io::Result<bool> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
     loop {
         // Reap when this CLI launched the helper; another CLI may own its wait.
         unsafe {
             libc::waitpid(pid as libc::pid_t, std::ptr::null_mut(), libc::WNOHANG);
         }
-        if crate::wait_for_godot_process_exit(pid, 0.0) && !logcat_group_is_running(pid)? {
+        if crate::wait_for_godot_process_exit(pid, 0.0)
+            && (!check_group || !logcat_group_is_running(pid)?)
+        {
             return Ok(true);
         }
         if std::time::Instant::now() >= deadline {
@@ -1170,13 +1210,13 @@ fn logcat_group_is_running(pid: i64) -> std::io::Result<bool> {
             if entry.file_name().to_string_lossy().parse::<u32>().is_err() {
                 continue;
             }
-            let stat = match fs::read_to_string(entry.path().join("stat")) {
+            let stat = match fs::read(entry.path().join("stat")) {
                 Ok(stat) => stat,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(error),
             };
-            if let Some((_, fields)) = stat.rsplit_once(") ") {
-                let fields: Vec<_> = fields.split_whitespace().take(3).collect();
+            if let Some(fields) = crate::proc_stat::fields(&stat) {
+                let fields: Vec<_> = fields.take(3).collect();
                 if fields.len() == 3
                     && fields[2].parse::<i64>() == Ok(pid)
                     && !matches!(fields[0], "Z" | "X")
@@ -1579,6 +1619,113 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn android_command_timeout_kills_term_ignoring_descendant() {
+        let temp = unique_temp_dir().join("adb wrapper with spaces");
+        fs::create_dir_all(&temp).unwrap();
+        let leader_path = temp.join("leader");
+        let child_path = temp.join("child");
+        let ready_path = temp.join("ready");
+        let adb = write_executable(
+            &temp.join("adb"),
+            &format!(
+                "#!/bin/sh\necho $$ > '{}'\n(trap '' TERM; echo ready > '{}'; exec sleep 60) </dev/null >/dev/null 2>&1 &\necho $! > '{}'\nwhile [ ! -f '{}' ]; do sleep 0.01; done\necho partial-diagnostic\nwhile :; do sleep 1; done\n",
+                leader_path.display(),
+                ready_path.display(),
+                child_path.display(),
+                ready_path.display(),
+            ),
+        );
+        let command = vec![
+            adb.to_string_lossy().into_owned(),
+            "-s".into(),
+            "serial-1".into(),
+            "shell".into(),
+            "pidof".into(),
+            "dev.qa.app".into(),
+        ];
+        let started = std::time::Instant::now();
+        let result =
+            run_command_bytes_with_timeout(&command, None, std::time::Duration::from_millis(300));
+        let leader: i64 = fs::read_to_string(leader_path)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let child: i64 = fs::read_to_string(child_path)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let leader_reaped = !crate::pid_is_running(leader);
+        let child_exited = crate::wait_for_godot_process_exit(child, 0.0);
+        // Always clean up the fixture, including when run against leader-only cleanup.
+        unsafe {
+            libc::kill(-(leader as libc::pid_t), libc::SIGKILL);
+        }
+        assert!(crate::wait_for_godot_process_exit(child, 1.0));
+        fs::remove_dir_all(temp).unwrap();
+
+        let error = result.err().expect("Android operation must time out");
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        let diagnostic = error.to_string();
+        assert!(leader_reaped, "ADB wrapper {leader} was not reaped");
+        assert!(
+            child_exited,
+            "TERM-ignoring ADB child {child} survived timeout"
+        );
+        assert!(diagnostic.contains("timeout_killed"), "{diagnostic}");
+        assert!(diagnostic.contains("partial-diagnostic"), "{diagnostic}");
+        assert!(
+            diagnostic.contains(&crate::format_command(&command)),
+            "{diagnostic}"
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(4));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn background_logcat_children_are_reaped_after_natural_exit() {
+        let temp = unique_temp_dir();
+        fs::create_dir_all(&temp).unwrap();
+        let adb = write_executable(&temp.join("adb"), "#!/bin/sh\nexit 0\n");
+        let mut pids = Vec::new();
+        for _ in 0..12 {
+            pids.push(
+                start_logcat(
+                    adb.to_str().unwrap(),
+                    "serial-1",
+                    4321,
+                    &temp.join("logcat.txt"),
+                )
+                .unwrap()
+                .pid,
+            );
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while pids.iter().any(|pid| crate::pid_is_running(*pid))
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let unreaped: Vec<_> = pids
+            .iter()
+            .copied()
+            .filter(|pid| crate::pid_is_running(*pid))
+            .collect();
+        for pid in pids {
+            unsafe {
+                libc::waitpid(pid as libc::pid_t, std::ptr::null_mut(), libc::WNOHANG);
+            }
+        }
+        fs::remove_dir_all(temp).unwrap();
+        assert!(
+            unreaped.is_empty(),
+            "background logcat children were not reaped: {unreaped:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn stop_logcat_waits_and_escalates_for_term_ignoring_helper() {
         let temp = unique_temp_dir();
         fs::create_dir_all(&temp).unwrap();
@@ -1615,7 +1762,90 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn stop_logcat_waits_for_group_after_leader_exits() {
+    fn stop_logcat_rejects_mismatched_unix_identity() {
+        let temp = unique_temp_dir();
+        let mut child = spawn_unrelated_logcat_helper(&temp, "sleep 60 & wait");
+        let pid = i64::from(child.id());
+        let actual_identity = crate::process_identity(pid).unwrap();
+        let result = stop_logcat_with_identity(pid, Some(actual_identity + 1));
+        let alive = crate::pid_is_running(pid) && !crate::is_zombie_process(pid);
+        unsafe {
+            libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+        }
+        let _ = child.wait();
+        fs::remove_dir_all(temp).unwrap();
+        let failure = result.expect_err("mismatched birth identity cannot authorize signals");
+        assert_eq!(failure.kind, "android_logcat_stop_failed");
+        assert_eq!(failure.actual, Some(json!("PID ownership mismatch")));
+        assert!(alive, "unrelated logcat-named process was terminated");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn stop_logcat_legacy_identity_does_not_signal_group() {
+        let temp = unique_temp_dir();
+        let child_pid_path = temp.join("child-pid");
+        let ready_path = temp.join("ready");
+        let mut leader = spawn_unrelated_logcat_helper(
+            &temp,
+            &format!(
+                "(trap '' TERM; echo ready > '{}'; exec sleep 60) &\necho $! > '{}'\ntrap 'exit 0' TERM\nwait",
+                ready_path.display(),
+                child_pid_path.display(),
+            ),
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while (!ready_path.exists() || !child_pid_path.exists())
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let child: i64 = fs::read_to_string(child_pid_path)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let pid = i64::from(leader.id());
+        let result = stop_logcat_with_identity(pid, None);
+        let leader_exited = crate::wait_for_godot_process_exit(pid, 0.0);
+        let child_alive = crate::pid_is_running(child) && !crate::is_zombie_process(child);
+        unsafe {
+            libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+        }
+        let _ = leader.wait();
+        assert!(crate::wait_for_godot_process_exit(child, 1.0));
+        fs::remove_dir_all(temp).unwrap();
+        assert!(result.is_ok(), "{result:?}");
+        assert!(leader_exited, "legacy logcat PID must stop");
+        assert!(child_alive, "legacy record authorized a group signal");
+    }
+
+    #[cfg(target_os = "linux")]
+    fn spawn_unrelated_logcat_helper(temp: &Path, body: &str) -> std::process::Child {
+        use std::os::unix::process::CommandExt;
+        let helper = write_executable(
+            &temp.join("logcat-unrelated"),
+            &format!("#!/bin/sh\n{body}\n"),
+        );
+        let mut command = Command::new(helper);
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        crate::spawn_probe_child(&mut command).unwrap()
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn stop_logcat_only_signals_group_with_live_leader_identity() {
         for leader_already_exited in [false, true] {
             let temp = unique_temp_dir();
             fs::create_dir_all(&temp).unwrap();
@@ -1661,9 +1891,9 @@ mod tests {
                 libc::waitpid(sidecar.pid as libc::pid_t, std::ptr::null_mut(), 0);
             }
             assert!(result.is_ok(), "{result:?}");
-            assert!(
-                child_exited,
-                "logcat's child survived after its leader exited"
+            assert_eq!(
+                child_exited, !leader_already_exited,
+                "group signals require a verified live leader at stop time"
             );
             fs::remove_dir_all(temp).unwrap();
         }
@@ -2059,6 +2289,68 @@ package/unique_name="dev.qa.app"
         let result = load_export_preset(&temp, "Android QA", None);
         fs::remove_dir_all(temp).expect("cleanup");
         result.expect("multiline filter retaining the addon is valid");
+    }
+
+    #[test]
+    fn preset_validation_rejects_customized_exclusion_value_on_next_line() {
+        for suffix in [":\n3", "\n:\n3"] {
+            assert_customized_exclusion_validation(suffix);
+        }
+    }
+
+    #[test]
+    fn preset_validation_rejects_customized_exclusion_with_flexible_spacing() {
+        for suffix in [
+            ":3",
+            "\t:\t 3",
+            ": ; excluded\n3",
+            "; comment\n:\n; comment\n3",
+        ] {
+            assert_customized_exclusion_validation(suffix);
+        }
+    }
+
+    #[test]
+    fn customized_exclusion_matches_complete_integer_value() {
+        for value in ["0", "1", "2", "30", "3.5"] {
+            assert!(!customized_filter_removes_addon(&format!(
+                "{{\"res://addons/godot_qa/qa_bridge.gd\": {value}}}"
+            )));
+        }
+    }
+
+    fn assert_customized_exclusion_validation(suffix: &str) {
+        for path in [
+            "res://",
+            "res://addons",
+            "res://addons/godot_qa",
+            "res://addons/godot_qa/qa_bridge.gd",
+            "res://addons/godot_qa/qa_live_session_host.gd",
+        ] {
+            for (suffix, excluded) in [
+                (suffix.to_string(), true),
+                (suffix.replace('3', "0"), false),
+            ] {
+                let fixture = format!(
+                    "[preset.0]\nname=\"Android QA\"\nplatform=\"Android\"\nexport_filter=\"customized\"\ncustomized_files={{\n\"res://scenes/main.tscn\": 0,\n\"{path}\"{suffix}\n}}\n\n[preset.0.options]\npermissions/internet=true\npackage/unique_name=\"dev.qa.app\"\n"
+                );
+                let temp = valid_project(&fixture, "Sample");
+                let result = load_export_preset(&temp, "Android QA", None);
+                fs::remove_dir_all(temp).expect("cleanup");
+                if excluded {
+                    let failure = result.expect_err("customized filter excludes the addon");
+                    assert_eq!(failure.kind, "android_export_preset_invalid");
+                    assert_eq!(
+                        failure.actual,
+                        Some(json!(
+                            "the QA addon is removed by the customized export filter"
+                        ))
+                    );
+                } else {
+                    result.expect("customized filter retaining the addon is valid");
+                }
+            }
+        }
     }
 
     #[test]

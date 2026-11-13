@@ -3,6 +3,9 @@
 pub mod android;
 pub mod apk_cache;
 pub mod directory_link;
+#[cfg(unix)]
+mod owned_group;
+mod proc_stat;
 pub mod project_access;
 #[cfg(windows)]
 mod windows;
@@ -244,13 +247,26 @@ pub fn configure_background_command(command: &mut Command) {
     let _ = command;
 }
 
-/// Windows creation time is an opaque process identity, persisted with session metadata.
+/// Reap a background child without blocking the caller or keeping the CLI alive.
+/// The child remains detached when the launching CLI exits.
+pub fn reap_background_child(mut child: std::process::Child) {
+    thread::spawn(move || {
+        let _ = child.wait();
+    });
+}
+
+/// Process birth identity, persisted with session metadata (Linux start ticks or Windows FILETIME).
 pub fn process_identity(pid: i64) -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        let stat = fs::read(format!("/proc/{pid}/stat")).ok()?;
+        proc_stat::fields(&stat)?.nth(19)?.parse().ok()
+    }
     #[cfg(windows)]
     {
         windows::identity(pid)
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(target_os = "linux", windows)))]
     {
         let _ = pid;
         None
@@ -258,9 +274,7 @@ pub fn process_identity(pid: i64) -> Option<u64> {
 }
 
 pub fn process_identity_matches(pid: i64, expected: Option<u64>) -> bool {
-    pid_is_running(pid)
-        && expected
-            .is_none_or(|expected| process_identity(pid).is_none_or(|actual| actual == expected))
+    pid_is_running(pid) && expected.is_none_or(|expected| process_identity(pid) == Some(expected))
 }
 
 pub fn probe_godot_version(
@@ -1258,7 +1272,7 @@ pub fn launch_godot_session(
             });
         }
     };
-    Ok(GodotSessionLaunch {
+    let launch = GodotSessionLaunch {
         command,
         pid: child.id() as i64,
         logs_path: logs_path.to_string_lossy().into_owned(),
@@ -1266,7 +1280,9 @@ pub fn launch_godot_session(
             joypad_isolation,
             ..display
         },
-    })
+    };
+    reap_background_child(child);
+    Ok(launch)
 }
 
 fn viewport_resolution_arg(viewport: Option<&[i64]>) -> Option<String> {
@@ -1847,63 +1863,33 @@ fn run_owned_child_output_with_timeout_monitor(
         use std::os::windows::process::CommandExt;
         child_command.creation_flags(windows_sys::Win32::System::Threading::CREATE_SUSPENDED);
     }
-    let mut child = spawn_probe_child(&mut child_command)?;
+    let mut spawned_child = spawn_probe_child(&mut child_command)?;
     let mut process_timing = ProcessTiming {
         spawn_ms: duration_millis_u64(started.elapsed()),
         ..ProcessTiming::default()
     };
     #[cfg(windows)]
-    let owned_job = match windows::OwnedJob::attach(&child) {
+    let owned_job = match windows::OwnedJob::attach(&spawned_child) {
         Ok(job) => job,
         Err(error) => {
-            let _ = child.kill();
-            let _ = child.wait();
+            let _ = spawned_child.kill();
+            let _ = spawned_child.wait();
             return Err(error);
         }
     };
-    let pid = child.id() as i64;
+    let pid = spawned_child.id() as i64;
     let _project_child = match project_access::register_child(pid) {
         Ok(receipt) => receipt,
         Err(error) => {
-            let _ = child.kill();
-            let _ = child.wait();
+            let _ = spawned_child.kill();
+            let _ = spawned_child.wait();
             return Err(error);
         }
     };
     let process_group = current_run_process_group(pid);
-    if !cfg!(windows) && timeout.is_none() && completion_path.is_none() && timeout_monitor.is_none()
-    {
-        let output = child.wait_with_output()?;
-        let (stdout, stderr, output_truncation) = if file_paths.is_some() {
-            collected_child_output(&file_paths, None, None)?
-        } else {
-            (output.stdout, output.stderr, None)
-        };
-        process_timing.total_ms = duration_millis_u64(started.elapsed());
-        return Ok(OwnedChildOutput {
-            status_code: output.status.code().unwrap_or(-1),
-            termination: Some(process_termination(output.status, false)),
-            process_timing,
-            stdout,
-            stderr,
-            pid: Some(pid),
-            process_group,
-            cleanup: Some(ProcessCleanupResult {
-                status: "exited".to_string(),
-                failure_kind: None,
-                pid: Some(pid),
-                process_group,
-                owned: true,
-                message: None,
-            }),
-            timed_out: false,
-            timeout_ms: None,
-            output_truncation,
-        });
-    }
     // Keep ownership across every fallible poll, stdin write, and output read.
     let mut cleanup_guard = OwnedChildErrorCleanup {
-        child: &mut child,
+        child: &mut spawned_child,
         armed: true,
     };
     let child = &mut *cleanup_guard.child;
@@ -1979,13 +1965,33 @@ fn run_owned_child_output_with_timeout_monitor(
                 result_observed_at.map(|at| duration_millis_u64(exit_observed.duration_since(at)));
             #[cfg(windows)]
             owned_job.terminate()?;
+            #[cfg(unix)]
+            {
+                let cleanup_started = Instant::now();
+                owned_group::terminate(pid).map_err(|error| {
+                    std::io::Error::new(
+                        error.kind(),
+                        format!(
+                            "owned process group {pid} cleanup failed after leader exit: {error}"
+                        ),
+                    )
+                })?;
+                process_timing.cleanup_ms = duration_millis_u64(cleanup_started.elapsed());
+            }
             if let Some(writer) = input_writer.take() {
-                writer.recv_timeout(Duration::from_secs(3)).map_err(|_| {
+                let written = writer.recv_timeout(Duration::from_secs(3)).map_err(|_| {
                     std::io::Error::new(
                         std::io::ErrorKind::TimedOut,
                         "owned child stdin writer did not finish",
                     )
-                })??;
+                })?;
+                // Group cleanup can close stdin held open by a descendant after
+                // the leader exits. Preserve that leader's native result.
+                if let Err(error) = written
+                    && error.kind() != std::io::ErrorKind::BrokenPipe
+                {
+                    return Err(error);
+                }
             }
             let (stdout, stderr, output_truncation) =
                 collected_child_output(&file_paths, stdout_reader, stderr_reader)?;
@@ -2034,6 +2040,13 @@ fn run_owned_child_output_with_timeout_monitor(
             #[cfg(windows)]
             owned_job.terminate()?;
             let cleanup = terminate_owned_child_after_timeout(child, pid, process_group);
+            #[cfg(unix)]
+            let termination = child
+                .try_wait()
+                .ok()
+                .flatten()
+                .map(|status| process_termination(status, true));
+            #[cfg(not(unix))]
             let termination = child
                 .wait()
                 .ok()
@@ -2043,10 +2056,15 @@ fn run_owned_child_output_with_timeout_monitor(
                 duration_millis_u64(cleanup_finished.duration_since(cleanup_started));
             process_timing.post_result_exit_ms = result_observed_at
                 .map(|at| duration_millis_u64(cleanup_finished.duration_since(at)));
+            cleanup_guard.armed = false;
+            drop(cleanup_guard);
+            if termination.is_none() {
+                // A child stuck after SIGKILL must not block the operation.
+                reap_background_child(spawned_child);
+            }
             let (stdout, stderr, output_truncation) =
                 collected_child_output(&file_paths, stdout_reader, stderr_reader)?;
             process_timing.total_ms = duration_millis_u64(started.elapsed());
-            cleanup_guard.armed = false;
             return Ok(OwnedChildOutput {
                 status_code: -1,
                 termination,
@@ -2256,16 +2274,62 @@ fn join_output_reader(
     result.map(|_| bytes)
 }
 
+#[cfg(unix)]
 fn terminate_owned_child_after_timeout(
     child: &mut std::process::Child,
     pid: i64,
     process_group: Option<i64>,
 ) -> ProcessCleanupResult {
-    #[cfg(unix)]
-    let _ = &mut *child;
-    #[cfg(unix)]
-    let terminate_error = send_process_group_signal(pid, libc::SIGTERM);
-    #[cfg(not(unix))]
+    let (mut status, mut failure_kind, mut message) = match owned_group::terminate(pid) {
+        Ok(killed) => (
+            if killed {
+                "timeout_killed"
+            } else {
+                "timeout_terminated"
+            },
+            "owned_process_timeout",
+            format!(
+                "owned Godot process group exceeded configured timeout and was {}",
+                if killed { "killed" } else { "terminated" }
+            ),
+        ),
+        Err(error) => (
+            "cleanup_failed",
+            "owned_process_timeout_cleanup_failed",
+            format!("owned process group {pid} timeout cleanup failed: {error}"),
+        ),
+    };
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(10));
+                continue;
+            }
+            Ok(None) => message.push_str("; owned leader did not exit within 1 second"),
+            Err(error) => message.push_str(&format!("; owned leader exit check failed: {error}")),
+        }
+        status = "cleanup_failed";
+        failure_kind = "owned_process_timeout_cleanup_failed";
+        break;
+    }
+    ProcessCleanupResult {
+        status: status.to_string(),
+        failure_kind: Some(failure_kind.to_string()),
+        pid: Some(pid),
+        process_group,
+        owned: true,
+        message: Some(message),
+    }
+}
+
+#[cfg(not(unix))]
+fn terminate_owned_child_after_timeout(
+    child: &mut std::process::Child,
+    pid: i64,
+    process_group: Option<i64>,
+) -> ProcessCleanupResult {
     let terminate_error = match child.try_wait() {
         Ok(Some(_)) => Ok(()),
         _ => child.kill().map_err(|error| error.to_string()),
@@ -2292,9 +2356,6 @@ fn terminate_owned_child_after_timeout(
             ),
         };
     }
-    #[cfg(unix)]
-    let kill_error = send_process_group_signal(pid, libc::SIGKILL);
-    #[cfg(not(unix))]
     let kill_error = child.kill().map_err(|error| error.to_string());
     if let Err(error) = kill_error {
         return ProcessCleanupResult {
@@ -2488,8 +2549,8 @@ pub fn pid_is_running(pid: i64) -> bool {
 
 fn is_zombie_process(pid: i64) -> bool {
     let stat_path = format!("/proc/{pid}/stat");
-    if let Ok(contents) = fs::read_to_string(stat_path) {
-        return contents.split_whitespace().nth(2) == Some("Z");
+    if let Ok(contents) = fs::read(stat_path) {
+        return proc_stat::fields(&contents).and_then(|mut fields| fields.next()) == Some("Z");
     }
     false
 }
@@ -2521,8 +2582,20 @@ pub fn terminate_process_tree(pid: i64, force: bool, expected: Option<u64>) -> R
     }
     #[cfg(unix)]
     {
-        let _ = expected;
-        send_process_group_signal(pid, if force { libc::SIGKILL } else { libc::SIGTERM })
+        let signal = if force { libc::SIGKILL } else { libc::SIGTERM };
+        if let Some(expected) = expected {
+            let actual = process_identity(pid);
+            if actual != Some(expected) {
+                return Err(format!(
+                    "refusing to signal pid {pid}: expected process birth identity {expected}, actual {actual:?}"
+                ));
+            }
+            if current_run_process_group(pid) == Some(pid) {
+                return send_process_group_signal(pid, signal);
+            }
+        }
+        // Legacy records establish only a PID, never ownership of its group.
+        send_signal(pid, signal)
     }
     #[cfg(not(any(unix, windows)))]
     {
@@ -4010,6 +4083,167 @@ mod tests {
         let _ = fs::remove_dir_all(&temp_dir);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn owned_group_cleanup_precedes_stdin_writer_wait() {
+        let root = unique_temp_dir();
+        fs::create_dir_all(&root).unwrap();
+        let wrapper = write_executable(
+            &root.join("stdin-holder.sh"),
+            "#!/bin/sh\nexec 3<&0\nsleep 30 <&3 3<&- >/dev/null 2>&1 &\nprintf '%s' \"$!\" > \"$1\"\nexit 0\n",
+        );
+        let pid_file = root.join("child.pid");
+        let started = std::time::Instant::now();
+        let result = super::run_owned_child_output_with_timeout_monitor(
+            &[
+                wrapper.to_string_lossy().into_owned(),
+                pid_file.to_string_lossy().into_owned(),
+            ],
+            false,
+            Some(Duration::from_secs(5)),
+            None,
+            None,
+            None,
+            Some(&vec![0; 1024 * 1024]),
+        );
+        let pid = fs::read_to_string(pid_file).unwrap().parse().unwrap();
+        let gone = super::wait_for_godot_process_exit(pid, 0.5);
+        if !gone {
+            super::send_signal(pid, libc::SIGKILL).unwrap();
+        }
+        fs::remove_dir_all(root).unwrap();
+        let output = result.expect("leader exit must survive a descendant holding stdin");
+        assert!(gone);
+        assert_eq!(output.status_code, 0);
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_group_timeout_kills_term_ignoring_descendant() {
+        assert_owned_group_cleanup(Some(Duration::from_millis(200)), true);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn owned_group_timeout_handles_non_utf8_comm() {
+        let root = unique_temp_dir().join("non ascii process with spaces");
+        fs::create_dir_all(&root).unwrap();
+        // Linux truncates comm at 15 bytes, splitting this name's final é.
+        let sleeper = root.join("godot_v4.5_abcé");
+        fs::copy("/bin/sleep", &sleeper).unwrap();
+        let wrapper = write_executable(
+            &root.join("wrapper.sh"),
+            "#!/bin/sh\necho $$ > \"$2\"\nexec \"$1\" 60\n",
+        );
+        let pid_path = root.join("leader.pid");
+        let command = vec![
+            wrapper.to_string_lossy().into_owned(),
+            sleeper.to_string_lossy().into_owned(),
+            pid_path.to_string_lossy().into_owned(),
+        ];
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let started = std::time::Instant::now();
+        let worker = std::thread::spawn(move || {
+            let _ = sender.send(super::run_owned_child_output(
+                &command,
+                false,
+                Some(Duration::from_millis(500)),
+                None,
+                None,
+            ));
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !pid_path.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let pid: i64 = fs::read_to_string(pid_path)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let result = receiver.recv_timeout(Duration::from_millis(3500));
+        let returned_in_time = result.is_ok();
+        // Unblock the original hanging cleanup and leave no fixture behind.
+        unsafe {
+            libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+        }
+        let output = result
+            .or_else(|_| receiver.recv_timeout(Duration::from_secs(2)))
+            .unwrap();
+        worker.join().unwrap();
+        let reaped = !pid_is_running(pid);
+        fs::remove_dir_all(root).unwrap();
+        assert!(returned_in_time, "non-UTF-8 comm blocked timeout cleanup");
+        let output = output.expect("owned timeout output");
+        assert!(output.timed_out);
+        assert_eq!(output.cleanup.unwrap().status, "timeout_terminated");
+        assert!(reaped, "owned leader {pid} survived or was not reaped");
+        assert!(started.elapsed() < Duration::from_secs(4));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_group_normal_exit_kills_term_ignoring_descendant() {
+        for timeout in [None, Some(Duration::from_secs(5))] {
+            assert_owned_group_cleanup(timeout, false);
+        }
+    }
+
+    #[cfg(unix)]
+    fn assert_owned_group_cleanup(timeout: Option<Duration>, timed_out: bool) {
+        let root = unique_temp_dir().join("owned group with spaces");
+        fs::create_dir_all(&root).unwrap();
+        let wrapper = write_executable(
+            &root.join("wrapper.sh"),
+            "#!/bin/sh\n\
+             (trap '' TERM; printf ready > \"$1/ready\"; exec sleep 30) </dev/null >/dev/null 2>&1 &\n\
+             printf '%s' \"$!\" > \"$1/child.pid\"\n\
+             while [ ! -f \"$1/ready\" ]; do sleep 0.01; done\n\
+             printf 'leader output'\n\
+             if [ \"$2\" = timeout ]; then exec sleep 30; fi\n\
+             exit 23\n",
+        );
+        let started = std::time::Instant::now();
+        let result = super::run_owned_child_output(
+            &[
+                wrapper.to_string_lossy().into_owned(),
+                root.to_string_lossy().into_owned(),
+                if timed_out { "timeout" } else { "normal" }.into(),
+            ],
+            false,
+            timeout,
+            None,
+            None,
+        );
+        let descendant = fs::read_to_string(root.join("child.pid"))
+            .unwrap()
+            .parse()
+            .unwrap();
+        let cleaned_up = super::wait_for_godot_process_exit(descendant, 0.5);
+        // Leave no running fixture behind when the regression fails.
+        if !cleaned_up {
+            super::send_signal(descendant, libc::SIGKILL).unwrap();
+        }
+        fs::remove_dir_all(root).unwrap();
+        let output = result.expect("owned wrapper output");
+        assert!(cleaned_up, "owned descendant survived leader exit");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(output.stdout, b"leader output");
+        assert_eq!(output.timed_out, timed_out);
+        let termination = output.termination.unwrap();
+        if timed_out {
+            assert_eq!(output.cleanup.unwrap().status, "timeout_killed");
+            assert_eq!(termination.signal, Some(libc::SIGTERM));
+            assert!(termination.tool_initiated);
+        } else {
+            assert_eq!(output.status_code, 23);
+            assert_eq!(termination.exit_code, Some(23));
+            assert!(!termination.tool_initiated);
+            assert_eq!(output.cleanup.unwrap().status, "exited");
+        }
+    }
+
     #[test]
     fn godot_process_timeout_kills_owned_child() {
         let _signal_guard = PROCESS_SIGNAL_LOCK.lock().expect("signal test lock");
@@ -4767,18 +5001,6 @@ mod tests {
                         )
                         .expect("launch fake session");
                         assert_eq!(launch.display.joypad_isolation, enabled);
-                        #[cfg(unix)]
-                        {
-                            let mut status = 0;
-                            // Session launches detach their Child; reap this test's child.
-                            assert_eq!(
-                                unsafe { libc::waitpid(launch.pid as libc::pid_t, &mut status, 0) },
-                                launch.pid as libc::pid_t
-                            );
-                            assert!(libc::WIFEXITED(status));
-                            assert_eq!(libc::WEXITSTATUS(status), 0);
-                        }
-                        #[cfg(not(unix))]
                         assert!(
                             super::wait_for_godot_process_exit(launch.pid, 5.0),
                             "session fixture exits"
@@ -4925,6 +5147,64 @@ mod tests {
                 "--qa".to_string(),
                 format!("--qa-patch-request={}", request_path.to_string_lossy()),
             ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn background_session_children_are_reaped() {
+        let root = unique_temp_dir().join("sessions with spaces");
+        fs::create_dir_all(&root).unwrap();
+        let binary = fixture(&root.join("fake-godot"), &[("sleep_ms", "30000")]);
+        let mut pids = Vec::new();
+        for _ in 0..12 {
+            let launch = launch_godot_session(
+                binary.to_str().unwrap(),
+                &[],
+                false,
+                &[],
+                &root,
+                &root.join("request.json"),
+                &root.join("logs.txt"),
+                43123,
+                "test-token",
+                true,
+                false,
+                None,
+                None,
+                &[],
+                &[],
+                &[],
+                None,
+            )
+            .unwrap();
+            super::stop_godot_process_with_identity(
+                launch.pid,
+                0.5,
+                super::process_identity(launch.pid),
+            )
+            .unwrap();
+            pids.push(launch.pid);
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while pids.iter().any(|pid| pid_is_running(*pid)) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let unreaped: Vec<_> = pids
+            .iter()
+            .copied()
+            .filter(|pid| pid_is_running(*pid))
+            .collect();
+        for pid in pids {
+            // Clean up zombies when testing the original handle-dropping bug.
+            unsafe {
+                libc::waitpid(pid as libc::pid_t, std::ptr::null_mut(), libc::WNOHANG);
+            }
+        }
+        fs::remove_dir_all(root).unwrap();
+        assert!(
+            unreaped.is_empty(),
+            "background session children were not reaped: {unreaped:?}"
         );
     }
 
@@ -5124,6 +5404,83 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unix_process_identity_is_start_time() {
+        let pid = i64::from(std::process::id());
+        let stat = fs::read(format!("/proc/{pid}/stat")).unwrap();
+        let expected = super::proc_stat::fields(&stat)
+            .unwrap()
+            .nth(19)
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(super::process_identity(pid), Some(expected));
+        assert!(super::process_identity_matches(pid, Some(expected)));
+        assert!(!super::process_identity_matches(pid, Some(expected + 1)));
+        assert!(!super::process_identity_matches(pid, Some(0)));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unix_mismatched_identity_refuses_termination() {
+        use std::os::unix::process::CommandExt;
+        let mut command = std::process::Command::new("sleep");
+        command.arg("30").process_group(0);
+        let mut child = command.spawn().unwrap();
+        let pid = i64::from(child.id());
+        let result = super::terminate_process_tree(pid, false, Some(0));
+        let survived = !super::wait_for_godot_process_exit(pid, 0.1);
+        let _ = child.kill();
+        child.wait().unwrap();
+        assert!(
+            result.is_err(),
+            "mismatched identity must refuse signalling"
+        );
+        assert!(survived, "unrelated process must remain alive");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unix_legacy_identity_does_not_signal_group() {
+        use std::os::unix::process::CommandExt;
+        let root = unique_temp_dir();
+        fs::create_dir_all(&root).unwrap();
+        let wrapper = write_executable(
+            &root.join("legacy.sh"),
+            "#!/bin/sh\nsleep 30 &\nprintf '%s' \"$!\" > \"$1\"\nexec sleep 30\n",
+        );
+        let pid_file = root.join("child.pid");
+        let mut command = std::process::Command::new(wrapper);
+        command.arg(&pid_file).process_group(0);
+        let mut child = super::spawn_probe_child(&mut command).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let descendant = loop {
+            if let Some(pid) = fs::read_to_string(&pid_file)
+                .ok()
+                .and_then(|value| value.parse().ok())
+            {
+                break pid;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "child PID was not published"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let result = super::stop_godot_process_with_identity(i64::from(child.id()), 0.5, None);
+        let survived = !super::wait_for_godot_process_exit(descendant, 0.1);
+        let _ = super::send_signal(descendant, libc::SIGKILL);
+        let _ = child.kill();
+        child.wait().unwrap();
+        fs::remove_dir_all(root).unwrap();
+        assert!(result.is_ok());
+        assert!(
+            survived,
+            "legacy metadata must not authorize group signalling"
+        );
+    }
+
     #[cfg(windows)]
     #[test]
     fn windows_owned_job_reaps_descendant_after_wrapper_exits() {
@@ -5218,10 +5575,10 @@ mod tests {
     #[cfg(unix)]
     fn read_session_id(pid: i64) -> i64 {
         let stat_path = format!("/proc/{pid}/stat");
-        let contents = fs::read_to_string(stat_path).expect("read stat");
-        contents
-            .split_whitespace()
-            .nth(5)
+        let contents = fs::read(stat_path).expect("read stat");
+        super::proc_stat::fields(&contents)
+            .unwrap()
+            .nth(3)
             .and_then(|value| value.parse::<i64>().ok())
             .expect("parse session id")
     }
