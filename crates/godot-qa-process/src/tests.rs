@@ -10,6 +10,7 @@ use super::lifecycle;
 use super::lifecycle::{exit_poll_backoff, is_zombie_process, stale_owned_child_cleanup_failure};
 #[cfg(target_os = "linux")]
 use super::probes;
+use super::probes::probe_godot_version_with_metadata_and_deadline;
 #[cfg(unix)]
 use super::stop_godot_process;
 use super::{
@@ -227,6 +228,38 @@ fn safe_probe_timeout_kills_child_and_reports_timeout() {
 }
 
 #[test]
+fn version_probe_slow_cold_start_succeeds() {
+    let temp_dir = unique_temp_dir().join("slow version probe with spaces");
+    let cold_start = fixture(&temp_dir.join("cold start"), &[("sleep_ms", "3000")]);
+    let godot = fixture(
+        &temp_dir.join("godot"),
+        &[
+            ("child_exe", cold_start.to_str().unwrap()),
+            ("wait_child", "true"),
+            ("stdout", "Godot_v4.5:{arg1}\n"),
+        ],
+    );
+
+    let result = super::probe_godot_version(godot.to_str().unwrap(), &[]);
+    let wrapper = fixture(&temp_dir.join("wrapper"), &[("mode", "wrapper")]);
+    let prefixed_result = probe_godot_version_with_metadata(
+        godot.to_str().unwrap(),
+        &[wrapper.to_string_lossy().into_owned()],
+    );
+    fs::remove_dir_all(temp_dir).unwrap();
+
+    assert_eq!(
+        result.expect("a slow cold start must fit within the version probe deadline"),
+        "Godot_v4.5:--version"
+    );
+    let prefixed_result = prefixed_result.expect("a slow prefixed probe must also succeed");
+    assert_eq!(prefixed_result.version, "Godot_v4.5:--version");
+    assert!(prefixed_result.metadata.used_launch_prefix);
+    assert!(!prefixed_result.metadata.fallback_used);
+    assert_eq!(prefixed_result.metadata.attempts.len(), 1);
+}
+
+#[test]
 fn version_probe_hanging_prefix_times_out_before_direct_fallback() {
     let temp_dir = unique_temp_dir().join("version probe with spaces");
     let wrapper = fixture(
@@ -239,9 +272,10 @@ fn version_probe_hanging_prefix_times_out_before_direct_fallback() {
     );
     let godot = fixture(&temp_dir.join("godot"), &[("stdout", "Godot_v4.5\n")]);
     let started = std::time::Instant::now();
-    let result = probe_godot_version_with_metadata(
+    let result = probe_godot_version_with_metadata_and_deadline(
         godot.to_str().unwrap(),
         &[wrapper.to_string_lossy().into_owned()],
+        Duration::from_secs(2),
     )
     .expect("direct probe succeeds after prefix timeout");
     let elapsed = started.elapsed();
@@ -274,7 +308,11 @@ fn version_probe_hanging_direct_probe_reports_timeout() {
         &[("stdout", "Godot_v4.5\n"), ("sleep_ms", "3000")],
     );
     let started = std::time::Instant::now();
-    let result = probe_godot_version_with_metadata(godot.to_str().unwrap(), &[]);
+    let result = probe_godot_version_with_metadata_and_deadline(
+        godot.to_str().unwrap(),
+        &[],
+        Duration::from_secs(2),
+    );
     let elapsed = started.elapsed();
     fs::remove_dir_all(temp_dir).unwrap();
 

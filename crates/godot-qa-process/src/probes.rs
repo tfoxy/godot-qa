@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 use super::windows;
 
 const GODOT_VERSION_PROBE_FAILED: &str = "godot_version_probe_failed";
+// Hang backstop that leaves room for cold starts and loaded hosts.
+const GODOT_VERSION_PROBE_DEADLINE: Duration = Duration::from_secs(15);
 #[derive(Debug, Clone)]
 pub struct GodotVersionProbeResult {
     pub version: String,
@@ -118,13 +120,25 @@ pub fn probe_godot_version_with_metadata(
     binary: &str,
     launch_prefix: &[String],
 ) -> Result<GodotVersionProbeResult, FailureDetail> {
+    probe_godot_version_with_metadata_and_deadline(
+        binary,
+        launch_prefix,
+        GODOT_VERSION_PROBE_DEADLINE,
+    )
+}
+
+pub(crate) fn probe_godot_version_with_metadata_and_deadline(
+    binary: &str,
+    launch_prefix: &[String],
+    deadline: Duration,
+) -> Result<GodotVersionProbeResult, FailureDetail> {
     let prefixed_command =
         effective_godot_command(launch_prefix, binary, &["--version".to_string()]);
     let direct_command = effective_godot_command(&[], binary, &["--version".to_string()]);
     let expected = "exit status 0 with version output";
     let mut attempts = Vec::new();
 
-    let first = run_version_probe_attempt(&prefixed_command, !launch_prefix.is_empty());
+    let first = run_version_probe_attempt(&prefixed_command, !launch_prefix.is_empty(), deadline);
     if let Some(version) = successful_version(&first) {
         let metadata = GodotVersionProbeMetadata {
             attempts: vec![first],
@@ -140,7 +154,7 @@ pub fn probe_godot_version_with_metadata(
     let fallback_reason = first.failure_reason.clone();
     attempts.push(first);
     if !launch_prefix.is_empty() {
-        let direct = run_version_probe_attempt(&direct_command, false);
+        let direct = run_version_probe_attempt(&direct_command, false, deadline);
         if let Some(version) = successful_version(&direct) {
             attempts.push(direct);
             let metadata = GodotVersionProbeMetadata {
@@ -193,12 +207,9 @@ pub fn probe_godot_version_with_metadata(
 fn run_version_probe_attempt(
     command: &[String],
     used_launch_prefix: bool,
+    deadline: Duration,
 ) -> GodotVersionProbeAttempt {
-    let output = run_safe_probe(
-        Path::new(&command[0]),
-        &command[1..],
-        Duration::from_secs(2),
-    );
+    let output = run_safe_probe(Path::new(&command[0]), &command[1..], deadline);
     let stdout = output.stdout.trim().to_string();
     let stderr = output.stderr.trim().to_string();
     let version = if !stdout.is_empty() { &stdout } else { &stderr };
