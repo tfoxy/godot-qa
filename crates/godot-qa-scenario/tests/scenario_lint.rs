@@ -76,6 +76,177 @@ fn scenario_lint_warnings_only_exit_zero() {
 }
 
 #[test]
+fn scenario_lint_fixture_masking_ignores_prior_inline_assertions() {
+    let root = temp_dir("scenario-lint-masking-prior-assertions");
+    for later_unrelated_assertion in [false, true] {
+        let mut scenario = json!({
+            "name": "ordering", "scene": "res://scene.tscn", "assert": [],
+            "steps": [
+                {"assert": [{"visible": "qa:player"}]},
+                {"set_property": {"target": "qa:player", "property": "visible", "value": true}}
+            ]
+        });
+        if later_unrelated_assertion {
+            scenario["steps"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"assert": [{"visible": "qa:other"}]}));
+        }
+        write(
+            &root.join("qa/scenarios/ordering.json"),
+            &scenario.to_string(),
+        );
+        let result = run_scenario_lint(&config(&root), LintOptions::default());
+        assert!(result.ok, "{:?}", result.data);
+        assert!(
+            !result.data["findings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|finding| finding["rule_id"] == "GQA-LINT-001"),
+            "{:?}",
+            result.data
+        );
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn scenario_lint_fixture_masking_checks_later_assertions() {
+    let root = temp_dir("scenario-lint-masking-later-assertions");
+    for inline in [false, true] {
+        let mut scenario = json!({
+            "name": "ordering", "scene": "res://scene.tscn", "assert": [],
+            "steps": [{"set_property": {"target": "qa:player", "property": "visible", "value": true}}]
+        });
+        if inline {
+            scenario["steps"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"assert": [{"visible": "qa:player"}]}));
+        } else {
+            scenario["assert"] = json!([{"visible": "qa:player"}]);
+        }
+        write(
+            &root.join("qa/scenarios/ordering.json"),
+            &scenario.to_string(),
+        );
+        let result = run_scenario_lint(&config(&root), LintOptions::default());
+        assert!(result.ok, "{:?}", result.data);
+        assert!(
+            result.data["findings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|finding| finding["rule_id"] == "GQA-LINT-001" && finding["step_index"] == 0),
+            "inline={inline}: {:?}",
+            result.data
+        );
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn scenario_lint_inline_negative_guards_match_top_level() {
+    let root = temp_dir("scenario-lint-inline-negative");
+    write(
+        &root.join("toast.gd"),
+        "func _ready():\n    set_meta(\"qa_id\", \"toast_guard\")\n",
+    );
+    for guard in [
+        json!({"hidden": "qa:toast_guard"}),
+        json!({"no_errors": true}),
+    ] {
+        for inline in [false, true] {
+            let mut scenario = json!({
+                "name": "guard", "scene": "res://scene.tscn",
+                "steps": [{"tap_action": "ui_accept"}], "assert": []
+            });
+            if inline {
+                scenario["steps"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!({"assert": [guard]}));
+            } else {
+                scenario["assert"] = json!([guard]);
+            }
+            let scenario = godot_qa_scenario::scenario_doc::normalize_scenario_document(&scenario);
+            write(&root.join("qa/scenarios/guard.json"), &scenario.to_string());
+            let result = run_scenario_lint(
+                &config(&root),
+                LintOptions {
+                    strict: true,
+                    ..Default::default()
+                },
+            );
+            assert!(result.ok, "inline={inline}: {:?}", result.data);
+            assert_eq!(result.data["summary"]["warnings"], 0);
+        }
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn scenario_lint_inline_assertion_rules_match_top_level() {
+    let root = temp_dir("scenario-lint-inline-rules");
+    for (rule, scenario, assertions, expected) in [
+        (
+            "GQA-LINT-001",
+            json!({"steps": [{"tap_action": "ui_accept"}, {"set_property": {"target": "qa:player", "property": "visible", "value": true}}]}),
+            json!([{"visible": "qa:player"}]),
+            true,
+        ),
+        (
+            "GQA-LINT-002",
+            json!({"steps": [{"tap_action": "ui_accept"}]}),
+            json!([{"text_contains": {"target": "qa:debug_status", "expected": "joined"}}]),
+            true,
+        ),
+        (
+            "GQA-LINT-003",
+            json!({"steps": [{"snapshot": "after"}]}),
+            json!([{"not_occluded": {"target": "qa:menu", "snapshot": "after"}}]),
+            true,
+        ),
+        (
+            "GQA-LINT-005",
+            json!({"steps": [{"snapshot": "after"}], "snapshots": {"save_screenshot": true}, "lint": {"visual_coverage": true}}),
+            json!([{"not_occluded": {"target": "qa:menu", "snapshot": "after"}}]),
+            false,
+        ),
+    ] {
+        for inline in [false, true] {
+            let mut scenario = scenario.clone();
+            scenario["name"] = json!("rules");
+            scenario["scene"] = json!("res://scene.tscn");
+            scenario["assert"] = json!([]);
+            if inline {
+                scenario["steps"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!({"assert": assertions}));
+            } else {
+                scenario["assert"] = assertions.clone();
+            }
+            write(&root.join("qa/scenarios/rules.json"), &scenario.to_string());
+            let result = run_scenario_lint(&config(&root), LintOptions::default());
+            assert!(result.ok, "{rule}, inline={inline}: {:?}", result.data);
+            assert_eq!(
+                result.data["findings"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|finding| finding["rule_id"] == rule),
+                expected,
+                "{rule}, inline={inline}: {:?}",
+                result.data
+            );
+        }
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn scenario_lint_strict_warnings_exit_nonzero() {
     let root = temp_dir("scenario-lint-strict");
     write(
@@ -452,7 +623,10 @@ fn scenario_lint_suppression_hides_warning_and_reports_metadata() {
 #[test]
 fn scenario_lint_suppression_does_not_hide_other_scenarios_findings() {
     let root = temp_dir("scenario-lint-suppression-scope");
-    write(&root.join("ui/ids.gd"), "# qa:start\n# qa:title\n");
+    write(
+        &root.join("ui/ids.gd"),
+        "func _ready():\n    add_to_group(\"qa.start\")\n    add_to_group(\"qa.title\")\n",
+    );
     write(
         &root.join("qa/scenarios/a_unsuppressed.json"),
         &json!({
@@ -545,6 +719,187 @@ fn scenario_lint_suppression_cannot_hide_contract_error() {
 }
 
 #[test]
+fn scenario_lint_references_accepts_register_qa_id() {
+    let root = temp_dir("scenario-lint-register-qa-id");
+    write(
+        &root.join("ids.gd"),
+        r#"extends Node
+func _ready():
+    QaRuntime.register_qa_id($StartButton, "start_button")
+    QaRuntime.register_qa_id(get_node(resolve("Menu", ["Button", "Panel"])), "menu_button", ["old_menu", "qa:menu_alias"])
+    QaRuntime.register_qa_id($Other, "other_button", PackedStringArray(["packed_alias"]))
+"#,
+    );
+    write(&root.join("qa/scenarios/refs.json"), &json!({
+        "name": "refs", "scene": "res://scene.tscn", "steps": [],
+        "assert": (["start_button", "menu_button", "old_menu", "menu_alias", "other_button", "packed_alias"]
+            .map(|id| json!({"exists": format!("qa:{id}")})))
+    }).to_string());
+    let result = run_scenario_lint(&config(&root), LintOptions::default());
+    assert!(result.ok, "{:?}", result.data);
+    assert!(
+        !result.data["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|finding| finding["rule_id"] == "missing_qa_id_reference"),
+        "{:?}",
+        result.data
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn scenario_lint_references_accepts_literal_qa_aliases() {
+    let root = temp_dir("scenario-lint-qa-aliases");
+    write(
+        &root.join("ids.gd"),
+        r#"extends Node
+func _ready():
+    set_meta("qa_aliases", ["old_button", "qa:script_alias"])
+    $Child.set_meta("qa_aliases", PackedStringArray(["packed_button", "qa:packed_script_alias"]))
+"#,
+    );
+    write(
+        &root.join("scene.tscn"),
+        r#"[gd_scene format=3]
+[node name="Scene" type="Node"]
+metadata/qa_aliases = ["scene_button", "qa:scene_alias"]
+[node name="Child" type="Node" parent="."]
+metadata/qa_aliases = PackedStringArray("packed_scene_button", "qa:packed_scene_alias")
+"#,
+    );
+    write(&root.join("qa/scenarios/refs.json"), &json!({
+        "name": "refs", "scene": "res://scene.tscn", "steps": [],
+        "assert": (["old_button", "script_alias", "packed_button", "packed_script_alias", "scene_button", "scene_alias", "packed_scene_button", "packed_scene_alias"]
+            .map(|id| json!({"exists": format!("qa:{id}")})))
+    }).to_string());
+    let result = run_scenario_lint(&config(&root), LintOptions::default());
+    assert!(result.ok, "{:?}", result.data);
+    assert!(
+        !result.data["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|finding| finding["rule_id"] == "missing_qa_id_reference"),
+        "{:?}",
+        result.data
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn scenario_lint_references_accepts_literal_qa_declarations() {
+    let root = temp_dir("scenario-lint-literal-declarations");
+    write(
+        &root.join("ids.gd"),
+        r#"extends Node
+func _ready():
+    set_meta("qa_id", "player")
+    $Child.set_meta ( &'qa_id', &'child' )
+    set_meta(
+        "qa_id", # literal multiline declaration
+        "multiline",
+    )
+    add_to_group("qa.id.grouped")
+    $Child.add_to_group('qa.alias', true)
+"#,
+    );
+    write(
+        &root.join("scene.tscn"),
+        r#"[gd_scene format=3]
+[node name="Scene" type="Node" groups=["qa.id.scene_group", "qa.scene_alias"]]
+metadata/qa_id = "sceneplayer"
+"#,
+    );
+    write(&root.join("qa/scenarios/refs.json"), &json!({
+        "name": "refs", "scene": "res://scene.tscn", "steps": [],
+        "assert": (["player", "child", "multiline", "grouped", "alias", "sceneplayer", "scene_group", "scene_alias"]
+            .map(|id| json!({"exists": format!("qa:{id}")})))
+    }).to_string());
+    let result = run_scenario_lint(&config(&root), LintOptions::default());
+    assert!(result.ok, "{:?}", result.data);
+    assert!(
+        !result.data["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|finding| finding["rule_id"] == "missing_qa_id_reference"),
+        "{:?}",
+        result.data
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn scenario_lint_references_rejects_unrelated_quoted_strings() {
+    let root = temp_dir("scenario-lint-unrelated-strings");
+    write(
+        &root.join("ids.gd"),
+        r#"extends Node
+const LABEL = "missing_button"
+const LOCATOR = "qa:locator_only"
+const EXAMPLE = 'set_meta("qa_id", "string_only")'
+const BLOCK = """set_meta("qa_id", "block_only")"""
+# set_meta("qa_id", "comment_only")
+func _ready():
+    set_meta("qa_id", "known_button")
+    set_meta("label", "other_metadata")
+    set_meta("qa_id", "dynamic_prefix" + LABEL)
+    add_to_group("unrelated_group")
+    add_to_group("qa.dynamic_group" + LABEL)
+    QaRuntime.register_qa_id(get_node("node_only"), "dynamic_helper" + LABEL)
+    set_meta("qa_aliases", [make_alias("first", "computed_alias", "last")])
+"#,
+    );
+    write(
+        &root.join("scene.tscn"),
+        r#"[gd_scene format=3]
+[node name="node_name" type="Node"]
+metadata/qa_id = "known_scene"
+text = "scene_text"
+"#,
+    );
+    let missing = [
+        "missing_button",
+        "locator_only",
+        "string_only",
+        "block_only",
+        "comment_only",
+        "other_metadata",
+        "dynamic_prefix",
+        "unrelated_group",
+        "dynamic_group",
+        "node_only",
+        "dynamic_helper",
+        "computed_alias",
+        "node_name",
+        "scene_text",
+    ];
+    write(
+        &root.join("qa/scenarios/refs.json"),
+        &json!({
+            "name": "refs", "scene": "res://scene.tscn", "steps": [],
+            "assert": missing.map(|id| json!({"exists": format!("qa:{id}")}))
+        })
+        .to_string(),
+    );
+    let result = run_scenario_lint(&config(&root), LintOptions::default());
+    assert!(result.ok, "{:?}", result.data);
+    let findings = result.data["findings"].as_array().unwrap();
+    for id in missing {
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding["rule_id"] == "missing_qa_id_reference"
+                    && finding["target"] == format!("qa:{id}")),
+            "missing warning for {id}: {findings:?}"
+        );
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn scenario_lint_references_detects_missing_and_known_qa_ids() {
     let root = temp_dir("scenario-lint-references");
     write(
@@ -590,7 +945,10 @@ fn scenario_lint_references_accepts_dotted_static_qa_ids() {
         &root.join("ui/lobby.tscn"),
         "[gd_scene format=3]\n\n[node name=\"Lobby\" type=\"Control\"]\nmetadata/qa_id = \"lobby.team0\"\n",
     );
-    write(&root.join("ui/ids.gd"), "# qa:lobby.team1\n");
+    write(
+        &root.join("ui/ids.gd"),
+        "func _ready():\n    add_to_group(\"qa.id.lobby.team1\")\n",
+    );
     write(
         &root.join("qa/scenarios/lobby.json"),
         &json!({
@@ -618,7 +976,10 @@ fn scenario_lint_references_accepts_dotted_static_qa_ids() {
 #[test]
 fn scenario_lint_references_checks_step_assertions() {
     let root = temp_dir("scenario-lint-step-assert-references");
-    write(&root.join("ui/ids.gd"), "# qa:known_button\n");
+    write(
+        &root.join("ui/ids.gd"),
+        "func _ready():\n    set_meta(\"qa_id\", \"known_button\")\n",
+    );
     for id in ["known_button", "missing_button"] {
         for assertion in [
             json!({"visible": format!("qa:{id}")}),

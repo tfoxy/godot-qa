@@ -357,39 +357,61 @@ fn collect_static_qa_ids(root: &Path, qa_ids: &mut HashSet<String>) {
             let Ok(text) = fs::read_to_string(&path) else {
                 continue;
             };
-            for caps in text.match_indices("qa:") {
-                let rest = &text[caps.0 + 3..];
-                let id: String = rest
-                    .chars()
-                    .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '/' | '.'))
-                    .collect();
-                if !id.is_empty() {
-                    qa_ids.insert(id);
-                }
-            }
-            for token in [
-                "set_meta(\"qa_id\"",
-                "set_meta('qa_id'",
-                "metadata/qa_id",
-                "qa_id",
-            ] {
-                if text.contains(token) {
-                    for quoted in text.split(['\"', '\'']) {
-                        if quoted.contains(':')
-                            || quoted.is_empty()
-                            || quoted == "qa_id"
-                            || quoted == "metadata/qa_id"
-                        {
-                            continue;
+            if ext == "gd" {
+                let tokens = static_source_tokens(&text);
+                for index in 0..tokens.len() {
+                    let [function, "(", tail @ ..] = &tokens[index..] else {
+                        continue;
+                    };
+                    if !matches!(*function, "set_meta" | "add_to_group" | "register_qa_id") {
+                        continue;
+                    }
+                    let Some((args, _)) = static_arguments(tail, ")") else {
+                        continue;
+                    };
+                    match (*function, args.as_slice()) {
+                        ("set_meta", [key, value]) if static_literal(key) == Some("qa_id") => {
+                            if let Some(id) = static_literal(value) {
+                                insert_static_qa_id(qa_ids, id);
+                            }
                         }
-                        if quoted.chars().all(|c| {
-                            c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '/' | '.')
-                        }) && (quoted.contains('_')
-                            || quoted.contains('-')
-                            || quoted.contains('/')
-                            || quoted.contains('.'))
-                        {
-                            qa_ids.insert(quoted.to_string());
+                        ("set_meta", [key, value]) if static_literal(key) == Some("qa_aliases") => {
+                            collect_static_aliases(value, qa_ids);
+                        }
+                        ("register_qa_id", [_, id, aliases @ ..]) if aliases.len() <= 1 => {
+                            if let Some(id) = static_literal(id) {
+                                insert_static_qa_id(qa_ids, id.trim());
+                            }
+                            if let Some(aliases) = aliases.first() {
+                                collect_static_aliases(aliases, qa_ids);
+                            }
+                        }
+                        ("add_to_group", [group] | [group, _]) => {
+                            if let Some(id) = static_literal(group).and_then(qa_group_id) {
+                                insert_static_qa_id(qa_ids, id);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            } else {
+                for node in godot_qa_scene::parse_scene(&text).nodes {
+                    for (key, value) in node.properties {
+                        use godot_qa_scene::GodotValue;
+                        match (key.as_str(), value) {
+                            (
+                                "metadata/qa_id",
+                                GodotValue::Str(id) | GodotValue::StringName(id),
+                            ) => {
+                                insert_static_qa_id(qa_ids, &id);
+                            }
+                            ("metadata/qa_aliases", value) => collect_scene_aliases(value, qa_ids),
+                            _ => {}
+                        }
+                    }
+                    for group in node.groups {
+                        if let Some(id) = qa_group_id(&group) {
+                            insert_static_qa_id(qa_ids, id);
                         }
                     }
                 }
@@ -397,6 +419,164 @@ fn collect_static_qa_ids(root: &Path, qa_ids: &mut HashSet<String>) {
         }
     }
 }
+/// Split only at the outer call/array level; commas in node expressions or
+/// computed alias entries must not be mistaken for literal ID arguments.
+fn static_arguments<'a, 'b>(
+    tokens: &'a [&'b str],
+    closing: &str,
+) -> Option<(Vec<&'a [&'b str]>, usize)> {
+    let mut args = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0;
+    for (index, token) in tokens.iter().enumerate() {
+        if *token == closing && depth == 0 {
+            if start < index {
+                args.push(&tokens[start..index]);
+            }
+            return Some((args, index + 1));
+        }
+        match *token {
+            "(" | "[" | "{" => depth += 1,
+            ")" | "]" | "}" => depth = depth.checked_sub(1)?,
+            "," if depth == 0 => {
+                args.push(&tokens[start..index]);
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn static_literal<'a>(tokens: &[&'a str]) -> Option<&'a str> {
+    match tokens {
+        [token] => static_string(token),
+        _ => None,
+    }
+}
+
+fn insert_static_alias(qa_ids: &mut HashSet<String>, alias: &str) {
+    let alias = alias.trim();
+    insert_static_qa_id(qa_ids, alias.strip_prefix("qa:").unwrap_or(alias));
+}
+
+fn collect_static_aliases(tokens: &[&str], qa_ids: &mut HashSet<String>) {
+    let tokens = match tokens {
+        ["PackedStringArray", "(", inner @ .., ")"] => inner,
+        _ => tokens,
+    };
+    if let Some(alias) = static_literal(tokens) {
+        insert_static_alias(qa_ids, alias);
+    } else if let ["[", tail @ ..] = tokens
+        && let Some((entries, consumed)) = static_arguments(tail, "]")
+        && consumed == tail.len()
+    {
+        for entry in entries {
+            if let Some(alias) = static_literal(entry) {
+                insert_static_alias(qa_ids, alias);
+            }
+        }
+    }
+}
+
+fn collect_scene_aliases(value: godot_qa_scene::GodotValue, qa_ids: &mut HashSet<String>) {
+    use godot_qa_scene::GodotValue;
+    match value {
+        GodotValue::Str(alias) | GodotValue::StringName(alias) => {
+            insert_static_alias(qa_ids, &alias)
+        }
+        GodotValue::Array(values) => {
+            for value in values {
+                if let GodotValue::Str(alias) | GodotValue::StringName(alias) = value {
+                    insert_static_alias(qa_ids, &alias);
+                }
+            }
+        }
+        GodotValue::PackedStringArray(aliases) => {
+            for alias in aliases {
+                insert_static_alias(qa_ids, &alias);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn insert_static_qa_id(qa_ids: &mut HashSet<String>, id: &str) {
+    if !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '/' | '.'))
+    {
+        qa_ids.insert(id.to_string());
+    }
+}
+
+fn qa_group_id(group: &str) -> Option<&str> {
+    group
+        .strip_prefix("qa.id.")
+        .or_else(|| group.strip_prefix("qa."))
+}
+
+fn static_string(token: &str) -> Option<&str> {
+    let token = token.strip_prefix('&').unwrap_or(token);
+    let quote = token.chars().next()?;
+    if !matches!(quote, '\'' | '"') {
+        return None;
+    }
+    token.strip_prefix(quote)?.strip_suffix(quote)
+}
+
+/// Keep strings atomic and discard comments so examples and unrelated literals
+/// cannot masquerade as calls. Only literal call arguments are indexed above;
+/// computed IDs remain unknown to this static lint pass.
+fn static_source_tokens(mut text: &str) -> Vec<&str> {
+    let mut tokens = Vec::new();
+    loop {
+        text = text.trim_start();
+        let Some(first) = text.chars().next() else {
+            break;
+        };
+        if first == '#' {
+            text = text.split_once('\n').map_or("", |(_, rest)| rest);
+            continue;
+        }
+        let prefix = usize::from(text.starts_with("&\"") || text.starts_with("&'"));
+        let quote = text.as_bytes()[prefix];
+        let length = if matches!(quote, b'\'' | b'"') {
+            let quoted = &text[prefix..];
+            let delimiter_len = if quoted.as_bytes().get(..3) == Some(&[quote; 3]) {
+                3
+            } else {
+                1
+            };
+            let delimiter = &quoted[..delimiter_len];
+            let mut end = prefix + delimiter_len;
+            while end < text.len() {
+                if text[end..].starts_with(delimiter) {
+                    end += delimiter_len;
+                    break;
+                }
+                if text.as_bytes()[end] == b'\\' {
+                    end += 1;
+                }
+                if end < text.len() {
+                    end += text[end..].chars().next().unwrap().len_utf8();
+                }
+            }
+            end
+        } else if first.is_alphanumeric() || first == '_' {
+            text.char_indices()
+                .find(|(_, c)| !c.is_alphanumeric() && *c != '_')
+                .map_or(text.len(), |(index, _)| index)
+        } else {
+            first.len_utf8()
+        };
+        tokens.push(&text[..length]);
+        text = &text[length..];
+    }
+    tokens
+}
+
 fn collect_qa_locators(doc: &Value) -> HashSet<String> {
     let mut out = HashSet::new();
     if let Some(steps) = doc.get("steps").and_then(Value::as_array) {
@@ -716,21 +896,32 @@ fn lint_fixture_masking(path: &Path, scenario: &Value, findings: &mut Vec<LintFi
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let assertions = scenario
-        .get("assert")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
+    let assertions = collect_assertions(scenario);
     if steps.is_empty() || assertions.is_empty() {
         return;
     }
     let interactive_index = steps.iter().position(is_player_input_step);
-    let assertion_targets: Vec<String> = assertions.iter().filter_map(assertion_target).collect();
+    let assertion_targets: Vec<String> = scenario
+        .get("assert")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(assertion_target)
+        .collect();
     for (idx, step) in steps.iter().enumerate() {
         if let Some(mutation_target) = mutation_step_target(step) {
             let after_input = interactive_index.map(|i| idx > i).unwrap_or(false);
-            let in_final_window = idx + 1 >= steps.len();
-            let same_target = assertion_targets.iter().any(|t| t == &mutation_target);
+            let later_steps = &steps[idx + 1..];
+            // Trailing assertion steps run after the last mutation just like
+            // top-level assertions; earlier inline assertions cannot be masked.
+            let in_final_window = later_steps.iter().all(|step| step.get("assert").is_some());
+            let same_target = assertion_targets.iter().any(|t| t == &mutation_target)
+                || later_steps
+                    .iter()
+                    .filter_map(|step| step.get("assert").and_then(Value::as_array))
+                    .flatten()
+                    .filter_map(assertion_target)
+                    .any(|target| target == mutation_target);
             if after_input || (in_final_window && same_target) {
                 findings.push(rule_warning(path, scenario, RULE_FIXTURE_MASKING, Some(format!("step[{idx}]")), Some(idx), None, format!("fixture/state mutation step '{}' can mask player-driven behavior", mutation_step_name(step).unwrap_or("mutation")), "prefer player-facing input for behavior under test; keep fixtures before interactive flow"));
             }
@@ -741,16 +932,12 @@ fn lint_debug_only_assertions(path: &Path, scenario: &Value, findings: &mut Vec<
     if !is_interactive_scenario(scenario) {
         return;
     }
-    let assertions = scenario
-        .get("assert")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
+    let assertions = collect_assertions(scenario);
     if assertions.is_empty() {
         return;
     }
     let filtered: Vec<(usize, &Value)> = assertions
-        .iter()
+        .into_iter()
         .enumerate()
         .filter(|(_, a)| !a.get("no_errors").and_then(Value::as_bool).unwrap_or(false))
         .collect();
@@ -794,12 +981,8 @@ fn lint_missing_negative_assertion(path: &Path, scenario: &Value, findings: &mut
     if !is_interactive_scenario(scenario) {
         return;
     }
-    let assertions = scenario
-        .get("assert")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let has_negative = assertions.iter().any(is_negative_assertion);
+    let assertions = collect_assertions(scenario);
+    let has_negative = assertions.into_iter().any(is_negative_assertion);
     if !has_negative {
         findings.push(rule_warning(path, scenario, RULE_MISSING_NEGATIVE_ASSERTION, None, None, None, "interactive scenario has no negative guard assertion".to_string(), "add a negative check such as hidden/not_exists/disabled/never/no_overlap/not_occluded/no_errors"));
     }
@@ -821,11 +1004,7 @@ fn lint_screenshot_obstruction_risk(
     if !save {
         return;
     }
-    let assertions = scenario
-        .get("assert")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
+    let assertions = collect_assertions(scenario);
     let has_guard = assertions.iter().any(|a| {
         a.get("visible_pixels").is_some()
             || a.get("not_occluded").is_some()
@@ -1100,19 +1279,14 @@ fn claims_visual_coverage(s: &Value) -> bool {
         .and_then(|m| m.get("visual_coverage"))
         .and_then(Value::as_bool)
         .unwrap_or(false)
-        || s.get("assert")
-            .and_then(Value::as_array)
-            .map(|arr| {
-                arr.iter().any(|a| {
-                    a.get("layout_audit").is_some()
-                        || a.get("screenshot_match").is_some()
-                        || a.get("visible_pixels").is_some()
-                        || a.get("not_occluded").is_some()
-                        || a.get("renders_above").is_some()
-                        || a.get("renders_below").is_some()
-                })
-            })
-            .unwrap_or(false)
+        || collect_assertions(s).into_iter().any(|a| {
+            a.get("layout_audit").is_some()
+                || a.get("screenshot_match").is_some()
+                || a.get("visible_pixels").is_some()
+                || a.get("not_occluded").is_some()
+                || a.get("renders_above").is_some()
+                || a.get("renders_below").is_some()
+        })
 }
 fn is_negative_assertion(a: &Value) -> bool {
     a.get("not_exists").is_some()

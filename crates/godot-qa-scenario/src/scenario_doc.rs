@@ -801,7 +801,7 @@ fn collect_scenario_paths(dir: &Path, paths: &mut Vec<PathBuf>) {
 }
 
 /// The two facts discovery needs from a scenario file: the declared top-level
-/// `name` (`None` when absent, empty, or unreadable/unparsable, so the caller
+/// `name` (`None` when absent, empty, or unavailable, so the caller
 /// falls back to the file stem) and whether it is an abstract template.
 struct ScenarioHeader {
     name: Option<String>,
@@ -810,8 +810,8 @@ struct ScenarioHeader {
 
 /// Read a scenario file once and derive both header facts from that read.
 ///
-/// An unreadable file, or a `.json` file that does not parse, yields no declared
-/// name (stem fallback) and is not abstract.
+/// Unreadable/invalid JSON files use the stem fallback. Malformed YAML retains
+/// the legacy line scan so lint can still address broken files by name.
 fn read_scenario_header(path: &Path) -> ScenarioHeader {
     let Ok(raw_text) = fs::read_to_string(path) else {
         return ScenarioHeader {
@@ -819,18 +819,21 @@ fn read_scenario_header(path: &Path) -> ScenarioHeader {
             is_abstract: false,
         };
     };
-    match path.extension().and_then(|ext| ext.to_str()) {
-        Some("json") => json_scenario_header(&raw_text),
-        _ => yaml_scenario_header(&raw_text),
-    }
-}
-
-fn json_scenario_header(raw_text: &str) -> ScenarioHeader {
-    let Ok(data) = serde_json::from_str::<Value>(raw_text) else {
-        return ScenarioHeader {
-            name: None,
-            is_abstract: false,
-        };
+    let header_text = (path.extension().and_then(|ext| ext.to_str()) != Some("json"))
+        .then(|| unambiguous_yaml_header(&raw_text))
+        .flatten();
+    let data = match parse_scenario_value(path, header_text.as_deref().unwrap_or(&raw_text)) {
+        Ok(data) => data,
+        Err(_) => {
+            return if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+                ScenarioHeader {
+                    name: None,
+                    is_abstract: false,
+                }
+            } else {
+                yaml_scenario_header(&raw_text)
+            };
+        }
     };
     ScenarioHeader {
         name: data
@@ -843,9 +846,59 @@ fn json_scenario_header(raw_text: &str) -> ScenarioHeader {
     }
 }
 
-/// Scan top-level `name:` / `abstract:` lines without a full YAML parse. Only
-/// the first top-level occurrence of each key counts, mirroring how a YAML
-/// document's first mapping entry wins.
+/// Parse only header entries for simple block mappings. Exclude syntax that can
+/// hide keys or change their meaning (quotes, flow collections, anchors, tags,
+/// block scalars, document markers and multiline header values). Everything
+/// else goes through the full shared parser, including quoted/flow headers.
+fn unambiguous_yaml_header(raw_text: &str) -> Option<String> {
+    let mut header = String::new();
+    let mut seen_keys = [false; 2];
+    let mut after_header = false;
+    let mut has_mapping = false;
+    for line in raw_text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if !line.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || byte.is_ascii_whitespace() || b"_-.:/#".contains(&byte)
+        }) {
+            return None;
+        }
+        if line.starts_with([' ', '\t']) {
+            if after_header {
+                return None;
+            }
+            continue;
+        }
+        let (key, value) = line.split_once(':')?;
+        if key.is_empty()
+            || !key
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+            || (!value.is_empty() && !value.starts_with(char::is_whitespace))
+        {
+            return None;
+        }
+        has_mapping = true;
+        after_header = false;
+        if let Some(index) = ["name", "abstract"]
+            .iter()
+            .position(|candidate| *candidate == key)
+        {
+            if seen_keys[index] {
+                return None;
+            }
+            seen_keys[index] = true;
+            after_header = true;
+            header.push_str(line);
+            header.push('\n');
+        }
+    }
+    (has_mapping && !header.is_empty()).then_some(header)
+}
+
+/// Best-effort fallback for malformed YAML: keep broken scenarios discoverable.
 fn yaml_scenario_header(raw_text: &str) -> ScenarioHeader {
     let mut header = ScenarioHeader {
         name: None,
@@ -886,8 +939,8 @@ fn yaml_scenario_header(raw_text: &str) -> ScenarioHeader {
     header
 }
 
-/// Cheaply detect whether a scenario file declares `abstract: true` at the top
-/// level, without a full parse. Abstract templates are excluded from listing.
+/// Detect whether a scenario file declares `abstract: true` at the top level.
+/// Abstract templates are excluded from listing.
 pub(crate) fn is_abstract_scenario_file(path: &Path) -> bool {
     read_scenario_header(path).is_abstract
 }

@@ -152,6 +152,78 @@ fn list_scenarios_prefers_declared_names_and_stable_sorting() {
 }
 
 #[test]
+fn discovery_yaml_headers_match_loading() {
+    let root = temp_dir("scenario-discovery-yaml-headers");
+    for (index, source) in [
+        "name: menu # smoke\nscene: res://x.tscn\nsteps:\n  - wait_frames: 1\n",
+        "\"name\": quoted\nscene: res://x.tscn\nsteps: []\n",
+        "{name: flow, scene: 'res://x.tscn', steps: []}\n",
+        "name: 'hash # literal' # comment\nscene: res://x.tscn\nsteps: []\n",
+        "name: multi\n  line\nscene: res://x.tscn\nsteps: []\n",
+        "header: &header {name: merged}\n<<: *header\nscene: res://x.tscn\nsteps: []\n",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let path = root.join(format!("case_{index}.yaml"));
+        write(&path, source);
+        let loaded = load_scenario_document(&path).unwrap();
+        let listed = list_scenarios(&root);
+        let entry = listed
+            .iter()
+            .find(|entry| entry["path"] == json!(path))
+            .unwrap();
+        assert_eq!(entry["name"], loaded["name"], "{source}");
+        assert_eq!(
+            find_scenario_by_name(&root, loaded["name"].as_str().unwrap()),
+            Some(path)
+        );
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn discovery_yaml_abstract_headers_match_loading() {
+    let root = temp_dir("scenario-discovery-yaml-abstract");
+    for (index, source) in [
+        "name: base\nabstract: true # template\nsteps:\n  - wait_frames: 1\n",
+        "name: base\n'abstract': true\nsteps: []\n",
+        "{name: base, abstract: true, steps: []}\n",
+        "header: &header {abstract: true}\n<<: *header\nsteps: []\n",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let path = root.join(format!("case_{index}.yaml"));
+        write(&path, source);
+        assert_eq!(
+            failure_json(load_scenario_document(&path).unwrap_err())["type"],
+            "scenario_abstract"
+        );
+        assert!(list_scenarios(&root).is_empty(), "{source}");
+        assert!(find_scenario_by_name(&root, "base").is_none());
+        assert!(
+            godot_qa_scenario::scenario_doc::list_abstract_scenario_files(&root).contains(&path)
+        );
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn discovery_preserves_malformed_file_fallback() {
+    let root = temp_dir("scenario-discovery-malformed");
+    let yaml = root.join("invalid.yaml");
+    let json_path = root.join("invalid.json");
+    write(&yaml, "name: broken\nsteps: [\n");
+    write(&json_path, "{\"name\": \"broken\",");
+    assert!(load_scenario_document(&yaml).is_err());
+    assert!(load_scenario_document(&json_path).is_err());
+    assert_eq!(find_scenario_by_name(&root, "broken"), Some(yaml));
+    assert_eq!(find_scenario_by_name(&root, "invalid"), Some(json_path));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn find_scenario_by_name_matches_declared_name_and_stem() {
     let root = temp_dir("scenario-find");
     let scenarios_dir = root.join("qa/scenarios");
