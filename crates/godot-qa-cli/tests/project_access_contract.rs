@@ -24,6 +24,10 @@ fn all_godot_launchers_use_a_project_lease_or_a_guarded_delegate() {
         ),
         (
             "launch_godot_check_with_timeout_and_fixed_fps",
+            "launch_godot_check_with_timeout_monitor(",
+        ),
+        (
+            "launch_godot_check_with_timeout_monitor",
             "LaunchLease::acquire(",
         ),
         ("launch_godot_one_shot", "LaunchLease::acquire("),

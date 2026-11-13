@@ -837,6 +837,37 @@ pub fn launch_godot_check_with_timeout_and_fixed_fps(
     timeout: Option<Duration>,
     fixed_fps: Option<i64>,
 ) -> Result<GodotRunResult, FailureDetail> {
+    launch_godot_check_with_timeout_monitor(
+        binary,
+        launch_prefix,
+        joypad_isolation,
+        default_godot_args,
+        default_project_args,
+        project_root,
+        request_path,
+        logs_path,
+        timeout,
+        fixed_fps,
+        None,
+    )
+}
+
+/// Poll a caller-owned deadline monitor while retaining owned-child timeout cleanup.
+/// Returning a duration expires the run and records that budget in timeout evidence.
+#[allow(clippy::too_many_arguments)]
+pub fn launch_godot_check_with_timeout_monitor(
+    binary: &str,
+    launch_prefix: &[String],
+    joypad_isolation: bool,
+    default_godot_args: &[String],
+    default_project_args: &[String],
+    project_root: &Path,
+    request_path: &Path,
+    logs_path: &Path,
+    timeout: Option<Duration>,
+    fixed_fps: Option<i64>,
+    timeout_monitor: Option<&mut dyn FnMut() -> Option<Duration>>,
+) -> Result<GodotRunResult, FailureDetail> {
     let _project_lease = project_access::LaunchLease::acquire(
         project_root,
         project_access::LaunchClass::ImportOrEditor,
@@ -860,7 +891,15 @@ pub fn launch_godot_check_with_timeout_and_fixed_fps(
     ]);
     args.extend(default_project_args.iter().cloned());
     let command = effective_godot_command(launch_prefix, binary, &args);
-    run_godot_command_with_timeout(&command, joypad_isolation, logs_path, display, timeout)
+    run_godot_command_with_timeout_monitor(
+        &command,
+        joypad_isolation,
+        logs_path,
+        display,
+        timeout,
+        None,
+        timeout_monitor,
+    )
 }
 
 pub fn launch_godot_one_shot(
@@ -1524,18 +1563,39 @@ fn run_godot_command_with_completion_path(
     command: &[String],
     joypad_isolation: bool,
     logs_path: &Path,
-    mut display: DisplayLaunchMetadata,
+    display: DisplayLaunchMetadata,
     timeout: Option<Duration>,
     completion_path: Option<&Path>,
 ) -> Result<GodotRunResult, FailureDetail> {
+    run_godot_command_with_timeout_monitor(
+        command,
+        joypad_isolation,
+        logs_path,
+        display,
+        timeout,
+        completion_path,
+        None,
+    )
+}
+
+fn run_godot_command_with_timeout_monitor(
+    command: &[String],
+    joypad_isolation: bool,
+    logs_path: &Path,
+    mut display: DisplayLaunchMetadata,
+    timeout: Option<Duration>,
+    completion_path: Option<&Path>,
+    timeout_monitor: Option<&mut dyn FnMut() -> Option<Duration>>,
+) -> Result<GodotRunResult, FailureDetail> {
     ensure_log_parent(logs_path, command)?;
     display.joypad_isolation = joypad_isolation;
-    match run_owned_child_output(
+    match run_owned_child_output_with_timeout_monitor(
         command,
         joypad_isolation,
         timeout,
         completion_path,
         Some(logs_path),
+        timeout_monitor,
     ) {
         Ok(child_output) => {
             let OwnedChildOutput {
@@ -1720,12 +1780,31 @@ fn apply_joypad_isolation(command: &mut Command, enabled: bool) {
     }
 }
 
+#[cfg(test)]
 fn run_owned_child_output(
     command: &[String],
     joypad_isolation: bool,
     timeout: Option<Duration>,
     completion_path: Option<&Path>,
     file_capture_path: Option<&Path>,
+) -> std::io::Result<OwnedChildOutput> {
+    run_owned_child_output_with_timeout_monitor(
+        command,
+        joypad_isolation,
+        timeout,
+        completion_path,
+        file_capture_path,
+        None,
+    )
+}
+
+fn run_owned_child_output_with_timeout_monitor(
+    command: &[String],
+    joypad_isolation: bool,
+    timeout: Option<Duration>,
+    completion_path: Option<&Path>,
+    file_capture_path: Option<&Path>,
+    mut timeout_monitor: Option<&mut dyn FnMut() -> Option<Duration>>,
 ) -> std::io::Result<OwnedChildOutput> {
     let started = Instant::now();
     let expected = completion_path.and_then(CompletionIdentity::read);
@@ -1786,7 +1865,8 @@ fn run_owned_child_output(
         }
     };
     let process_group = current_run_process_group(pid);
-    if !cfg!(windows) && timeout.is_none() && completion_path.is_none() {
+    if !cfg!(windows) && timeout.is_none() && completion_path.is_none() && timeout_monitor.is_none()
+    {
         let output = child.wait_with_output()?;
         let (stdout, stderr, output_truncation) = if file_paths.is_some() {
             collected_child_output(&file_paths, None, None)?
@@ -1839,6 +1919,7 @@ fn run_owned_child_output(
     let mut completion_deadline = None;
     let mut result_observed_at = None;
     loop {
+        let monitored_timeout = timeout_monitor.as_mut().and_then(|monitor| monitor());
         if process_timing.runtime_started_observed_ms.is_none()
             && expected
                 .as_ref()
@@ -1882,8 +1963,8 @@ fn run_owned_child_output(
                     owned: true,
                     message: None,
                 }),
-                timed_out: false,
-                timeout_ms: timeout.map(duration_millis_u64),
+                timed_out: monitored_timeout.is_some(),
+                timeout_ms: monitored_timeout.or(timeout).map(duration_millis_u64),
                 output_truncation,
             });
         }
@@ -1904,7 +1985,7 @@ fn run_owned_child_output(
             && deadline.is_some_and(|deadline| Instant::now() >= deadline);
         let completion_expired =
             completion_deadline.is_some_and(|deadline| Instant::now() >= deadline);
-        if overall_expired || completion_expired {
+        if overall_expired || completion_expired || monitored_timeout.is_some() {
             let cleanup_started = Instant::now();
             #[cfg(windows)]
             owned_job.terminate()?;
@@ -1931,7 +2012,9 @@ fn run_owned_child_output(
                 process_group,
                 cleanup: Some(cleanup),
                 timed_out: true,
-                timeout_ms: Some(if completion_expired {
+                timeout_ms: Some(if let Some(budget) = monitored_timeout {
+                    duration_millis_u64(budget)
+                } else if completion_expired {
                     3000
                 } else {
                     duration_millis_u64(timeout.unwrap_or(Duration::from_secs(3)))
