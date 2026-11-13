@@ -2057,8 +2057,10 @@ Current runtime support is intentionally scoped to the implemented spec set:
 
 `scenario record <name> --scene <res://...>` supports both manual and bounded non-interactive recorder flows:
 
-- manual mode: launches a live session, captures `initial`, waits for `Ctrl+C`, captures `final`, exports the trace, writes a candidate scenario JSON file, and stops cleanly
+- manual mode: launches a live session, captures `initial`, waits for `Ctrl+C` or the recording window's close request, captures `final` while the bridge is still alive, exports the trace, writes a candidate scenario JSON file, and then stops cleanly. Closing the window signals completion through a private marker in that recording's artifact directory; it does not immediately terminate Godot.
 - bounded mode: `--input-script <path> --duration-frames <n>` replays a checked-in input script for a fixed frame budget and exits on its own without waiting for a human signal
+
+Both modes require a windowed session for initial and final screenshots, including duration-only and script-only recordings. Explicit or configured headless mode is rejected as `headless_screenshot_unsupported`. Display availability is resolved by the shared launcher through `godot.launch_prefix`, `godot.windowed_launch_prefix` (including Gamescope), and supported automatic display selection.
 
 By default it writes:
 

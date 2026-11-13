@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -19,6 +20,8 @@ pub struct RecordOptions<'a> {
     pub input_script: Option<&'a str>,
     pub duration_frames: Option<i64>,
     pub headless: bool,
+    /// Set by the caller's interrupt handler to finalize a manual recording.
+    pub completion_requested: Option<&'a AtomicBool>,
     pub joy_motion: JoyMotionRecordOptions,
 }
 
@@ -51,7 +54,7 @@ pub fn run_scenario_record(
     command_line: &str,
 ) -> CommandResult {
     let command = "scenario record";
-    if options.headless {
+    if options.headless || config.launch_mode_headless_override() == Some(true) {
         return failure_result(
             command,
             "unable to record scenario",
@@ -281,16 +284,10 @@ pub fn run_scenario_record(
     };
 
     let session_token = session_token();
-    let launch_headless = options.headless
-        || config.launch_mode_headless_override().unwrap_or(false)
-        || options.duration_frames.is_some()
-        || options.input_script.is_some()
-        || display_unavailable();
-    // The recorder keeps the pre-audio-axis behavior: real audio when windowed
-    // (a human watching the capture), null audio when headless (`--headless`
-    // already forces the Dummy driver). `audio = !headless` reproduces the old
-    // argv exactly.
-    let launch_audio = !launch_headless;
+    // Every recording captures viewport screenshots, including bounded runs.
+    // The shared launcher resolves configured prefixes and display availability.
+    let launch_headless = false;
+    let launch_audio = true;
     let session_record = SessionRecord {
         process_identity: None,
         protocol_version: godot_qa_runtime::PROTOCOL_VERSION.to_string(),
@@ -928,13 +925,8 @@ fn recording_payload(
 }
 
 #[derive(Default)]
-#[allow(dead_code)]
 struct SnapshotBundle {
-    name: String,
-    tree: Option<Map<String, Value>>,
     ui: Option<Map<String, Value>>,
-    focus: Option<Map<String, Value>>,
-    errors: Option<Map<String, Value>>,
     screenshot: Option<String>,
     controls_by_locator: BTreeMap<String, SnapshotControl>,
 }
@@ -980,11 +972,7 @@ impl SnapshotIndex {
                 continue;
             };
             let mut bundle = SnapshotBundle {
-                name: name.clone(),
-                tree: read_json_object(&path.join("tree.json")),
                 ui: read_json_object(&path.join("ui.json")),
-                focus: read_json_object(&path.join("focus.json")),
-                errors: read_json_object(&path.join("errors.json")),
                 screenshot: None,
                 controls_by_locator: BTreeMap::new(),
             };
@@ -1685,15 +1673,21 @@ fn qa_visibility_lookup(snapshot_dir: &Path) -> std::collections::BTreeMap<Strin
 }
 
 fn read_json_object(path: &Path) -> Option<Map<String, Value>> {
+    #[cfg(test)]
+    tests::JSON_READS.with_borrow_mut(|reads| reads.push(path.to_path_buf()));
     fs::read_to_string(path)
         .ok()
         .and_then(|contents| serde_json::from_str::<Value>(&contents).ok())
         .and_then(|value| value.as_object().cloned())
 }
 
-fn wait_for_recording_end(record: &SessionRecord) {
+fn wait_for_recording_end(record: &SessionRecord, completion_requested: Option<&AtomicBool>) {
+    let completion_path = Path::new(&record.artifact_dir).join(".recording-complete");
     loop {
-        if godot_qa_process::wait_for_godot_process_exit(record.pid, 0.1) {
+        if completion_requested.is_some_and(|requested| requested.load(Ordering::SeqCst))
+            || completion_path.exists()
+            || godot_qa_process::wait_for_godot_process_exit(record.pid, 0.1)
+        {
             break;
         }
         thread::sleep(Duration::from_millis(100));
@@ -1777,7 +1771,7 @@ fn run_scripted_recording(
         // Scripted mode without explicit duration should still be bounded.
         return Ok(());
     } else {
-        wait_for_recording_end(record);
+        wait_for_recording_end(record, options.completion_requested);
     }
     Ok(())
 }
@@ -2029,17 +2023,6 @@ fn pick_port() -> std::io::Result<u16> {
     }
 }
 
-fn display_unavailable() -> bool {
-    cfg!(any(
-        target_os = "linux",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd",
-        target_os = "dragonfly"
-    )) && std::env::var_os("DISPLAY").is_none()
-        && std::env::var_os("WAYLAND_DISPLAY").is_none()
-}
-
 fn failure_result(
     command: &str,
     message: &str,
@@ -2070,6 +2053,215 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    thread_local! {
+        pub(super) static JSON_READS: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    #[test]
+    fn snapshot_index_reads_only_consumed_evidence() {
+        let root = temp_root("snapshot-index-reads");
+        write_snapshot_ui(&root, "final", json!([]));
+        for name in ["tree.json", "focus.json", "errors.json"] {
+            fs::write(root.join("final").join(name), "{}").expect("unused evidence");
+        }
+        JSON_READS.with_borrow_mut(Vec::clear);
+        let index = SnapshotIndex::from_snapshots_dir(&root);
+        assert!(index.by_name.contains_key("final"));
+        JSON_READS.with_borrow(|reads| assert_eq!(reads, &[root.join("final/ui.json")]));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    #[ignore = "requires Godot and a display; run under Gamescope with --ignored"]
+    fn interactive_recording_close_exports_before_process_exit() {
+        interactive_recording_exports_before_process_exit(true);
+    }
+
+    #[test]
+    #[ignore = "requires Godot and a display; run under Gamescope with --ignored"]
+    fn interactive_recording_interrupt_exports_before_process_exit() {
+        interactive_recording_exports_before_process_exit(false);
+    }
+
+    fn interactive_recording_exports_before_process_exit(close_window: bool) {
+        let root = temp_root("interactive-close");
+        if !close_window {
+            fs::write(root.join("finish-by-signal"), "").unwrap();
+        }
+        let mut config = test_config(&root);
+        let binary = std::env::var("GODOT_BIN").unwrap_or_else(|_| "godot".into());
+        config.godot_binary = Some(binary.clone());
+        config.godot_args = vec![
+            "--rendering-method".into(),
+            "gl_compatibility".into(),
+            "--quit-after".into(),
+            "600".into(),
+        ];
+        fn copy_addon(source: &Path, dest: &Path) {
+            fs::create_dir_all(dest).unwrap();
+            for entry in fs::read_dir(source).unwrap() {
+                let entry = entry.unwrap();
+                if entry.file_type().unwrap().is_dir() {
+                    copy_addon(&entry.path(), &dest.join(entry.file_name()));
+                } else {
+                    fs::copy(entry.path(), dest.join(entry.file_name())).unwrap();
+                }
+            }
+        }
+        copy_addon(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../addons/godot_qa"),
+            &config.addon_dir,
+        );
+        fs::write(root.join("project.godot"), "config_version=5\n").unwrap();
+        // Generate the scene with Godot APIs. The scene requests a real window
+        // close only after the CLI has captured initial evidence.
+        fs::write(root.join("probe.gd"), r#"extends Control
+var closed := false
+func _ready() -> void:
+	var label := Label.new()
+	label.text = "Interactive recorder evidence"
+	label.position = Vector2(32, 32)
+	add_child(label)
+func _process(_delta: float) -> void:
+	var bridge := get_tree().root.get_node_or_null("GodotQaBridge")
+	if bridge == null or closed:
+		return
+	var session: Dictionary = bridge.get("_live_session")
+	var artifacts_root := str(session.get("artifacts_root", ""))
+	if artifacts_root != "" and FileAccess.file_exists(artifacts_root.path_join("snapshots/initial/screenshot.png")):
+		closed = true
+		FileAccess.open("res://recorded-pid", FileAccess.WRITE).store_string(str(OS.get_process_id()))
+		if not FileAccess.file_exists("res://finish-by-signal"):
+			get_tree().root.close_requested.emit()
+"#).unwrap();
+        fs::write(
+            root.join("build.gd"),
+            r#"extends SceneTree
+func _initialize() -> void:
+	var node := Control.new()
+	node.set_script(load("res://probe.gd"))
+	var scene := PackedScene.new()
+	scene.pack(node)
+	ResourceSaver.save(scene, "res://probe.tscn")
+	node.free()
+	quit()
+"#,
+        )
+        .unwrap();
+        let output = std::process::Command::new(&binary)
+            .args(["--headless", "--path"])
+            .arg(&root)
+            .args(["--script", "res://build.gd"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(root.join("probe.tscn").exists(), "{output:?}");
+        let completion_requested = std::sync::Arc::new(super::AtomicBool::new(false));
+        let finish = (!close_window).then(|| {
+            let requested = completion_requested.clone();
+            let pid_path = root.join("recorded-pid");
+            std::thread::spawn(move || {
+                for _ in 0..600 {
+                    if pid_path.exists() {
+                        requested.store(true, super::Ordering::SeqCst);
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+            })
+        });
+        let result = run_scenario_record(
+            &config,
+            "interactive_close",
+            "res://probe.tscn",
+            "640x360",
+            None,
+            RecordOptions {
+                input_script: None,
+                duration_frames: None,
+                headless: false,
+                completion_requested: Some(&completion_requested),
+                joy_motion: JoyMotionRecordOptions::default(),
+            },
+            "godot-qa scenario record interactive_close --scene res://probe.tscn",
+        );
+        if let Some(finish) = finish {
+            finish.join().unwrap();
+        }
+        assert!(
+            result.ok,
+            "{result:#?}; artifacts retained at {}",
+            root.display()
+        );
+        let candidate_path = config
+            .scenarios_dir
+            .join("candidates/interactive_close.json");
+        let candidate: Value = serde_json::from_slice(&fs::read(&candidate_path).unwrap()).unwrap();
+        scenario_doc::validate_scenario_document(&candidate, &candidate_path).unwrap();
+        for name in ["initial", "final"] {
+            let snapshot = Path::new(result.data["snapshots"][name].as_str().unwrap());
+            let image = image::open(snapshot.join("screenshot.png")).unwrap();
+            assert_eq!((image.width(), image.height()), (640, 360));
+            for file in ["tree.json", "ui.json", "focus.json", "errors.json"] {
+                let _: Value =
+                    serde_json::from_slice(&fs::read(snapshot.join(file)).unwrap()).unwrap();
+            }
+        }
+        let recording: Value = serde_json::from_slice(
+            &fs::read(result.data["artifacts"]["recording"].as_str().unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert!(recording["export"]["frame_index"].as_i64().unwrap() > 0);
+        let pid = fs::read_to_string(root.join("recorded-pid"))
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(godot_qa_process::wait_for_godot_process_exit(pid, 0.1));
+        assert!(!godot_qa_runtime::session_json_path(&config).exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn bounded_recording_launch_plan_is_windowed() {
+        let root = temp_root("bounded-windowed");
+        let mut config = test_config(&root);
+        config.godot_binary = Some(root.join("missing-godot").to_string_lossy().into_owned());
+        fs::create_dir_all(&config.addon_dir).unwrap();
+        fs::write(config.addon_dir.join("plugin.cfg"), "").unwrap();
+        fs::write(root.join("input.json"), r#"{"steps":[]}"#).unwrap();
+        for (name, input_script, duration_frames) in [
+            ("duration", None, Some(5)),
+            ("script", Some("input.json"), None),
+        ] {
+            let result = run_scenario_record(
+                &config,
+                name,
+                "res://main.tscn",
+                "1280x720",
+                None,
+                RecordOptions {
+                    input_script,
+                    duration_frames,
+                    headless: false,
+                    completion_requested: None,
+                    joy_motion: JoyMotionRecordOptions::default(),
+                },
+                "godot-qa scenario record",
+            );
+            assert!(!result.ok, "the deliberately missing binary must fail");
+            let run = fs::read_dir(config.artifacts_dir.join("recordings").join(name))
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap()
+                .path();
+            let request: Value =
+                serde_json::from_slice(&fs::read(run.join("request.json")).unwrap()).unwrap();
+            assert_eq!(request["recording"]["headless"], false, "{request:#}");
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn scenario_record_headless_fails_before_launch() {
         let root = temp_root("record-headless");
@@ -2085,6 +2277,7 @@ mod tests {
                 input_script: None,
                 duration_frames: None,
                 headless: true,
+                completion_requested: None,
                 joy_motion: JoyMotionRecordOptions::default(),
             },
             "godot-qa scenario record sample_recording --scene res://ui/main_menu.tscn --headless",
@@ -2110,6 +2303,7 @@ mod tests {
                 input_script: None,
                 duration_frames: Some(-1),
                 headless: false,
+                completion_requested: None,
                 joy_motion: JoyMotionRecordOptions::default(),
             },
             "godot-qa scenario record sample_recording --scene res://ui/main_menu.tscn --duration-frames -1",
@@ -2155,6 +2349,7 @@ mod tests {
                     input_script: None,
                     duration_frames: None,
                     headless: false,
+                    completion_requested: None,
                     joy_motion,
                 },
                 "godot-qa scenario record sample_recording --scene res://ui/main_menu.tscn",
@@ -2271,6 +2466,7 @@ mod tests {
                 input_script: Some("qa/recordings/missing.json"),
                 duration_frames: Some(5),
                 headless: false,
+                completion_requested: None,
                 joy_motion: JoyMotionRecordOptions::default(),
             },
             "godot-qa scenario record sample_recording --scene res://ui/main_menu.tscn --input-script qa/recordings/missing.json --duration-frames 5",

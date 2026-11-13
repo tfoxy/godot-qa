@@ -1147,6 +1147,30 @@ pub(crate) fn scenario_record_result(cli: &Cli, args: &ScenarioRecordArgs) -> Co
         cli.verbose,
         resolved_binary,
     );
+    let completion_requested = Arc::new(AtomicBool::new(false));
+    if args.input_script.is_none() && args.duration_frames.is_none() {
+        let signal_completion = Arc::clone(&completion_requested);
+        if let Err(error) = ctrlc::set_handler(move || {
+            signal_completion.store(true, Ordering::SeqCst);
+        }) {
+            return CommandResult {
+                ok: false,
+                command: "scenario record".to_string(),
+                message: "unable to record scenario".to_string(),
+                data: Map::new(),
+                failures: vec![FailureDetail {
+                    kind: "record_failed".to_string(),
+                    command: Some("scenario record".to_string()),
+                    target: Some(name.to_string()),
+                    message: Some(error.to_string()),
+                    expected: Some(json!("Ctrl+C completion handler installed")),
+                    actual: Some(json!("handler_unavailable")),
+                    ..FailureDetail::default()
+                }],
+                exit_code: 1,
+            };
+        }
+    }
     scenario_record::run_scenario_record(
         &config,
         name,
@@ -1157,6 +1181,7 @@ pub(crate) fn scenario_record_result(cli: &Cli, args: &ScenarioRecordArgs) -> Co
             input_script: args.input_script.as_deref(),
             duration_frames: args.duration_frames,
             headless: args.headless,
+            completion_requested: Some(&completion_requested),
             joy_motion: scenario_record::JoyMotionRecordOptions {
                 step: args.joy_motion_step,
                 deadzone: args.joy_motion_deadzone,

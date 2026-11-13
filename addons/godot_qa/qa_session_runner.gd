@@ -45,6 +45,11 @@ func _initialize() -> void:
 func _run() -> void:
 	var session_request: Dictionary = _request.get("session", {})
 	var artifacts: Dictionary = _request.get("artifacts", {})
+	if bool(session_request.get("recorder_enabled", false)):
+		# Keep the bridge alive after the window close request so the CLI can
+		# capture final evidence and export the recording before session.stop.
+		auto_accept_quit = false
+		get_root().close_requested.connect(_on_recording_close_requested)
 	var scene_path := str(session_request.get("scene", ""))
 	QaRuntime.clear_provider_registry()
 	# A warm session boots WITHOUT a scene (scene == ""): the per-scenario
@@ -127,6 +132,16 @@ func _run() -> void:
 	await _host.serve()
 	QaRuntime.clear_provider_registry()
 	quit(0)
+
+
+func _on_recording_close_requested() -> void:
+	var artifacts: Dictionary = _request.get("artifacts", {})
+	var path := str(artifacts.get("root", "")).path_join(".recording-complete")
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		push_error("scenario record could not signal completion; expected writable artifact path %s, actual FileAccess error %s" % [path, FileAccess.get_open_error()])
+		return
+	file.close()
 
 
 func _apply_requested_viewport(viewport_values: Variant) -> void:
