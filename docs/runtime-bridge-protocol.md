@@ -192,6 +192,20 @@ Success:
 
 The runtime reloads the live session scene path with deep cache replacement, swaps in the new scene root, clears held input/live-edit/runtime-error state, preserves paused state, and leaves the QA bridge/session process running. If loading or instantiation fails, the old scene remains active and the command returns `scene_load_failed` or `scene_instantiate_failed`.
 
+For hot-reload sessions, the CLI refreshes the sidecar baseline only after this
+runtime command succeeds. The private sidecar control request reuses
+`reload_structure` with an optional `confirmed_full_reload: true` marker, the
+reloaded scene in `paths`, and the session token. It captures new baselines for
+those paths and any scenes pending fallback, including instanced scenes refreshed
+by deep cache replacement, without emitting debugger frames. Ordinary structural
+requests omit the marker and never advance baselines for scenes that fall back.
+For example: `{"op":"reload_structure","paths":["res://ui/main_menu.tscn"],"confirmed_full_reload":true,"token":"<session-token>"}`.
+Confirmation clears the pending set. A scene that cannot be read or parsed (for
+example a `uid://` path or binary `.scn`) loses any stale baseline and is skipped,
+without failing the successful runtime reload; later structural edits fall back.
+Failed runtime reloads send no confirmation and leave baselines and pending paths
+unchanged. This does not add a runtime command or alter the runtime response above.
+
 ## Scenario profiling
 
 `scenario profile` is a one-shot scenario runner extension, not a new live TCP bridge command. The CLI prepares the same one-shot scenario request used by `scenario run` and adds a profiling request flag for the Godot runtime runner. The runtime returns profiling data in the one-shot result payload, and the CLI summarizes it plus writes the bounded `profile.json` artifact.

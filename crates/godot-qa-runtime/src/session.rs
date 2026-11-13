@@ -1737,7 +1737,7 @@ pub fn session_start_result(
     // When hot reload is requested, bring up the debug-host sidecar first so it is
     // listening before Godot dials in via `--remote-debug`.
     let debug_host = if hot_reload {
-        match spawn_debug_host(config) {
+        match spawn_debug_host(config, &prepared.token, &scene) {
             Ok(record) => Some(record),
             Err(failure) => {
                 clear_session_files(config);
@@ -2163,7 +2163,19 @@ pub fn session_reload_result(config: &ProjectConfig) -> CommandResult {
         Ok(lease) => lease,
         Err(result) => return result,
     };
-    run_live_protocol_command(config, "session reload", SESSION_RELOAD_SCENE, Map::new())
+    let result = run_live_protocol_command(config, "session reload", SESSION_RELOAD_SCENE, Map::new());
+    if result.ok
+        && debug_host_available(config)
+        && let Some(scene) = result.data.get("scene").and_then(Value::as_str)
+        && let Err(failure) = debug_host_send(
+            config,
+            "session reload",
+            &godot_qa_debug::host::ControlRequest::confirm_full_reload(vec![scene.to_string()]),
+        )
+    {
+        return failure;
+    }
+    result
 }
 
 /// Engine-faithful, state-preserving soft reload of specific scripts via the debug host.
@@ -2298,7 +2310,17 @@ fn debug_host_send(
             json!(format!("dead pid {}", record.pid)),
         ));
     }
-    match godot_qa_debug::host::send_control_request(record.control_port, request) {
+    let token = load_session_record(config, command)
+        .and_then(|session| read_session_token(&session, command))
+        .map_err(|failure| CommandResult {
+            ok: false,
+            command: command.to_string(),
+            message: "unable to authenticate hot reload request".to_string(),
+            data: Map::new(),
+            failures: vec![failure],
+            exit_code: 1,
+        })?;
+    match godot_qa_debug::host::send_control_request(record.control_port, &token, request) {
         Ok(response) if response.ok => Ok(response),
         Ok(response) => Err(CommandResult {
             ok: false,
@@ -2977,11 +2999,6 @@ fn is_valid_android_live_scene(scene: &str) -> bool {
 }
 
 /// The session's launch scene (`res://…`) from `project.godot`, if any.
-fn project_main_scene(config: &ProjectConfig) -> Option<String> {
-    let contents = read_project_godot_cached(&config.project_root.join("project.godot"))?;
-    parse_project_main_scene(&contents)
-}
-
 fn parse_project_main_scene(contents: &str) -> Option<String> {
     let mut in_application = false;
     for raw_line in contents.lines() {
@@ -3058,6 +3075,8 @@ pub fn debug_host_available(config: &ProjectConfig) -> bool {
 /// records them, which removes any pick/bind race with the parent.
 fn spawn_debug_host(
     config: &ProjectConfig,
+    token: &str,
+    scene: &str,
 ) -> Result<godot_qa_debug::host::DebugHostRecord, FailureDetail> {
     let _project_lease = godot_qa_process::project_access::LaunchLease::acquire(
         &config.project_root,
@@ -3068,7 +3087,10 @@ fn spawn_debug_host(
     if let Some(parent) = record_path.parent() {
         let _ = fs::create_dir_all(parent);
     }
-    let log_path = record_path.with_file_name("debug_host.log");
+    // Publish the same per-session credential before the sidecar reads it at bind.
+    // The existing private writer creates owner-only temporary files atomically.
+    write_private_file(&session_token_path(config), token.as_bytes())
+        .map_err(|error| artifact_write_failure(&session_token_path(config), &error))?;
     let exe = std::env::current_exe().map_err(|error| FailureDetail {
         kind: "debug_host_spawn_failed".to_string(),
         command: Some("session start".to_string()),
@@ -3077,20 +3099,7 @@ fn spawn_debug_host(
         actual: Some(json!("unavailable")),
         ..FailureDetail::default()
     })?;
-    let mut command = std::process::Command::new(&exe);
-    command
-        .arg("__debug-host")
-        .arg("--record")
-        .arg(&record_path)
-        .arg("--log")
-        .arg(&log_path)
-        .arg("--project-root")
-        .arg(&config.project_root);
-    // Give the sidecar the launch scene so it can baseline-snapshot it for structural
-    // (`.tscn`) live-edit diffs.
-    if let Some(scene) = project_main_scene(config) {
-        command.arg("--scene").arg(scene);
-    }
+    let mut command = debug_host_command(&exe, config, scene);
     command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -3139,6 +3148,28 @@ fn spawn_debug_host(
         actual: Some(json!("missing or unbound")),
         ..FailureDetail::default()
     })
+}
+
+fn debug_host_command(
+    exe: &Path,
+    config: &ProjectConfig,
+    scene: &str,
+) -> std::process::Command {
+    let record_path = debug_host_json_path(config);
+    let log_path = record_path.with_file_name("debug_host.log");
+    let mut command = std::process::Command::new(exe);
+    command
+        .arg("__debug-host")
+        .arg("--record")
+        .arg(&record_path)
+        .arg("--log")
+        .arg(&log_path)
+        .arg("--project-root")
+        .arg(&config.project_root);
+    // Give the sidecar the launch scene so it can baseline-snapshot it for structural
+    // (`.tscn`) live-edit diffs.
+    command.arg("--scene").arg(scene);
+    command
 }
 
 /// Stop the debug-host sidecar (if any) and remove its record. Safe to call when no
@@ -3289,6 +3320,141 @@ fn latest_link_tmp_path(latest_path: &Path) -> PathBuf {
 #[cfg(test)]
 mod granular_reload_reporting_tests {
     use super::*;
+
+    #[test]
+    fn debug_host_arguments_use_resolved_launch_scene() {
+        let root = std::env::temp_dir().join(format!("gqa-launch-scene-{}", unique_session_id()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("project.godot"), "[application]\nrun/main_scene=\"res://main.tscn\"\n").unwrap();
+        let config = godot_qa_core::config::load_project_config(Some(&root), None, None, false, None);
+        for explicit in [Some("res://alternate.tscn"), Some(""), None] {
+            let scene = resolve_session_start_scene(&config, explicit).unwrap();
+            let command = debug_host_command(Path::new("godot-qa"), &config, &scene);
+            let args: Vec<_> = command.get_args().collect();
+            let launch_scene = args.windows(2).find(|pair| pair[0] == "--scene").map(|pair| pair[1].to_str().unwrap());
+            assert_eq!(launch_scene, Some(scene.as_str()), "explicit scene {explicit:?}");
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn full_scene_reload_refreshes_baseline_only_after_success() {
+        use godot_qa_debug::host::{DebugHost, DebugHostConfig};
+        use std::io::{BufRead, BufReader};
+        use std::net::{Shutdown, TcpListener};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+
+        let root =
+            std::env::temp_dir().join(format!("gqa-reload-baseline-{}", unique_session_id()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("project.godot"),
+            "[application]\nrun/main_scene=\"res://main.tscn\"\n",
+        )
+        .unwrap();
+        let scene_file = root.join("main.tscn");
+        fs::write(
+            &scene_file,
+            "[gd_scene format=3]\n[node name=\"Main\" type=\"Node\"]\n",
+        )
+        .unwrap();
+        let config =
+            godot_qa_core::config::load_project_config(Some(&root), None, None, false, None);
+        let mut prepared =
+            prepare_live_session(&config, "res://main.tscn", vec![1280, 720], true, &[], None)
+                .unwrap();
+        let bridge = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        prepared.record.port = bridge.local_addr().unwrap().port();
+        prepared.record.pid = std::process::id() as i64;
+        prepared.record.process_identity = godot_qa_process::process_identity(prepared.record.pid);
+        persist_session(&config, &prepared.record, &prepared.token).unwrap();
+        let host = DebugHost::bind(&DebugHostConfig {
+            record_path: debug_host_json_path(&config),
+            log_path: None,
+            game_accept_timeout: Duration::from_secs(5),
+            project_root: Some(root.clone()),
+            initial_scene: Some("res://main.tscn".into()),
+        })
+        .unwrap();
+        let mut record = load_debug_host_record(&config).unwrap();
+        record.process_identity = prepared.record.process_identity;
+        write_json(
+            &debug_host_json_path(&config),
+            &serde_json::to_value(record).unwrap(),
+        )
+        .unwrap();
+        let mut game = TcpStream::connect(("127.0.0.1", host.dbg_port())).unwrap();
+        game.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let run_shutdown = Arc::clone(&shutdown);
+        let host_thread = thread::spawn(move || host.run(run_shutdown));
+        for _ in 0..2 {
+            let mut length = [0; 4];
+            game.read_exact(&mut length).unwrap();
+            game.read_exact(&mut vec![0; u32::from_le_bytes(length) as usize])
+                .unwrap();
+        }
+        let bridge_thread = thread::spawn(move || {
+            for ok in [false, true] {
+                let (mut stream, _) = bridge.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let mut line = String::new();
+                BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut line)
+                    .unwrap();
+                let request: Value = serde_json::from_str(&line).unwrap();
+                assert_eq!(request["command"], SESSION_RELOAD_SCENE);
+                let response = if ok {
+                    json!({"ok": true, "protocol_version": PROTOCOL_VERSION, "data": {"scene": "res://main.tscn"}})
+                } else {
+                    json!({"ok": false, "protocol_version": PROTOCOL_VERSION, "error": {"code": "scene_load_failed", "message": "test reload rejected"}})
+                };
+                writeln!(stream, "{response}").unwrap();
+            }
+        });
+        let scenes = vec!["res://main.tscn".to_string()];
+        let unsupported =
+            "[gd_scene format=3]\n[node name=\"Main\" type=\"Node2D\"]\nmetadata/marker = 1\n";
+        fs::write(&scene_file, unsupported).unwrap();
+        let fallback = session_reload_structure_result(&config, &scenes);
+        assert!(
+            fallback.ok && fallback.data.contains_key("fell_back"),
+            "{fallback:?}"
+        );
+        let failed = session_reload_result(&config);
+        assert!(!failed.ok, "{failed:?}");
+        let still_fallback = session_reload_structure_result(&config, &scenes);
+        assert!(
+            still_fallback.data.contains_key("fell_back"),
+            "failed reload advanced baseline: {still_fallback:?}"
+        );
+        let reloaded = session_reload_result(&config);
+        assert!(reloaded.ok, "{reloaded:?}");
+        game.set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        assert!(
+            game.read(&mut [0]).is_err(),
+            "confirmation sent debugger frames"
+        );
+        game.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        fs::write(&scene_file, unsupported.replace("marker = 1", "marker = 2")).unwrap();
+        let supported = session_reload_structure_result(&config, &scenes);
+        assert!(
+            supported.ok && !supported.data.contains_key("fell_back"),
+            "successful full reload left stale baseline: {supported:?}"
+        );
+        assert_eq!(supported.data["ops_applied"], 1);
+        shutdown.store(true, Ordering::SeqCst);
+        game.shutdown(Shutdown::Both).unwrap();
+        host_thread.join().unwrap().unwrap();
+        bridge_thread.join().unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
 
     #[test]
     fn resource_reload_reports_requested_with_caveat_not_applied() {

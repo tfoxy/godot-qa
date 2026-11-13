@@ -14,9 +14,9 @@
 //! The reload ack means "frame written to the game"; the engine applies the reload on
 //! its next idle poll (fire-and-forget over the debugger protocol).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -30,6 +30,9 @@ use godot_qa_scene::{SceneDiff, SceneEditOp, SceneState};
 use crate::variant;
 
 const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
+const MAX_CONTROL_BYTES: usize = 1024 * 1024;
+const CONTROL_READ_TIMEOUT: Duration = Duration::from_secs(2);
+const SOCKET_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// On-disk record describing a running debug host, written to `.qa/debug_host.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,6 +60,8 @@ pub struct ControlRequest {
     pub op: String,
     #[serde(default)]
     pub paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    confirmed_full_reload: bool,
 }
 
 impl ControlRequest {
@@ -64,6 +69,7 @@ impl ControlRequest {
         Self {
             op: "reload_scripts".to_string(),
             paths,
+            confirmed_full_reload: false,
         }
     }
 
@@ -71,6 +77,7 @@ impl ControlRequest {
         Self {
             op: "reload_resources".to_string(),
             paths,
+            confirmed_full_reload: false,
         }
     }
 
@@ -80,6 +87,7 @@ impl ControlRequest {
         Self {
             op: "reload_structure".to_string(),
             paths,
+            confirmed_full_reload: false,
         }
     }
 
@@ -87,8 +95,26 @@ impl ControlRequest {
         Self {
             op: "status".to_string(),
             paths: Vec::new(),
+            confirmed_full_reload: false,
         }
     }
+
+    /// Internal acknowledgement after the runtime confirms a full-scene reload.
+    pub fn confirm_full_reload(paths: Vec<String>) -> Self {
+        Self {
+            confirmed_full_reload: true,
+            ..Self::reload_structure(paths)
+        }
+    }
+}
+
+// Authentication is an internal control-channel envelope, not session metadata.
+#[derive(Serialize, Deserialize)]
+struct AuthenticatedControlRequest {
+    #[serde(default)]
+    token: String,
+    #[serde(flatten)]
+    request: ControlRequest,
 }
 
 /// The host's reply to a control request.
@@ -156,6 +182,9 @@ pub struct DebugHost {
     /// Baseline parsed scenes keyed by `res://` path. The authoritative "before" for
     /// structural diffs; updated after each successful `reload_structure`.
     snapshots: Mutex<HashMap<String, godot_qa_scene::SceneState>>,
+    /// Scenes awaiting the launch scene's confirmed deep-cache reload.
+    pending_snapshots: Mutex<HashSet<String>>,
+    token: String,
 }
 
 impl DebugHost {
@@ -163,6 +192,17 @@ impl DebugHost {
     /// ports and write the `DebugHostRecord`. Binding here (rather than the parent
     /// picking ports) removes the pick/bind race entirely.
     pub fn bind(cfg: &DebugHostConfig) -> std::io::Result<DebugHost> {
+        // The parent publishes the session token owner-only before spawning us.
+        // Keep the credential out of argv, metadata and logs.
+        let token = fs::read_to_string(cfg.record_path.with_file_name("session.token"))?
+            .trim()
+            .to_string();
+        if token.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "debug host requires a nonempty session.token beside its record",
+            ));
+        }
         let dbg_listener = TcpListener::bind(("127.0.0.1", 0))?;
         let control_listener = TcpListener::bind(("127.0.0.1", 0))?;
         let dbg_port = dbg_listener.local_addr()?.port();
@@ -195,6 +235,8 @@ impl DebugHost {
             game_accept_timeout: cfg.game_accept_timeout,
             project_root: cfg.project_root.clone(),
             snapshots: Mutex::new(snapshots),
+            pending_snapshots: Mutex::new(HashSet::new()),
+            token,
         })
     }
 
@@ -228,17 +270,13 @@ impl DebugHost {
         let connected = Arc::new(AtomicBool::new(true));
 
         // Safety frames first: never block the game on script errors or breakpoints.
-        {
-            // Recover from a poisoned lock rather than panicking: the guarded value is
-            // just a cloned TcpStream write handle, so a peer thread that panicked mid
-            // write leaves it usable and one panic must not brick the whole debug host.
-            let mut guard = writer
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let _ = guard.write_all(&variant::message_set_ignore_error_breaks(true));
-            let _ = guard.write_all(&variant::message_set_skip_breakpoints(true));
-            let _ = guard.flush();
-        }
+        write_frames(
+            &writer,
+            &[
+                variant::message_set_ignore_error_breaks(true),
+                variant::message_set_skip_breakpoints(true),
+            ],
+        )?;
 
         let reader_stream = game.try_clone()?;
         let reader_writer = Arc::clone(&writer);
@@ -267,6 +305,7 @@ impl DebugHost {
             match self.dbg_listener.accept() {
                 Ok((stream, _)) => {
                     stream.set_nonblocking(false)?;
+                    stream.set_write_timeout(Some(SOCKET_WRITE_TIMEOUT))?;
                     return Ok(Some(stream));
                 }
                 Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -286,7 +325,7 @@ impl DebugHost {
         if self.control_listener.set_nonblocking(true).is_err() {
             return;
         }
-        while !shutdown.load(Ordering::SeqCst) {
+        while !shutdown.load(Ordering::SeqCst) && connected.load(Ordering::SeqCst) {
             match self.control_listener.accept() {
                 Ok((stream, _)) => {
                     if let Err(error) = self.handle_control_conn(stream, writer, connected) {
@@ -311,10 +350,8 @@ impl DebugHost {
         connected: &Arc<AtomicBool>,
     ) -> std::io::Result<()> {
         stream.set_nonblocking(false)?;
-        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-        let mut reader = BufReader::new(stream.try_clone()?);
-        let mut line = String::new();
-        reader.read_line(&mut line)?;
+        stream.set_write_timeout(Some(SOCKET_WRITE_TIMEOUT))?;
+        let line = read_control_message(&mut stream, CONTROL_READ_TIMEOUT)?;
         let response = self.dispatch_control(line.trim(), writer, connected);
         let mut payload = serde_json::to_vec(&response).unwrap_or_default();
         payload.push(b'\n');
@@ -329,7 +366,7 @@ impl DebugHost {
         writer: &Arc<Mutex<TcpStream>>,
         connected: &Arc<AtomicBool>,
     ) -> ControlResponse {
-        let request: ControlRequest = match serde_json::from_str(line) {
+        let authenticated: AuthenticatedControlRequest = match serde_json::from_str(line) {
             Ok(request) => request,
             Err(error) => {
                 return ControlResponse::error(
@@ -339,6 +376,10 @@ impl DebugHost {
             }
         };
         let is_connected = connected.load(Ordering::SeqCst);
+        if authenticated.token != self.token {
+            return ControlResponse::error("unauthorized_control_request", is_connected);
+        }
+        let request = authenticated.request;
         if request.op == "status" || request.op == "ping" {
             return ControlResponse {
                 ok: true,
@@ -350,7 +391,12 @@ impl DebugHost {
             return ControlResponse::error("game_not_connected", false);
         }
         if request.op == "reload_structure" {
-            return self.dispatch_structure(&request.paths, writer, connected);
+            return self.dispatch_structure(
+                &request.paths,
+                writer,
+                connected,
+                request.confirmed_full_reload,
+            );
         }
         let frame = match request.op.as_str() {
             "reload_scripts" => variant::message_reload_scripts(&request.paths),
@@ -383,6 +429,7 @@ impl DebugHost {
         paths: &[String],
         writer: &Arc<Mutex<TcpStream>>,
         connected: &Arc<AtomicBool>,
+        confirmed_full_reload: bool,
     ) -> ControlResponse {
         let Some(project_root) = self.project_root.clone() else {
             return ControlResponse::error("structural_reload_no_project_root", true);
@@ -394,28 +441,50 @@ impl DebugHost {
             .snapshots
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut pending = self
+            .pending_snapshots
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut scene_paths = paths.to_vec();
+        if confirmed_full_reload {
+            // The runtime uses deep cache replacement, including instanced scenes.
+            scene_paths.extend(pending.drain().filter(|path| !paths.contains(path)));
+        }
         let mut applied = Vec::new();
         let mut fell_back = Vec::new();
         let mut ops_applied = 0usize;
 
-        for scene_path in paths {
+        for scene_path in &scene_paths {
             let Some(new_state) = read_and_parse_scene(&project_root, scene_path) else {
+                if confirmed_full_reload {
+                    // UID/binary/unavailable scenes do not invalidate runtime success,
+                    // but their old snapshots are no longer safe to diff against.
+                    snapshots.remove(scene_path);
+                } else {
+                    pending.insert(scene_path.clone());
+                }
                 fell_back.push(format!("{scene_path}: could not read/parse scene file"));
                 continue;
             };
 
-            // No baseline yet (scene not the launch scene): capture and treat as a no-op
-            // so the next edit diffs against a real "before".
-            let Some(old_state) = snapshots.get(scene_path) else {
+            if confirmed_full_reload {
                 snapshots.insert(scene_path.clone(), new_state);
+                applied.push(scene_path.clone());
+                continue;
+            }
+
+            // A missing baseline also requires a confirmed reload before advancing it.
+            let Some(old_state) = snapshots.get(scene_path) else {
+                pending.insert(scene_path.clone());
                 fell_back.push(format!(
-                    "{scene_path}: baseline captured (no prior snapshot)"
+                    "{scene_path}: no prior snapshot; full-scene reload required"
                 ));
                 continue;
             };
 
             let scene_diff = godot_qa_scene::diff(old_state, &new_state);
             if scene_diff.requires_full_reload() {
+                pending.insert(scene_path.clone());
                 for reason in &scene_diff.fell_back {
                     fell_back.push(format!("{scene_path}: {reason}"));
                 }
@@ -433,6 +502,7 @@ impl DebugHost {
             ));
             ops_applied += scene_diff.ops.len();
             snapshots.insert(scene_path.clone(), new_state);
+            pending.remove(scene_path);
             applied.push(scene_path.clone());
         }
 
@@ -457,8 +527,25 @@ fn write_frames(writer: &Arc<Mutex<TcpStream>>, frames: &[Vec<u8>]) -> std::io::
     let mut guard = writer
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let deadline = Instant::now() + SOCKET_WRITE_TIMEOUT;
     for frame in frames {
-        guard.write_all(frame)?;
+        let mut pending = frame.as_slice();
+        while !pending.is_empty() {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "debugger frame batch exceeded write deadline",
+                ));
+            }
+            guard.set_write_timeout(Some(remaining))?;
+            match guard.write(pending) {
+                Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+                Ok(count) => pending = &pending[count..],
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            }
+        }
     }
     guard.flush()
 }
@@ -473,7 +560,8 @@ fn resolve_res_path(project_root: &Path, res_path: &str) -> Option<PathBuf> {
 fn read_and_parse_scene(project_root: &Path, res_path: &str) -> Option<SceneState> {
     let file = resolve_res_path(project_root, res_path)?;
     let text = fs::read_to_string(file).ok()?;
-    Some(godot_qa_scene::parse_scene(&text))
+    let state = godot_qa_scene::parse_scene(&text);
+    (state.root().is_some() && !state.has_errors()).then_some(state)
 }
 
 /// Intern a NodePath to a small int id, emitting a `live_node_path` frame the first time.
@@ -561,11 +649,9 @@ fn drain_game_stream(
                 log_path.as_ref(),
                 "game broke into debugger; auto-continuing",
             );
-            let mut guard = writer
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let _ = guard.write_all(&variant::message_continue());
-            let _ = guard.flush();
+            if write_frames(&writer, &[variant::message_continue()]).is_err() {
+                break;
+            }
         }
     }
     connected.store(false, Ordering::SeqCst);
@@ -606,21 +692,64 @@ fn write_log(log_path: Option<&PathBuf>, message: &str) {
     }
 }
 
+/// Read one newline-terminated message with bounded memory and an absolute deadline.
+/// Resetting only an idle timeout would let a trickling client hold the serial host.
+fn read_control_message(stream: &mut TcpStream, timeout: Duration) -> std::io::Result<String> {
+    let deadline = Instant::now() + timeout;
+    let mut message = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "control message exceeded total read deadline",
+            ));
+        }
+        stream.set_read_timeout(Some(remaining))?;
+        let count = match stream.read(&mut chunk) {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            result => result?,
+        };
+        if count == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "control message requires a terminating newline",
+            ));
+        }
+        let newline = chunk[..count].iter().position(|byte| *byte == b'\n');
+        let end = newline.map_or(count, |index| index + 1);
+        if message.len() + end > MAX_CONTROL_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("control message exceeds {MAX_CONTROL_BYTES} bytes"),
+            ));
+        }
+        message.extend_from_slice(&chunk[..end]);
+        if newline.is_some() {
+            return String::from_utf8(message)
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error));
+        }
+    }
+}
+
 /// Connect to a running host's control channel, send one request, and read its reply.
 pub fn send_control_request(
     control_port: u16,
+    token: &str,
     request: &ControlRequest,
 ) -> std::io::Result<ControlResponse> {
     let mut stream = TcpStream::connect(("127.0.0.1", control_port))?;
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
     stream.set_write_timeout(Some(Duration::from_secs(10)))?;
-    let mut payload = serde_json::to_vec(request).unwrap_or_default();
+    let mut payload = serde_json::to_vec(&AuthenticatedControlRequest {
+        token: token.to_string(),
+        request: request.clone(),
+    })?;
     payload.push(b'\n');
     stream.write_all(&payload)?;
     stream.flush()?;
-    let mut reader = BufReader::new(stream);
-    let mut line = String::new();
-    reader.read_line(&mut line)?;
+    let line = read_control_message(&mut stream, Duration::from_secs(10))?;
     serde_json::from_str(line.trim())
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
 }
@@ -628,6 +757,357 @@ pub fn send_control_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{BufRead, BufReader};
+
+    fn write_test_token(dir: &Path) {
+        fs::create_dir_all(dir).unwrap();
+        fs::write(dir.join("session.token"), "session-secret").unwrap();
+    }
+
+    #[test]
+    fn control_requests_require_session_credential_before_sending_frames() {
+        let dir = std::env::temp_dir().join(format!("gqa-auth-{}", std::process::id()));
+        write_test_token(&dir);
+        let host = DebugHost::bind(&DebugHostConfig {
+            record_path: dir.join("debug_host.json"),
+            log_path: None,
+            game_accept_timeout: Duration::from_secs(5),
+            project_root: None,
+            initial_scene: None,
+        })
+        .unwrap();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let mut game = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        game.set_read_timeout(Some(Duration::from_millis(50)))
+            .unwrap();
+        let writer = Arc::new(Mutex::new(listener.accept().unwrap().0));
+        let connected = Arc::new(AtomicBool::new(true));
+        for op in [
+            "reload_scripts",
+            "reload_all_scripts",
+            "reload_resources",
+            "reload_structure",
+            "status",
+            "ping",
+        ] {
+            for token in [None, Some("wrong-token")] {
+                let mut request = serde_json::json!({"op": op, "paths": ["res://test.gd"]});
+                if let Some(token) = token {
+                    request["token"] = token.into();
+                }
+                let response = host.dispatch_control(&request.to_string(), &writer, &connected);
+                assert!(!response.ok, "{op} accepted credential {token:?}");
+                assert_eq!(
+                    response.error.as_deref(),
+                    Some("unauthorized_control_request")
+                );
+                let mut byte = [0];
+                assert!(
+                    game.read(&mut byte).is_err(),
+                    "unauthorized request sent debugger frames"
+                );
+            }
+        }
+        let response = host.dispatch_control(
+            r#"{"op":"reload_scripts","paths":["res://test.gd"],"token":"session-secret"}"#,
+            &writer,
+            &connected,
+        );
+        assert!(response.ok, "{response:?}");
+        assert_eq!(
+            variant::peek_command(&read_frame_body(&mut game)).as_deref(),
+            Some("reload_scripts")
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    struct TestHost {
+        dir: PathBuf,
+        game: Option<TcpStream>,
+        dbg_port: u16,
+        control_port: u16,
+        shutdown: Arc<AtomicBool>,
+        handle: Option<std::thread::JoinHandle<std::io::Result<()>>>,
+    }
+
+    impl TestHost {
+        fn start(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("gqa-{name}-{}", std::process::id()));
+            write_test_token(&dir);
+            fs::write(
+                dir.join("main.tscn"),
+                "[gd_scene format=3]\n[node name=\"Main\" type=\"Node\"]\n",
+            )
+            .unwrap();
+            let host = DebugHost::bind(&DebugHostConfig {
+                record_path: dir.join("debug_host.json"),
+                log_path: None,
+                game_accept_timeout: Duration::from_secs(5),
+                project_root: Some(dir.clone()),
+                initial_scene: Some("res://main.tscn".to_string()),
+            })
+            .unwrap();
+            let dbg_port = host.dbg_port();
+            let control_port = host.control_port();
+            let shutdown = Arc::new(AtomicBool::new(false));
+            let run_shutdown = Arc::clone(&shutdown);
+            let handle = Some(std::thread::spawn(move || host.run(run_shutdown)));
+            let mut game = TcpStream::connect(("127.0.0.1", dbg_port)).unwrap();
+            game.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            for _ in 0..2 {
+                read_frame_body(&mut game);
+            }
+            Self {
+                dir,
+                game: Some(game),
+                dbg_port,
+                control_port,
+                shutdown,
+                handle,
+            }
+        }
+
+        fn exited_within(&self, timeout: Duration) -> bool {
+            let deadline = Instant::now() + timeout;
+            while !self.handle.as_ref().unwrap().is_finished() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            self.handle.as_ref().unwrap().is_finished()
+        }
+    }
+
+    impl Drop for TestHost {
+        fn drop(&mut self) {
+            self.shutdown.store(true, Ordering::SeqCst);
+            let _ = self.game.take().unwrap().shutdown(Shutdown::Both);
+            self.handle.take().unwrap().join().unwrap().unwrap();
+            let _ = fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    #[test]
+    fn full_reload_confirmation_refreshes_pending_child_baselines() {
+        let mut host = TestHost::start("pending-child-baseline");
+        let child = host.dir.join("child.tscn");
+        let scene =
+            "[gd_scene format=3]\n[node name=\"Child\" type=\"Node\"]\nmetadata/marker = 1\n";
+        fs::write(&child, scene).unwrap();
+        let reload =
+            |request| send_control_request(host.control_port, "session-secret", &request).unwrap();
+        let request = || ControlRequest::reload_structure(vec!["res://child.tscn".into()]);
+        // Neither first touch nor a failed runtime reload may establish a baseline.
+        for _ in 0..2 {
+            let response = reload(request());
+            assert!(
+                response.ok && !response.fell_back.is_empty(),
+                "{response:?}"
+            );
+        }
+        let response = reload(ControlRequest::confirm_full_reload(vec![
+            "res://main.tscn".into(),
+        ]));
+        assert!(response.ok, "{response:?}");
+        let game = host.game.as_mut().unwrap();
+        game.set_read_timeout(Some(Duration::from_millis(50)))
+            .unwrap();
+        assert!(
+            game.read(&mut [0]).is_err(),
+            "fallback/confirmation sent frames"
+        );
+
+        for (kind, marker) in [("Node", 2), ("Node2D", 3)] {
+            if kind == "Node2D" {
+                // Unsupported edits of an already-baselined child also remain pending
+                // until the launch scene's deep reload is confirmed.
+                fs::write(&child, scene.replace("Node", "Node2D")).unwrap();
+                for _ in 0..2 {
+                    let response = reload(request());
+                    assert!(
+                        response.ok && !response.fell_back.is_empty(),
+                        "{response:?}"
+                    );
+                }
+                assert!(
+                    reload(ControlRequest::confirm_full_reload(vec![
+                        "res://main.tscn".into()
+                    ]))
+                    .ok
+                );
+                assert!(game.read(&mut [0]).is_err(), "confirmation sent frames");
+            }
+            fs::write(
+                &child,
+                scene
+                    .replace("Node", kind)
+                    .replace("marker = 1", &format!("marker = {marker}")),
+            )
+            .unwrap();
+            let response = reload(request());
+            assert!(response.ok && response.fell_back.is_empty(), "{response:?}");
+            assert_eq!(response.ops_applied, Some(1));
+            for expected in [
+                "scene:live_set_root",
+                "scene:live_node_path",
+                "scene:live_node_prop",
+            ] {
+                assert_eq!(
+                    variant::peek_command(&read_frame_body(game)).as_deref(),
+                    Some(expected)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn full_reload_confirmation_skips_unavailable_baselines_without_frames() {
+        let mut host = TestHost::start("unavailable-baseline");
+        let reload =
+            |request| send_control_request(host.control_port, "session-secret", &request).unwrap();
+        let response = reload(ControlRequest::confirm_full_reload(vec![
+            "uid://abc".into(),
+        ]));
+        assert!(response.ok, "UID confirmation failed: {response:?}");
+        let scene =
+            "[gd_scene format=3]\n[node name=\"Child\" type=\"Node\"]\nmetadata/marker = 1\n";
+        for (path, contents) in [
+            ("res://missing.scn", None),
+            ("res://binary.scn", Some(b"RSRC\xff\x00".as_slice())),
+            ("res://invalid.tscn", Some(b"not a scene".as_slice())),
+        ] {
+            let file = host.dir.join(path.strip_prefix("res://").unwrap());
+            fs::write(&file, scene).unwrap();
+            assert!(reload(ControlRequest::confirm_full_reload(vec![path.into()])).ok);
+            if let Some(contents) = contents {
+                fs::write(&file, contents).unwrap();
+            } else {
+                fs::remove_file(&file).unwrap();
+            }
+            let response = reload(ControlRequest::confirm_full_reload(vec![path.into()]));
+            assert!(response.ok, "{path} confirmation failed: {response:?}");
+            // Restoring readable text must not resurrect the stale pre-reload snapshot.
+            fs::write(&file, scene.replace("marker = 1", "marker = 2")).unwrap();
+            let response = reload(ControlRequest::reload_structure(vec![path.into()]));
+            assert!(
+                response.ok && !response.fell_back.is_empty(),
+                "stale {path} baseline: {response:?}"
+            );
+            assert_eq!(response.ops_applied, Some(0));
+        }
+        let game = host.game.as_mut().unwrap();
+        game.set_read_timeout(Some(Duration::from_millis(50)))
+            .unwrap();
+        assert!(
+            game.read(&mut [0]).is_err(),
+            "confirmation/fallback sent frames"
+        );
+    }
+
+    #[test]
+    fn host_bounds_trickling_control_reads() {
+        let host = TestHost::start("control-trickle");
+        let mut control = TcpStream::connect(("127.0.0.1", host.control_port)).unwrap();
+        control
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut trickler = control.try_clone().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_writer = Arc::clone(&stop);
+        let handle = std::thread::spawn(move || {
+            while !stop_writer.load(Ordering::SeqCst) && trickler.write_all(b" ").is_ok() {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+        });
+        let result = control.read(&mut [0]);
+        stop.store(true, Ordering::SeqCst);
+        let _ = control.shutdown(Shutdown::Both);
+        handle.join().unwrap();
+        assert!(
+            matches!(result, Ok(0))
+                || matches!(&result, Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset),
+            "unterminated trickle must be closed within 3s: {result:?}"
+        );
+        assert!(
+            send_control_request(
+                host.control_port,
+                "session-secret",
+                &ControlRequest::status()
+            )
+            .unwrap()
+            .ok
+        );
+    }
+
+    #[test]
+    fn host_rejects_oversized_control_messages() {
+        let host = TestHost::start("control-size");
+        let mut control = TcpStream::connect(("127.0.0.1", host.control_port)).unwrap();
+        control
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        control
+            .set_write_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let payload = format!(
+            "{{\"op\":\"status\",\"token\":\"session-secret\",\"padding\":\"{}\"}}\n",
+            "x".repeat(1024 * 1024)
+        );
+        let _ = control.write_all(payload.as_bytes());
+        let result = control.read(&mut [0]);
+        assert!(
+            matches!(result, Ok(0))
+                || matches!(&result, Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset),
+            "oversized control request must close without dispatch: {result:?}"
+        );
+    }
+
+    #[test]
+    fn host_exits_and_releases_listeners_when_game_closes() {
+        let host = TestHost::start("game-close");
+        host.game
+            .as_ref()
+            .unwrap()
+            .shutdown(Shutdown::Both)
+            .unwrap();
+        assert!(
+            host.exited_within(Duration::from_secs(1)),
+            "host must exit within 1s of game disconnect"
+        );
+        for port in [host.dbg_port, host.control_port] {
+            assert!(
+                TcpListener::bind(("127.0.0.1", port)).is_ok(),
+                "listener {port} still bound after game disconnect"
+            );
+        }
+    }
+
+    #[test]
+    fn host_bounds_writes_to_nonreading_game() {
+        let host = TestHost::start("game-write");
+        let scene = format!(
+            "[gd_scene format=3]\n[node name=\"Main\" type=\"Node\"]\nmetadata/large = \"{}\"\n",
+            "x".repeat(8 * 1024 * 1024)
+        );
+        fs::write(host.dir.join("main.tscn"), scene).unwrap();
+        let mut control = TcpStream::connect(("127.0.0.1", host.control_port)).unwrap();
+        control
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        control.write_all(b"{\"op\":\"reload_structure\",\"paths\":[\"res://main.tscn\"],\"token\":\"session-secret\"}\n").unwrap();
+        let mut line = String::new();
+        BufReader::new(control)
+            .read_line(&mut line)
+            .expect("stalled game write must return a response within 5s");
+        let response: ControlResponse = serde_json::from_str(&line).unwrap();
+        assert!(
+            !response.ok,
+            "stalled write unexpectedly succeeded: {response:?}"
+        );
+        assert!(response.error.unwrap().starts_with("write_failed:"));
+        assert!(
+            host.exited_within(Duration::from_secs(1)),
+            "host must exit after terminal game write failure"
+        );
+    }
 
     #[test]
     fn control_request_serialization_round_trips() {
@@ -667,6 +1147,7 @@ mod tests {
         ));
         let _ = fs::create_dir_all(&dir);
         let record_path = dir.join("debug_host.json");
+        write_test_token(&dir);
         let host = DebugHost::bind(&DebugHostConfig {
             record_path,
             log_path: None,
@@ -719,6 +1200,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("gqa-debug-host-test-{}", std::process::id()));
         let _ = fs::create_dir_all(&dir);
         let record_path = dir.join("debug_host.json");
+        write_test_token(&dir);
         let host = DebugHost::bind(&DebugHostConfig {
             record_path: record_path.clone(),
             log_path: None,
@@ -754,6 +1236,7 @@ mod tests {
         )
         .unwrap();
 
+        write_test_token(&dir);
         let host = DebugHost::bind(&DebugHostConfig {
             record_path: dir.join("debug_host.json"),
             log_path: None,
@@ -793,6 +1276,7 @@ mod tests {
 
         let response = send_control_request(
             control_port,
+            "session-secret",
             &ControlRequest::reload_structure(vec!["res://main.tscn".to_string()]),
         )
         .expect("control request");

@@ -165,21 +165,24 @@ fn encode_float_variant(out: &mut Vec<u8>, value: f64) {
 
 /// Encode a `NodePath` Variant (marshalls.cpp:1482). Header word `u32(name_count |
 /// 0x80000000)`, `u32 subname_count`, `u32 flags`(bit0=absolute), then each name/subname
-/// as `u32 len` + utf8 + pad-to-4 (no trailing NUL). We only generate name segments
-/// (no `:subname`s). `"."` parses to a single name `"."` (node_path.cpp), which
-/// `get_node` resolves to the node itself.
+/// as `u32 len` + utf8 + pad-to-4 (no trailing NUL). Slash-separated node names
+/// precede colon-separated property subnames. `"."` is a single self name.
 fn encode_node_path_variant(out: &mut Vec<u8>, path: &str) {
     write_u32(out, TYPE_NODE_PATH);
     let absolute = path.starts_with('/');
-    let names: Vec<&str> = path
+    let mut parts = path.split(':');
+    let names: Vec<&str> = parts
+        .next()
+        .unwrap_or_default()
         .trim_start_matches('/')
         .split('/')
         .filter(|segment| !segment.is_empty())
         .collect();
+    let subnames: Vec<&str> = parts.filter(|segment| !segment.is_empty()).collect();
     write_u32(out, (names.len() as u32) | 0x8000_0000);
-    write_u32(out, 0); // subname_count
+    write_u32(out, subnames.len() as u32);
     write_u32(out, u32::from(absolute));
-    for name in names {
+    for name in names.into_iter().chain(subnames) {
         encode_string_payload(out, name);
     }
 }
@@ -693,6 +696,64 @@ mod tests {
         expected.extend_from_slice(&3u32.to_le_bytes()); // "HUD"
         expected.extend_from_slice(b"HUD\0");
         assert_eq!(out, expected);
+    }
+
+    fn node_path_subname_cases() -> [(&'static str, u32, u32); 7] {
+        [
+            ("Sprite:position", 1, 1),
+            ("Sprite:position:x", 1, 2),
+            ("../Sprite:position:x", 2, 2),
+            ("/root/Sprite:position:x", 2, 2),
+            (":position:x", 0, 2),
+            ("/", 0, 0),
+            ("", 0, 0),
+        ]
+    }
+
+    #[test]
+    fn node_path_preserves_name_and_subname_counts() {
+        for (path, names, subnames) in node_path_subname_cases() {
+            let bytes = value_bytes(&GodotValue::NodePath(path.to_string()));
+            assert_eq!(read_u32(&bytes, 4), Some(names | 0x8000_0000), "{path}");
+            assert_eq!(read_u32(&bytes, 8), Some(subnames), "{path}");
+            assert_eq!(
+                read_u32(&bytes, 12),
+                Some(u32::from(path.starts_with('/'))),
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "requires Godot 4; run under Gamescope with --ignored"]
+    fn node_path_subnames_round_trip_through_godot() {
+        use std::{fs, process::Command};
+        let root = std::env::temp_dir().join(format!("gqa-nodepath-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("project.godot"), "config_version=5\n").unwrap();
+        fs::write(
+            root.join("round_trip.gd"),
+            include_str!("../tests/fixtures/node_path_round_trip.gd"),
+        )
+        .unwrap();
+        let cases: Vec<_> = node_path_subname_cases().into_iter().map(|(path, names, subnames)| {
+            serde_json::json!({"path": path, "names": names, "subnames": subnames, "bytes": value_bytes(&GodotValue::NodePath(path.to_string()))})
+        }).collect();
+        fs::write(root.join("cases.json"), serde_json::to_vec(&cases).unwrap()).unwrap();
+        let output = Command::new(std::env::var_os("GODOT_BIN").unwrap_or_else(|| "godot".into()))
+            .args(["--headless", "--quit-after", "60", "--path"])
+            .arg(&root)
+            .args(["--script", "res://round_trip.gd"])
+            .output()
+            .expect("Godot 4 is required for NodePath acceptance");
+        let _ = fs::remove_dir_all(root);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stdout}\n{stderr}");
+        assert!(
+            stdout.contains("NodePath round trips: 7 passed"),
+            "{stdout}\n{stderr}"
+        );
     }
 
     #[test]
