@@ -64,6 +64,8 @@ Installed versus active behavior:
 - An installed-but-inactive bridge should return structured `bridge_inactive` failures instead of pretending runtime QA is available.
 - Editor-only helpers may write project-level artifacts without activating the runtime bridge. `qa_editor_profiler.gd` registers editor controls and captures raw editor debugger profiler messages into `.qa/artifacts/editor-profiler/latest.json`; `godot-qa profile editor export --json` only reads and validates that artifact.
 
+The runtime assertion facade at `qa_assertions_impl.gd` preserves command dispatch and shared target/error helpers. It delegates state observation and provider reads to `qa_assertions_state.gd`, temporal assertions and sampling to `qa_assertions_temporal.gd`, rendered-pixel evidence to `qa_assertions_visual.gd`, and surface probes/matches to `qa_assertions_surface.gd`. These helpers read shared state through a weak reference to the facade; the public `qa_assertions.gd` entry point and runtime response contracts stay unchanged.
+
 ### 3. Scenario runner
 
 The scenario runner makes interactions reproducible.
