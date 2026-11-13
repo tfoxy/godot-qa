@@ -117,12 +117,19 @@ static func _json_safe_value(value: Variant) -> Variant:
 			return items
 		TYPE_DICTIONARY:
 			var result := {}
+			var original_keys := {}
 			var keys: Array[String] = []
 			for key in (value as Dictionary).keys():
-				keys.append(str(key))
+				var output_key := str(key)
+				# Preserve string keys on collision; otherwise keep the first entry.
+				if not original_keys.has(output_key):
+					keys.append(output_key)
+					original_keys[output_key] = key
+				elif typeof(key) == TYPE_STRING:
+					original_keys[output_key] = key
 			keys.sort()
 			for key in keys:
-				result[key] = _json_safe_value((value as Dictionary).get(key))
+				result[key] = _json_safe_value((value as Dictionary)[original_keys[key]])
 			return result
 	return str(value)
 

@@ -4,6 +4,7 @@ extends RefCounted
 const SOURCE := "editor_script_functions"
 const CAPTURE_METHOD := "editor_debugger_raw_servers_profile"
 const MAX_RETAINED_FRAMES := 3000
+const DISCOVERY_INTERVAL_SECONDS := 1.0
 
 var _editor_interface = null
 var _debugger_plugin = null
@@ -14,6 +15,8 @@ var _aggregate_by_signature := {}
 var _frames: Array[Dictionary] = []
 var _warnings: Array[String] = []
 var _connected_debuggers := {}
+var _last_session_state := {}
+var _discovery_elapsed := 0.0
 var _last_artifact_path := ""
 var _last_frame_count := 0
 var _last_function_count := 0
@@ -54,7 +57,8 @@ func stop_and_export() -> void:
 func export_latest() -> void:
 	if _run_id == "":
 		_run_id = _make_run_id()
-	_connect_debug_data_sources()
+	if not _capture_active:
+		_connect_debug_data_sources()
 	if _connected_debuggers.is_empty():
 		_add_warning("editor_profiler.debug_data_unavailable")
 	var payload := _profile_payload(_last_export_reason if _last_export_reason != "" else "editor_profiler_export_latest")
@@ -70,8 +74,11 @@ func export_latest() -> void:
 	_last_function_count = int(payload.get("script_function_count", 0))
 
 
-func poll(_delta: float) -> void:
-	if _capture_active:
+func poll(delta: float) -> void:
+	if not _capture_active:
+		return
+	_discovery_elapsed += maxf(delta, 0.0)
+	if _debugger_session_state() != _last_session_state or _discovery_elapsed >= DISCOVERY_INTERVAL_SECONDS:
 		_connect_debug_data_sources()
 
 
@@ -84,10 +91,25 @@ func status_text() -> String:
 
 
 func _connect_debug_data_sources() -> void:
+	_discovery_elapsed = 0.0
+	_last_session_state = _debugger_session_state()
+	for instance_id in _connected_debuggers.keys():
+		if not is_instance_id_valid(instance_id):
+			_connected_debuggers.erase(instance_id)
 	var base_control = _editor_base_control()
 	if base_control == null:
 		return
 	_scan_for_debug_data(base_control)
+
+
+func _debugger_session_state() -> Dictionary:
+	var state := {}
+	if _debugger_plugin == null or not _debugger_plugin.has_method("active_session_ids"):
+		return state
+	for session_id in _debugger_plugin.call("active_session_ids"):
+		var session = _debugger_plugin.call("get_session", int(session_id)) if _debugger_plugin.has_method("get_session") else null
+		state[session_id] = session.call("is_active") if session != null and session.has_method("is_active") else false
+	return state
 
 
 func _scan_for_debug_data(node: Node) -> void:

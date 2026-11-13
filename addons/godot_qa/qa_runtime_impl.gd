@@ -6615,11 +6615,29 @@ func write_temporal_evidence(kind: String, target: String, payload: Dictionary) 
 	var temporal_dir := str(payload.get("temporal_dir", ""))
 	if temporal_dir == "":
 		temporal_dir = "user://qa_artifacts/temporal"
-	DirAccess.make_dir_recursive_absolute(temporal_dir)
 	var safe_target := target.replace(":", "_").replace("/", "_")
 	var file_path := "%s/%s_%s.json" % [temporal_dir, kind, safe_target]
+	var mkdir_error := DirAccess.make_dir_recursive_absolute(temporal_dir)
+	if mkdir_error != OK:
+		return _temporal_evidence_write_error(kind, target, temporal_dir, file_path, "mkdir", mkdir_error)
 	var file := FileAccess.open(file_path, FileAccess.WRITE)
-	if file != null:
-		file.store_string(JSON.stringify(payload, "	"))
-		file.close()
+	if file == null:
+		return _temporal_evidence_write_error(kind, target, temporal_dir, file_path, "open", FileAccess.get_open_error())
+	file.store_string(JSON.stringify(payload, "\t"))
+	file.flush()
+	var write_error := file.get_error()
+	file.close()
+	if write_error != OK:
+		return _temporal_evidence_write_error(kind, target, temporal_dir, file_path, "write", write_error)
 	return {"temporal_evidence": file_path, "temporal_dir": temporal_dir}
+
+
+func _temporal_evidence_write_error(kind: String, target: String, temporal_dir: String, path: String, operation: String, error_code: int) -> Dictionary:
+	return _error("artifact_write_failed", "temporal evidence could not be persisted", {
+		"command": "assert.observe_until" if kind == "observe_until" else "assert.temporal.%s" % kind,
+		"target": target,
+		"path": path,
+		"temporal_dir": temporal_dir,
+		"expected": "persisted temporal evidence JSON",
+		"actual": {"operation": operation, "error": error_code, "message": error_string(error_code)},
+	})

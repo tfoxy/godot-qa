@@ -808,7 +808,9 @@ func _assert_observe_until(params: Dictionary) -> Dictionary:
 				"sample_every_frames": int(window.get("sample_every_frames", 1)),
 				"first_matching_sample": sample.duplicate(true),
 			}
-			_attach_temporal_evidence("observe_until", target, params, success_payload)
+			var success_evidence_error := _attach_temporal_evidence("observe_until", target, params, success_payload)
+			if not success_evidence_error.is_empty():
+				return success_evidence_error
 			return _ok(success_payload)
 	if first_late_sample == null:
 		first_late_sample = await _observe_until_first_late_sample(node, params, condition.get("condition", {}), window, target, str(resolution.get("resolved", "")))
@@ -829,7 +831,9 @@ func _assert_observe_until(params: Dictionary) -> Dictionary:
 		"expected": condition.get("expected", null),
 		"actual": last_actual,
 	}
-	_attach_temporal_evidence("observe_until", target, params, failure_payload)
+	var evidence_error := _attach_temporal_evidence("observe_until", target, params, failure_payload)
+	if not evidence_error.is_empty():
+		return evidence_error
 	return _error("observe_until_mismatch", "condition did not become true within the bounded window", failure_payload)
 
 
@@ -882,7 +886,7 @@ func _observe_until_sample_payload(node: Node, params: Dictionary, condition: Di
 		var exists := node is Object and _has_property(node, property)
 		var value = (node as Object).get(property) if exists else null
 		var operator := str(condition.get("operator", "equals"))
-		var actual_payload := {"path": property, "operator": operator, "expected": condition.get("expected", null), "actual": value, "present": exists}
+		var actual_payload := {"path": property, "operator": operator, "expected": condition.get("expected", null), "actual": _observe_until_finite_evidence(QaSnapshot._json_safe_value(value)), "present": exists}
 		var matched := false
 		if operator == "present":
 			matched = exists
@@ -942,6 +946,23 @@ func _observe_until_sample_payload(node: Node, params: Dictionary, condition: Di
 		sample["matched"] = mismatches.is_empty()
 		return {"ok": true, "sample": sample}
 	return _error("invalid_assertion_args", "observe_until condition type is unsupported", {"command": "assert.observe_until", "actual": condition_type})
+
+
+func _observe_until_finite_evidence(value: Variant) -> Variant:
+	match typeof(value):
+		TYPE_FLOAT:
+			return value if is_finite(value) else str(value)
+		TYPE_ARRAY:
+			var items: Array = []
+			for item in value:
+				items.append(_observe_until_finite_evidence(item))
+			return items
+		TYPE_DICTIONARY:
+			var result := {}
+			for key in value:
+				result[key] = _observe_until_finite_evidence(value[key])
+			return result
+	return value
 
 
 func _observe_until_first_late_sample(node: Node, params: Dictionary, condition: Dictionary, window: Dictionary, target: String, resolved: String) -> Variant:
@@ -1548,7 +1569,9 @@ func _assert_temporal_max_delta_position(params: Dictionary) -> Dictionary:
 	if peak_delta <= max_delta:
 		return _ok({"target": target, "resolved": resolution.get("resolved", ""), "window": _window_payload(window), "max": max_delta, "actual_max_delta": peak_delta, "failing_sample": null})
 	var failure_payload := {"target": target, "resolved": resolution.get("resolved", ""), "window": _window_payload(window), "expected": {"max": max_delta, "window": _window_payload(window)}, "actual": {"max": peak_delta, "sample": peak_sample}, "sample": peak_sample_payload, "expected_max_delta": max_delta, "actual_max_delta": peak_delta, "failing_sample": peak_sample, "samples": _nearby_samples(samples, peak_sample, _evidence_context(params))}
-	_attach_temporal_evidence("max_delta_position", target, params, failure_payload)
+	var evidence_error := _attach_temporal_evidence("max_delta_position", target, params, failure_payload)
+	if not evidence_error.is_empty():
+		return evidence_error
 	return _error("max_delta_position_mismatch", "target exceeded max displacement bound", failure_payload)
 
 
@@ -1593,7 +1616,9 @@ func _assert_temporal_follows(params: Dictionary) -> Dictionary:
 	if peak_offset_error <= tolerance:
 		return _ok({"leader": leader_target, "follower": follower_target, "window": _window_payload(window), "tolerance": tolerance, "actual_max_error": peak_offset_error, "failing_sample": null})
 	var failure_payload := {"leader": leader_target, "follower": follower_target, "target": follower_target, "window": _window_payload(window), "expected": {"tolerance": tolerance, "window": _window_payload(window)}, "actual": {"max_error": peak_offset_error, "sample": peak_sample}, "sample": peak_sample_payload, "expected_tolerance": tolerance, "actual_max_error": peak_offset_error, "failing_sample": peak_sample, "samples": _nearby_samples(samples, peak_sample, _evidence_context(params))}
-	_attach_temporal_evidence("follows", "%s_%s" % [leader_target, follower_target], params, failure_payload)
+	var evidence_error := _attach_temporal_evidence("follows", "%s_%s" % [leader_target, follower_target], params, failure_payload)
+	if not evidence_error.is_empty():
+		return evidence_error
 	return _error("follows_mismatch", "follower exceeded follow tolerance", failure_payload)
 
 
@@ -1645,7 +1670,9 @@ func _assert_temporal_never(params: Dictionary) -> Dictionary:
 				var failing_sample_payload := (samples[failing_sample - 1] as Dictionary).duplicate(true)
 				var failure_payload := {"target": target, "source": source_name, "field": field_name, "forbidden": forbidden, "window": _window_payload(window), "expected": {"never": forbidden, "source": source_name, "field": field_name, "window": _window_payload(window)}, "actual": {"value": value, "sample": failing_sample}, "sample": failing_sample_payload, "failing_sample": failing_sample, "samples": _nearby_samples(samples, failing_sample, _evidence_context(params))}
 				failure_payload.merge(observation_payload)
-				_attach_temporal_evidence("never", target, params, failure_payload)
+				var evidence_error := _attach_temporal_evidence("never", target, params, failure_payload)
+				if not evidence_error.is_empty():
+					return evidence_error
 				return _error("never_mismatch", "target entered a forbidden value", failure_payload)
 	var success_payload := {"target": target, "source": source_name, "field": field_name, "forbidden": forbidden, "window": _window_payload(window), "failing_sample": null}
 	success_payload.merge(observation_payload)
@@ -1664,8 +1691,8 @@ func _assert_temporal_within_limits(params: Dictionary) -> Dictionary:
 	var window := _temporal_window(params, target)
 	if not bool(window.get("ok", false)):
 		return window
-	if min_value > max_value:
-		return _error("invalid_bounds", "within_limits min must be less than or equal to max", {"target": target, "expected": "min <= max", "actual": {"min": min_value, "max": max_value}})
+	if not is_finite(min_value) or not is_finite(max_value) or min_value > max_value:
+		return _error("invalid_bounds", "within_limits bounds must be finite with min less than or equal to max", {"command": "assert.temporal.within_limits", "target": target, "expected": "finite min <= max", "actual": {"min": min_value if is_finite(min_value) else str(min_value), "max": max_value if is_finite(max_value) else str(max_value)}})
 	var node: Node = null
 	var anchor: Variant = null
 	if not observes_state:
@@ -1682,13 +1709,15 @@ func _assert_temporal_within_limits(params: Dictionary) -> Dictionary:
 		if not bool(value_result.get("ok", false)):
 			return value_result
 		var value := float(value_result.get("value", 0.0))
-		var sample := {"sample": int(window.get("sample", 0)), "frame": Engine.get_process_frames(), "time_msec": Time.get_ticks_msec(), "field": value_result.get("field", field), "value": value}
+		var sample := {"sample": int(window.get("sample", 0)), "frame": Engine.get_process_frames(), "time_msec": Time.get_ticks_msec(), "field": value_result.get("field", field), "value": value if is_finite(value) else str(value)}
 		samples.append(sample)
-		if value < min_value or value > max_value:
+		if not is_finite(value) or value < min_value or value > max_value:
 			var failing_sample := int(sample.get("sample", 0))
-			var failure_payload := {"target": target, "field": value_result.get("field", field), "window": _window_payload(window), "expected": {"min": min_value, "max": max_value, "field": value_result.get("field", field), "window": _window_payload(window)}, "actual": {"value": value, "sample": failing_sample}, "sample": sample.duplicate(true), "failing_sample": failing_sample, "samples": _nearby_samples(samples, failing_sample, _evidence_context(params))}
+			var failure_payload := {"command": "assert.temporal.within_limits", "target": target, "field": value_result.get("field", field), "window": _window_payload(window), "expected": {"min": min_value, "max": max_value, "field": value_result.get("field", field), "window": _window_payload(window)}, "actual": {"value": sample.get("value"), "sample": failing_sample}, "sample": sample.duplicate(true), "failing_sample": failing_sample, "samples": _nearby_samples(samples, failing_sample, _evidence_context(params))}
 			failure_payload.merge(observation_payload)
-			_attach_temporal_evidence("within_limits", target, params, failure_payload)
+			var evidence_error := _attach_temporal_evidence("within_limits", target, params, failure_payload)
+			if not evidence_error.is_empty():
+				return evidence_error
 			return _error("within_limits_mismatch", "target value left configured limits", failure_payload)
 	var success_payload := {"target": target, "field": field, "window": _window_payload(window), "min": min_value, "max": max_value, "failing_sample": null}
 	success_payload.merge(observation_payload)
@@ -1803,7 +1832,9 @@ func _assert_temporal_trend(params: Dictionary) -> Dictionary:
 		actual_payload["step_delta"] = failing_step_delta
 		payload["sample"] = _nearby_samples(samples, failing_sample, 0)
 	payload["actual"] = actual_payload
-	_attach_temporal_evidence("trend", target, params, payload)
+	var evidence_error := _attach_temporal_evidence("trend", target, params, payload)
+	if not evidence_error.is_empty():
+		return evidence_error
 	return _error("trend_mismatch", "sampled series did not follow the required trend", payload)
 
 
@@ -1827,25 +1858,33 @@ func _assert_temporal_frame_time(params: Dictionary) -> Dictionary:
 	var cadence := max(int(window.get("sample_every_frames", 1)), 1)
 	var samples: Array = []
 	var frame_times_ms: Array = []
+	var total_ms := 0.0
+	var total_frames := 0
 	var last_usec := Time.get_ticks_usec()
 	while _temporal_should_sample(window):
-		await _advance_temporal_sample(window)
+		var advanced_frames := await _advance_temporal_sample(window)
 		var now_usec := Time.get_ticks_usec()
-		var frame_ms := float(max(now_usec - last_usec, 0)) / 1000.0 / float(cadence)
+		var elapsed_ms := float(max(now_usec - last_usec, 0)) / 1000.0
+		var frame_ms := elapsed_ms / float(advanced_frames)
 		last_usec = now_usec
-		frame_times_ms.append(frame_ms)
+		total_ms += elapsed_ms
+		total_frames += advanced_frames
+		frame_times_ms.append({"ms": frame_ms, "frames": advanced_frames})
 		samples.append({"sample": int(window.get("sample", 0)), "frame": Engine.get_process_frames(), "frame_time_ms": frame_ms})
 	if frame_times_ms.is_empty():
 		return _error("invalid_window", "frame_time window produced no samples", {"expected": "window producing >= 1 sample", "actual": 0})
-	var total_ms := 0.0
-	for frame_ms in frame_times_ms:
-		total_ms += float(frame_ms)
 	var sorted_times := frame_times_ms.duplicate()
-	sorted_times.sort()
-	var avg_ms := total_ms / float(frame_times_ms.size())
-	var p95_index := clampi(int(ceil(0.95 * float(sorted_times.size()))) - 1, 0, sorted_times.size() - 1)
-	var p95_ms := float(sorted_times[p95_index])
-	var max_ms := float(sorted_times[sorted_times.size() - 1])
+	sorted_times.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a.ms) < float(b.ms))
+	var avg_ms := total_ms / float(total_frames)
+	var p95_rank := int(ceil(0.95 * float(total_frames)))
+	var cumulative_frames := 0
+	var p95_ms := 0.0
+	for interval in sorted_times:
+		cumulative_frames += int(interval.frames)
+		if cumulative_frames >= p95_rank:
+			p95_ms = float(interval.ms)
+			break
+	var max_ms := float(sorted_times.back().ms)
 	var min_fps_observed := (1000.0 / max_ms) if max_ms > 0.0001 else 1000000.0
 	var aggregates := {
 		"sample_count": frame_times_ms.size(),
@@ -1875,7 +1914,9 @@ func _assert_temporal_frame_time(params: Dictionary) -> Dictionary:
 	payload["expected"] = bounds.duplicate(true)
 	payload["actual"] = aggregates.duplicate(true)
 	payload["violations"] = violations
-	_attach_temporal_evidence("frame_time", "frame_time", params, payload)
+	var evidence_error := _attach_temporal_evidence("frame_time", "frame_time", params, payload)
+	if not evidence_error.is_empty():
+		return evidence_error
 	return _error("frame_time_mismatch", "frame timing exceeded configured bounds", payload)
 
 
@@ -2090,7 +2131,9 @@ func _assert_temporal_distance_changed(params: Dictionary) -> Dictionary:
 		"failing_sample": failing_sample,
 		"samples": _nearby_samples(samples, failing_sample, _evidence_context(params)),
 	}
-	_attach_temporal_evidence("distance_changed", "%s_%s" % [a, b], params, failure_payload)
+	var evidence_error := _attach_temporal_evidence("distance_changed", "%s_%s" % [a, b], params, failure_payload)
+	if not evidence_error.is_empty():
+		return evidence_error
 	return _error("distance_changed_mismatch", "distance changed less than the configured minimum", failure_payload)
 
 
@@ -3366,8 +3409,9 @@ func _temporal_should_sample(window: Dictionary) -> bool:
 	return int(window.get("remaining_frames", 0)) > 0
 
 
-func _advance_temporal_sample(window: Dictionary) -> void:
+func _advance_temporal_sample(window: Dictionary) -> int:
 	var cadence := max(int(window.get("sample_every_frames", 1)), 1)
+	var advanced_frames: int = cadence
 	var sampling: Dictionary = window.get("temporal_sampling", {})
 	var original_max_fps := Engine.max_fps
 	var original_physics_ticks_per_second := Engine.physics_ticks_per_second
@@ -3376,14 +3420,15 @@ func _advance_temporal_sample(window: Dictionary) -> void:
 		for _i in range(cadence):
 			await Engine.get_main_loop().process_frame
 	else:
-		var advance = min(cadence, int(window.get("remaining_frames", 0)))
-		for _i in range(advance):
+		advanced_frames = min(cadence, int(window.get("remaining_frames", 0)))
+		for _i in range(advanced_frames):
 			await Engine.get_main_loop().process_frame
-		window["remaining_frames"] = max(int(window.get("remaining_frames", 0)) - advance, 0)
+		window["remaining_frames"] = max(int(window.get("remaining_frames", 0)) - advanced_frames, 0)
 	if not sampling.is_empty():
 		Engine.max_fps = original_max_fps
 		Engine.physics_ticks_per_second = original_physics_ticks_per_second
 	window["sample"] = int(window.get("sample", 0)) + 1
+	return advanced_frames
 
 
 func _window_payload(window: Dictionary) -> Dictionary:
@@ -3678,7 +3723,7 @@ func _nearby_samples(samples: Array, failing_sample: int, context: int = 2) -> A
 	return nearby
 
 
-func _attach_temporal_evidence(kind: String, target: String, params: Dictionary, payload: Dictionary) -> void:
+func _attach_temporal_evidence(kind: String, target: String, params: Dictionary, payload: Dictionary) -> Dictionary:
 	var evidence_payload := payload.duplicate(true)
 	evidence_payload["kind"] = kind
 	if payload.has("window") and payload.get("window", {}) is Dictionary:
@@ -3688,8 +3733,10 @@ func _attach_temporal_evidence(kind: String, target: String, params: Dictionary,
 		if window_payload.has("cadence"):
 			evidence_payload["cadence"] = (window_payload.get("cadence", {}) as Dictionary).duplicate(true)
 	var artifacts = _runtime.write_temporal_evidence(kind, target, _merge_evidence_params(params, evidence_payload))
-	if artifacts is Dictionary:
-		payload["artifacts"] = (artifacts as Dictionary).duplicate(true)
+	if not bool(artifacts.get("ok", true)):
+		return artifacts
+	payload["artifacts"] = artifacts.duplicate(true)
+	return {}
 
 
 func _merge_evidence_params(params: Dictionary, payload: Dictionary) -> Dictionary:

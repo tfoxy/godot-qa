@@ -1224,6 +1224,14 @@ Temporal sampling rules:
 - QA method state conditions use `source`, `method`, and `matches`; `method` must identify a QA-prefixed/read-only state method returning JSON-compatible data, and `matches` maps dot-separated state paths such as `player.pending` or `status` to expected JSON-compatible values.
 - Malformed state paths, unresolved player-visible or QA state targets, multiple condition families, missing windows, negative windows, zero `sample_every_frames`, and non-JSON-compatible method results fail validation or runtime with structured negative payloads. `observe_until` must not pass by reading hidden debug labels when the configured target/source cannot be resolved.
 
+`within_limits` requires finite bounds (`invalid_bounds` otherwise) and rejects non-finite observations with `within_limits_mismatch`. Non-finite numbers are described as strings in failure evidence so the result remains valid JSON.
+
+Temporal evidence writes must succeed: directory creation, open, or write/flush errors return `artifact_write_failed`, identifying the assertion command, target, intended `path`, `temporal_dir`, expected persisted JSON, and the actual operation and engine error. Only successfully persisted artifacts are attached under `artifacts`; an otherwise matching `observe_until` fails if its evidence cannot be saved.
+
+For `observe_until` property conditions, native values are encoded for evidence using the snapshot serializer: `Vector2` becomes `[x, y]`, arrays/dictionaries are encoded recursively, and `Resource`/`Object` values use their string representation. Comparisons still use the original property value. Both returned samples and saved temporal evidence contain the encoded value.
+
+In this property evidence, non-finite floats are then recursively encoded as strings (`"nan"`, `"inf"`, `"-inf"`), including components of encoded `Vector2`/`Rect2` arrays and values nested in arrays/dictionaries. For example, a present float property containing `NAN` is recorded as `"nan"`, and `Vector2(INF, 4)` is recorded as `["inf", 4]`. This keeps returned samples and saved evidence valid JSON without changing snapshot encoding for other callers.
+
 ### State-expression observations (`within_limits`, `never`, `trend`)
 
 `within_limits`, `never`, and `trend` can observe a state-provider expression instead of a node property, using the same `source` vocabulary as `state_matches` and `wait_until`. Declaring `source` switches the observation; omitting it keeps the legacy node/property behavior.
@@ -1293,7 +1301,7 @@ assert:
 ```
 
 - At least one of `max_avg_ms`, `max_p95_ms`, `min_fps` is required; each must be a positive number.
-- Aggregates are computed from per-sample wall-clock deltas: `avg_ms`, `p95_ms` (95th percentile), `max_ms`, and `min_fps` (`1000 / max_ms`, the worst instantaneous frame). With `sample_every_frames > 1` each sample averages the elapsed time across its cadence, which smooths `p95_ms`/`min_fps`; keep the cadence at `1` for honest percentile/worst-frame bounds.
+- Aggregates are computed from per-sample wall-clock deltas: `avg_ms`, `p95_ms` (95th percentile), `max_ms`, and `min_fps` (`1000 / max_ms`, the worst instantaneous frame). With `sample_every_frames > 1` each sample averages the elapsed time across the frames actually advanced (including a shorter final interval). The average and percentile weight each interval by its advanced frame count. Interval averaging smooths `p95_ms`/`min_fps`; keep the cadence at `1` for honest percentile/worst-frame bounds.
 - The result payload echoes `bounds`, the `aggregates`, and a bounded sample series (capped at 32 entries, `omitted_samples` counts the rest); failures list the violated bounds under `violations` and fail with `frame_time_mismatch`.
 - **`frame_time` cannot be combined with `determinism.fixed_fps`.** Forced frame pacing makes wall-clock frame times meaningless (the run simulates a fixed delta while processing frames as fast as it can), so validation fails with `scenario_validation_failed`; drop `fixed_fps` or move the frame-rate gate into a separate perf scenario. `frame_time` also rejects assertion-local `temporal_sampling` and ignores scenario-level `determinism.temporal_sampling` for its own window, because retuning `Engine.max_fps`/physics ticks while measuring would corrupt the measurement.
 - Under the CLI's default fastest frame pacing (vsync disabled, frames processed back-to-back) `frame_time` measures per-frame processing cost rather than presented FPS — that is the useful perf signal, but expect lower `avg_ms` than a realtime run; declare `time_control` when you need realtime pacing.

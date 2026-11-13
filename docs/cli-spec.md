@@ -276,6 +276,8 @@ Workflow:
 4. Use `Start`, `Stop & Export`, or `Export Latest`.
 5. Run `godot-qa profile editor export --project <project> --json`.
 
+The editor helper discovers debugger nodes at capture start and when debugger session membership or activity changes. During capture, a fallback discovery scan runs at most once per second while existing signal connections continue collecting profiler data. Idle polling does not scan the editor tree; `Export Latest` also discovers sources when capture is idle.
+
 Successful JSON uses the standard result envelope:
 
 ```json
@@ -676,7 +678,9 @@ Saved scenario behavior for `observe_until`:
 - `observe_until` passes when a property, effective visibility state, or QA method state path becomes true within the configured `window_frames` or `window_seconds`.
 - Scenario-level `determinism.temporal_sampling` applies to temporal assertions and supported temporal waits for that scenario run; assertion-local `temporal_sampling` overrides it for that assertion.
 - Supported deterministic sampling modes are `fixed_delta`/`fixed_delta_seconds` and `max_frame_duration`/`max_frame_duration_seconds`. They are scoped to the QA run and do not change production gameplay timers outside scenario execution.
-- Failures include `condition`, `window`, `sample_every_frames`, `observed_samples`, `first_late_sample` when available, `why_no_match`, and `artifacts.temporal_evidence`.
+- Condition failures include `condition`, `window`, `sample_every_frames`, `observed_samples`, `first_late_sample` when available, `why_no_match`, and `artifacts.temporal_evidence` after successful persistence.
+- Temporal evidence directory creation, open, and write/flush errors return `artifact_write_failed` with the assertion command, target, intended `path`/`temporal_dir`, expected persisted JSON, and actual operation/engine error. This fails even an otherwise matching assertion; failed artifacts are not claimed.
+- `observe_until` property evidence encodes native values before returning or saving them: `Vector2` uses `[x, y]`, arrays/dictionaries recurse, and `Resource`/`Object` values use string representations. Non-finite floats, including encoded `Vector2`/`Rect2` components and nested array/dictionary values, become strings (`"nan"`, `"inf"`, `"-inf"`) so returned samples and saved evidence remain valid JSON. Comparisons continue to read the original value; snapshot encoding for other callers is unchanged.
 - S33 CLI aliases and exit-code semantics are unchanged; observe-until validation or assertion failures exit `1`, and CLI parse errors exit `2`.
 
 One-shot generated runtime behavior:
@@ -2657,6 +2661,8 @@ errors.json
 ```
 
 `snapshot` accepts the same `--target`, `--max-depth`, `--qa-only`, `--include-metadata`, `--metadata-key`, and `--metadata-keys` flags as `tree`. The snapshot directory and filenames remain stable (`screenshot.png`, `tree.json`, `ui.json`, `focus.json`, `errors.json`) whether the JSON evidence is full or filtered. Full unfiltered snapshots remain the compatibility and debugging path when no filter flags are supplied.
+
+Snapshot metadata dictionaries recursively stringify and sort keys while reading values by their original keys. If multiple keys stringify to the same name, a string key takes precedence regardless of insertion order; otherwise the first dictionary entry wins. For example, `{1: "one"}` becomes `{"1": "one"}`, while `{1: "integer", "1": "string"}` becomes `{"1": "string"}`.
 
 `logs` reads structured bridge/runtime entries from the live session and returns `entries` plus `next_cursor`. Raw Godot stdout/stderr still lives in the session-level `logs.txt` artifact.
 
