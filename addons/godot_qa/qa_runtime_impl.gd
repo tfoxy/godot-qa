@@ -662,6 +662,17 @@ static func clear_provider_registry() -> void:
 	_policy_providers.clear()
 
 
+# Release only this scene's registrations; autoload providers outlive swaps.
+static func release_scene_providers(scene: Node) -> void:
+	for registry in [_state_providers, _probe_providers, _fixture_drivers, _policy_providers]:
+		for provider_id in registry.keys():
+			var owner = registry[provider_id].get("owner")
+			if not is_instance_valid(owner):
+				registry.erase(provider_id)
+			elif owner is Node and (owner == scene or scene.is_ancestor_of(owner)):
+				registry.erase(provider_id)
+
+
 static func list_state_providers() -> Array[Dictionary]:
 	return _list_providers(_state_providers)
 

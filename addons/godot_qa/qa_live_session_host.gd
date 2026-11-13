@@ -7,6 +7,8 @@ const QaProtocol = preload("res://addons/godot_qa/qa_protocol.gd")
 ## are batch-global engine state the scenario executor snapshots and guards
 ## against contamination, so this host must never touch them.
 const IDLE_FRAME_DELAY_MSEC := 1
+const MAX_REQUEST_BYTES := 1024 * 1024
+const MAX_TCP_CONNECTIONS := 32
 
 ## Poll the file transport every Nth idle frame instead of every frame. The
 ## directory listing is the expensive part of an otherwise empty idle frame.
@@ -20,6 +22,7 @@ var _file_requests_dir := ""
 var _file_responses_dir := ""
 var _processed_file_requests := {}
 var _in_flight := 0
+var _tcp_connections := 0
 var _idle_frames := 0
 
 
@@ -79,9 +82,15 @@ func serve() -> void:
 ## increment can only disable the idle throttle (today's behavior), never
 ## throttle a live command, so this fails in the safe direction.
 func _track_connection(peer: StreamPeerTCP) -> void:
+	if _tcp_connections >= MAX_TCP_CONNECTIONS:
+		peer.put_data((JSON.stringify(QaProtocol.error("protocol_error", "live session connection limit reached", {"expected": {"max_connections": MAX_TCP_CONNECTIONS}, "actual": {"connections": _tcp_connections + 1}})) + "\n").to_utf8_buffer())
+		peer.disconnect_from_host()
+		return
+	_tcp_connections += 1
 	_in_flight += 1
 	await _handle_connection(peer)
 	_in_flight = maxi(_in_flight - 1, 0)
+	_tcp_connections -= 1
 
 
 ## Runs `_handle_file_request` while the host counts it as in flight.
@@ -92,9 +101,12 @@ func _track_file_request(file_name: String) -> void:
 
 
 func _handle_connection(peer: StreamPeerTCP) -> void:
-	var request_text := await _read_request_line(peer)
+	var read_result := await _read_request_line(peer)
+	var request_text := str(read_result.get("text", ""))
 	var response := {}
-	if request_text == "":
+	if not bool(read_result.get("ok", false)):
+		response = read_result.get("response", {})
+	elif request_text == "":
 		response = QaProtocol.error("protocol_error", "live session request was empty", {})
 	else:
 		var parser := JSON.new()
@@ -128,6 +140,11 @@ func _configure_file_transport(artifact_root: String) -> void:
 func _handle_file_transport() -> void:
 	if _file_requests_dir == "" or _bridge == null:
 		return
+	# A completed command is retried only at publication, even if the client
+	# has removed its request after timing out.
+	for file_name in _processed_file_requests.keys():
+		if _processed_file_requests[file_name] is Dictionary:
+			_publish_completed_file_request(file_name, _processed_file_requests[file_name])
 	var dir := DirAccess.open(_file_requests_dir)
 	if dir == null:
 		return
@@ -154,7 +171,7 @@ func _prune_processed_file_requests() -> void:
 		return
 	var stale: Array[String] = []
 	for file_name in _processed_file_requests:
-		if not FileAccess.file_exists("%s/%s" % [_file_requests_dir, file_name]):
+		if not _processed_file_requests[file_name] is Dictionary and not FileAccess.file_exists("%s/%s" % [_file_requests_dir, file_name]):
 			stale.append(file_name)
 	for file_name in stale:
 		_processed_file_requests.erase(file_name)
@@ -162,36 +179,61 @@ func _prune_processed_file_requests() -> void:
 
 func _handle_file_request(file_name: String) -> void:
 	var request_path := "%s/%s" % [_file_requests_dir, file_name]
-	var response_path := "%s/%s" % [_file_responses_dir, file_name]
-	var response_tmp_path := "%s.tmp" % response_path
 	var request := _read_json_file(request_path)
 	var response := {}
 	if request.is_empty():
 		response = QaProtocol.error("protocol_error", "live session file request was empty", {})
 	else:
 		response = await _bridge.handle_command(request)
-	_write_json_file(response_tmp_path, response)
-	var rename_error := DirAccess.rename_absolute(response_tmp_path, response_path)
-	if rename_error != OK:
-		_write_json_file(response_path, response)
+	var completed := {"response": response, "command": str(request.get("command", "")), "publication_error": {}}
+	_processed_file_requests[file_name] = completed
+	_publish_completed_file_request(file_name, completed)
+
+
+func _publish_completed_file_request(file_name: String, completed: Dictionary) -> void:
+	var request_path := "%s/%s" % [_file_requests_dir, file_name]
+	var response_path := "%s/%s" % [_file_responses_dir, file_name]
+	var response_tmp_path := "%s.tmp" % response_path
+	var write_error := _write_json_file(response_tmp_path, completed.response)
+	if write_error == OK:
+		write_error = DirAccess.rename_absolute(response_tmp_path, response_path)
+	if write_error != OK:
+		write_error = _write_json_file(response_path, completed.response)
+	if write_error != OK:
+		if (completed.publication_error as Dictionary).is_empty():
+			var details := {"code": "file_transport_publish_failed", "command": completed.command, "target": response_path, "request_path": request_path, "response_path": response_path, "expected": "persisted command response before request removal", "actual": {"error": write_error, "message": error_string(write_error)}}
+			completed.publication_error = details
+			_bridge.record_runtime_error("live file response publication failed; completed result retained for publication retry", "file_transport", details)
+		return
+	_processed_file_requests[file_name] = true
 	DirAccess.remove_absolute(request_path)
 
 
-func _read_request_line(peer: StreamPeerTCP) -> String:
-	var buffer := ""
+func _read_request_line(peer: StreamPeerTCP) -> Dictionary:
+	var buffer := PackedByteArray()
 	var started_at := Time.get_ticks_msec()
 	while Time.get_ticks_msec() - started_at < 5000:
 		peer.poll()
+		if peer.get_status() != StreamPeerTCP.STATUS_CONNECTED:
+			break
 		var available := peer.get_available_bytes()
 		if available > 0:
-			buffer += peer.get_utf8_string(available)
-			var newline_index := buffer.find("\n")
-			if newline_index != -1:
-				return buffer.substr(0, newline_index)
-		if peer.get_status() != StreamPeerTCP.STATUS_CONNECTED and available == 0:
-			break
+			# Read at most the remaining allowance plus one rejection byte. Only
+			# scan the new chunk, never the retained prefix of an incomplete line.
+			var read := peer.get_data(mini(available, MAX_REQUEST_BYTES - buffer.size() + 1))
+			if read[0] != OK:
+				break
+			var chunk: PackedByteArray = read[1]
+			var newline_index := chunk.find(10)
+			var line_bytes := newline_index + 1 if newline_index >= 0 else chunk.size()
+			if buffer.size() + line_bytes > MAX_REQUEST_BYTES:
+				return {"ok": false, "response": QaProtocol.error("protocol_error", "live session request exceeds byte limit", {"expected": {"max_request_bytes": MAX_REQUEST_BYTES}, "actual": {"request_bytes": buffer.size() + line_bytes}})}
+			if newline_index >= 0:
+				buffer.append_array(chunk.slice(0, newline_index))
+				return {"ok": true, "text": buffer.get_string_from_utf8()}
+			buffer.append_array(chunk)
 		await get_tree().process_frame
-	return buffer.strip_edges()
+	return {"ok": true, "text": buffer.get_string_from_utf8().strip_edges()}
 
 
 func _read_json_file(path: String) -> Dictionary:
@@ -205,8 +247,12 @@ func _read_json_file(path: String) -> Dictionary:
 	return parser.data
 
 
-func _write_json_file(path: String, payload: Dictionary) -> void:
+func _write_json_file(path: String, payload: Dictionary) -> Error:
 	var file := FileAccess.open(path, FileAccess.WRITE)
 	if file == null:
-		return
+		return FileAccess.get_open_error()
 	file.store_string(JSON.stringify(payload))
+	file.flush()
+	var write_error := file.get_error()
+	file.close()
+	return write_error

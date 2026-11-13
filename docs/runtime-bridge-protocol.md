@@ -95,6 +95,12 @@ The CLI adds the default 30-second queue-wait allowance to each command's execut
 
 Before connecting, the CLI uses checked duration conversion and limits the computed execution/transport allowance (including command grace, excluding queue wait) to 86,400 seconds. An unsupported allowance, such as `audio.capture` with `duration_seconds: 1e30`, returns the non-retryable host failure `session_timeout_invalid` with the command, session metadata path, `expected.max_timeout_seconds: 86400`, and `actual.timeout_seconds`. No request is transmitted. Reduce the duration or scenario timeout to resolve this failure.
 
+Command-scoped runtimes are torn down after dispatch, including early responses. Recorder replacement, scene input cleanup, and finished or rejected soak runs also release their runtime helpers.
+
+The live host admits at most 32 simultaneous TCP connections before authentication. Request lines are capped at 1 MiB including the newline, with a five-second read deadline; excess connections and oversized requests are closed without dispatch, with a `protocol_error` response when it can be delivered before closure. The reader scans newly received bytes only.
+
+If file response publication fails, the host records `file_transport_publish_failed` in runtime errors with command, request/response paths, expected persistence and the actual filesystem error. It retains the completed response in memory and keeps the request file, retrying publication without executing the command again. Recovery requires repairing the response directory while the session remains alive; successful publication then removes the request. A client timeout must not trigger mutation resubmission.
+
 An idle live session throttles its own serve loop: with no command in flight it sleeps about 1 ms per frame and polls the file transport only every 8th idle frame, so an idle session accepts a TCP command at most ~1 ms later and picks up a file-transport request at most ~8 ms later than before, while a session with a command in flight is never delayed and keeps polling every frame.
 
 ## Bootstrap behavior in S2
@@ -165,6 +171,8 @@ Success response data includes `command: "surface.audit_probe"`, the provider an
 ## Live session reload
 
 ### `session.reload_scene`
+
+Scene replacement validates and instantiates the requested scene before removing the current scene. A failed `session.change_scene` keeps the original scene path for status and subsequent reloads. On success, the old scene exits and releases its provider registrations before the replacement's `_ready`; providers owned by autoloads remain registered.
 
 Request:
 
@@ -679,6 +687,8 @@ The runtime bridge accepts additive temporal assertion commands:
 - `assert.temporal.never`
 - `assert.temporal.within_limits`
 - `assert.observe_until`
+
+Live temporal assertions, including `assert.temporal.trend` and `assert.temporal.frame_time`, write evidence to `<session artifacts_root>/temporal`. A supplied `temporal_dir` outside that root is rejected with `invalid_params`; a missing session artifact root returns `artifact_root_missing` before execution. Caller directories beneath the root are normalized to the controlled temporal directory.
 
 All temporal requests must include exactly one bounded window (`window_frames` or `window_seconds`) and may include `sample_every_frames` (default `1`). Requests may include `temporal_sampling` for assertion-local deterministic sampling; saved scenarios may also pass the scenario-level `determinism.temporal_sampling` setting through the same params object. Supported sampling modes are `fixed_delta` with `fixed_delta_seconds` and `max_frame_duration` with `max_frame_duration_seconds`.
 
@@ -1604,12 +1614,17 @@ Success:
         }
       }
     ],
-    "next_cursor": "3"
+    "next_cursor": "3",
+    "oldest_cursor": "3",
+    "truncated": false,
+    "dropped_entries": 0
   }
 }
 ```
 
-`logs.read` is intentionally scoped to structured QA/runtime entries. Raw engine stdout/stderr remains on disk in the session-level `logs.txt`.
+`logs.read` retains at most 2,048 structured QA/runtime entries in memory. Entry cursors and `next_cursor` increase monotonically for the bridge lifetime, independently of eviction. `since` is exclusive; omitted, empty or negative cursors read from zero. `oldest_cursor` identifies the first retained entry (or `next_cursor + 1` when empty). `truncated` is true when entries newer than the requested cursor have been evicted, and `dropped_entries` counts those missing entries. Reads at the oldest retained cursor minus one return the full window without truncation; reads at or beyond `next_cursor` return no entries. These fields are additive; `entries` and `next_cursor` retain their existing types.
+
+For example, with cursors `100` through `2147` retained, `since: "98"` returns the retained window with `oldest_cursor: "100"`, `next_cursor: "2147"`, `truncated: true` and `dropped_entries: 1`. Structured resource-activity summaries also cover this retained window. Raw engine stdout/stderr remains on disk in the session-level `logs.txt`.
 
 ### `record.export`
 

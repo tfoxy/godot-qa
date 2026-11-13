@@ -61,6 +61,10 @@ static func register_qa_id(node: Node, qa_id: String, aliases: Variant = null) -
 	return QaRuntimeImpl.register_qa_id(node, qa_id, aliases)
 
 
+static func release_scene_providers(scene: Node) -> void:
+	QaRuntimeImpl.release_scene_providers(scene)
+
+
 static func register_state_provider(provider_id: String, owner: Object, method_name: String, metadata: Dictionary = {}) -> Dictionary:
 	return QaRuntimeImpl.register_state_provider(provider_id, owner, method_name, metadata)
 

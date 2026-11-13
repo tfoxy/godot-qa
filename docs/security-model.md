@@ -23,9 +23,10 @@ Mitigations:
 
 - Random token.
 - On Unix, token files are created exclusively with owner-only (`0600`) permissions and atomically renamed into place, so new secrets are never briefly group/world-readable. Replacing a token repairs older file permissions; reading an existing token also restricts its permissions before reading. Windows retains its existing filesystem/ACL behavior.
-- Desktop file-transport fallback requests contain the token and use the same owner-only creation, including temporary files, before atomic publication. Completed or timed-out requests are removed.
+- Desktop file-transport fallback requests contain the token and use the same owner-only creation, including temporary files, before atomic publication. Requests are removed after successful response publication or client timeout. Failed publication retains the completed result in the live host for publication retry.
 - The hot-reload debug host reuses the session token. The CLI publishes it owner-only before spawning the sidecar; the sidecar reads `session.token` beside its metadata. Every control request, including status/ping, carries the token and is authenticated before dispatch. Absent or incorrect credentials return `unauthorized_control_request` and send no debugger frames. Tokens never appear in sidecar argv, metadata, or logs.
 - Debug-host control requests are limited to 1 MiB (including the newline) and a two-second total read deadline. Oversized, incomplete, or timed-out messages are closed without dispatch. Control replies are capped at 1 MiB and a ten-second total client read deadline. Game and control sockets use two-second write timeouts, and debugger frame batches have a two-second total write deadline. A terminal game disconnect or write failure ends the sidecar and releases its listeners; a pending control read is bounded by its deadline.
+- The live host caps unauthenticated TCP readers at 32 and request lines at 1 MiB (including newline), with a five-second read deadline and incremental newline scanning. Limit violations close the connection before dispatch (`protocol_error` when deliverable).
 - Port is random by default.
 - Only localhost binding.
 - Every live command is validated again inside Godot; the CLI is not trusted as the final authority.

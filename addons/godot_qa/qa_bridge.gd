@@ -25,6 +25,7 @@ const PROFILE_MONITORS := {
 	"MEMORY_STATIC_MAX": Performance.MEMORY_STATIC_MAX,
 }
 const MAX_TIME_SCALE := 64.0
+const MAX_SESSION_LOG_ENTRIES := 2048
 # Overlapping live commands wait their turn in a bounded FIFO queue instead of
 # being rejected outright. Only a saturated queue or an over-long wait falls
 # back to the compatible busy error (see _bridge_busy_error).
@@ -56,6 +57,7 @@ var _live_session := {}
 var _live_edit: RefCounted = null
 var _recorder: Node = null
 var _session_logs: Array[Dictionary] = []
+var _session_log_cursor := 0
 var _stop_requested := false
 var _soak: RefCounted = null
 var _bridge_command_in_progress := false
@@ -199,6 +201,20 @@ func configure_live_session(session_state: Dictionary) -> void:
 func _process(_delta: float) -> void:
 	if _soak != null and str(_soak.status) == "running":
 		_soak.sample()
+	_release_finished_soak_runtime()
+
+
+func _exit_tree() -> void:
+	if _soak != null and str(_soak.status) == "running":
+		_soak.stop()
+	_release_finished_soak_runtime()
+	_release_recorder()
+
+
+func _release_finished_soak_runtime() -> void:
+	if _soak != null and str(_soak.status) != "running" and _soak.runtime != null:
+		_soak.runtime.teardown()
+		_soak.runtime = null
 
 
 func _prepare_android_live_session() -> void:
@@ -567,6 +583,13 @@ func _bridge_busy_error(command_name: String, request_id: String, reason: String
 
 func _dispatch_authenticated_command(command: Dictionary, request_id: String, command_name: String) -> Dictionary:
 	var runtime := QaRuntime.new(_resolve_scene_root(), get_tree().get_root(), _runtime_errors, _held_actions, _held_keys)
+	var response: Dictionary = await _dispatch_with_runtime(command, request_id, command_name, runtime)
+	runtime.teardown()
+	_release_finished_soak_runtime()
+	return response
+
+
+func _dispatch_with_runtime(command: Dictionary, request_id: String, command_name: String, runtime: QaRuntime) -> Dictionary:
 	var params := command.get("params", {})
 	var live_session_enabled := not _live_session.is_empty()
 	if live_session_enabled and command_name == "session.status":
@@ -947,7 +970,15 @@ func _dispatch_authenticated_command(command: Dictionary, request_id: String, co
 	if live_session_enabled and _is_temporal_assert_command(command_name):
 		var temporal_params: Dictionary = params if params is Dictionary else {}
 		temporal_params = temporal_params.duplicate(true)
-		temporal_params["temporal_dir"] = "%s/temporal" % str(_live_session.get("artifacts_root", "user://qa_artifacts"))
+		var artifact_root := str(_live_session.get("artifacts_root", ""))
+		if artifact_root == "":
+			return QaProtocol.error("artifact_root_missing", "live temporal assertion requires a session artifact root", {"command": command_name, "target": temporal_params.get("target", "frame_time"), "expected": "session artifacts_root", "actual": "missing"}, request_id)
+		var requested_dir := str(temporal_params.get("temporal_dir", ""))
+		var absolute_root := ProjectSettings.globalize_path(artifact_root).simplify_path().trim_suffix("/")
+		var absolute_dir := ProjectSettings.globalize_path(requested_dir).simplify_path()
+		if requested_dir != "" and not absolute_dir.begins_with(absolute_root + "/"):
+			return QaProtocol.error("invalid_params", "temporal_dir must resolve beneath the session artifact root", {"command": command_name, "target": temporal_params.get("target", "frame_time"), "expected": absolute_root + "/", "actual": requested_dir, "artifacts_root": artifact_root}, request_id)
+		temporal_params["temporal_dir"] = "%s/temporal" % artifact_root
 		params = temporal_params
 	if live_session_enabled and _is_visual_assert_command(command_name):
 		var visual_params: Dictionary = params if params is Dictionary else {}
@@ -1299,7 +1330,6 @@ func _handle_session_change_scene(params: Variant, request_id: String) -> Dictio
 			},
 			request_id,
 		)
-	_live_session["scene"] = scene_path
 	return await _swap_live_scene(scene_path, "session.change_scene", request_id)
 
 
@@ -1319,6 +1349,7 @@ func _swap_live_scene(scene_path: String, command_name: String, request_id: Stri
 	var was_paused := tree.paused
 	var cleanup_runtime := QaRuntime.new(old_scene, tree.get_root(), _runtime_errors, _held_actions, _held_keys)
 	var input_cleanup_failures: Array = await cleanup_runtime.reset_input()
+	cleanup_runtime.teardown()
 	if not input_cleanup_failures.is_empty():
 		return QaProtocol.error(
 			"input_cleanup_failed",
@@ -1361,11 +1392,16 @@ func _swap_live_scene(scene_path: String, command_name: String, request_id: Stri
 			request_id,
 		)
 
+	if old_scene != null and is_instance_valid(old_scene):
+		# Exit hooks and scene-owned registrations must finish before _ready on
+		# the replacement can claim the same provider ids.
+		old_scene.get_parent().remove_child(old_scene)
+		QaRuntime.release_scene_providers(old_scene)
+		old_scene.free()
 	tree.get_root().add_child(new_scene)
 	tree.current_scene = new_scene
+	_live_session["scene"] = scene_path
 	var new_scene_path := str(new_scene.get_path())
-	if old_scene != null and is_instance_valid(old_scene):
-		old_scene.queue_free()
 	_runtime_errors.clear()
 	_live_edit = QaLiveEdit.new()
 	_reinitialize_recorder()
@@ -1520,10 +1556,12 @@ func _handle_soak_start(params: Variant, request_id: String) -> Dictionary:
 	var root := str(_live_session.get("artifacts_root", ""))
 	if root == "":
 		return QaProtocol.error("artifact_root_missing", "live session has no artifact root", {}, request_id)
+	_release_finished_soak_runtime()
 	_soak = QaSoak.new()
 	var state_runtime := QaRuntime.new(_resolve_scene_root(), get_tree().get_root(), _runtime_errors, _held_actions, _held_keys)
 	var result: Dictionary = _soak.start((params as Dictionary).get("spec", {}), state_runtime, root.path_join("profiles").path_join(id), id, "", Callable(), {"display_server": DisplayServer.get_name(), "vsync_mode": DisplayServer.window_get_vsync_mode(), "renderer": RenderingServer.get_current_rendering_method(), "rendering_driver": RenderingServer.get_current_rendering_driver_name(), "window_size": [DisplayServer.window_get_size().x, DisplayServer.window_get_size().y], "viewport_size": [get_viewport().get_visible_rect().size.x, get_viewport().get_visible_rect().size.y], "time_scale": Engine.time_scale, "max_fps": Engine.max_fps, "physics_ticks_per_second": Engine.physics_ticks_per_second, "pacing": "realtime", "instrumentation": "soak", "exclusions": ["warmup", "before_sampler_start", "after_sampler_stop"], "monitor_source": "cached_godot_performance", "monitor_every_frames": int((params as Dictionary).get("spec", {}).get("monitor_every_frames", 60))})
 	if not bool(result.get("ok", false)):
+		state_runtime.teardown()
 		_soak = null
 		return QaProtocol.error(str(result.get("type", "soak_start_failed")), "could not start soak", result, request_id)
 	return QaProtocol.ok(result, request_id)
@@ -1731,14 +1769,21 @@ func _engine_time_settings_snapshot() -> Dictionary:
 	}
 
 
-func _reinitialize_recorder() -> void:
+func _release_recorder() -> void:
 	if _recorder != null:
 		if _recorder.is_inside_tree():
 			var parent := _recorder.get_parent()
 			if parent != null:
 				parent.remove_child(_recorder)
+		var recorder_runtime: RefCounted = _recorder.get("_runtime")
+		if recorder_runtime != null:
+			recorder_runtime.teardown()
 		_recorder.queue_free()
 		_recorder = null
+
+
+func _reinitialize_recorder() -> void:
+	_release_recorder()
 	if not bool(_live_session.get("recorder_enabled", false)):
 		return
 	var tree := get_tree()
@@ -1806,25 +1851,32 @@ func _json_safe_value(value: Variant) -> Variant:
 	return str(value)
 
 func _record_log(level: String, event_name: String, message: String, data := {}) -> void:
+	_session_log_cursor += 1
 	var entry := {
-		"cursor": str(_session_logs.size() + 1),
+		"cursor": str(_session_log_cursor),
 		"level": level,
 		"event": event_name,
 		"message": message,
 		"data": data if data is Dictionary else {},
 	}
 	_session_logs.append(entry)
+	if _session_logs.size() > MAX_SESSION_LOG_ENTRIES:
+		_session_logs.pop_front()
 
 func _read_logs(since: String) -> Dictionary:
-	var start_index := 0
-	if since != "":
-		start_index = maxi(int(since), 0)
+	var requested_cursor := maxi(int(since), 0) if since != "" else 0
+	var oldest_cursor := _session_log_cursor - _session_logs.size() + 1
+	var dropped_entries := maxi(oldest_cursor - 1 - requested_cursor, 0)
+	var start_index := clampi(requested_cursor - oldest_cursor + 1, 0, _session_logs.size())
 	var entries: Array[Dictionary] = []
 	for index in range(start_index, _session_logs.size()):
 		entries.append((_session_logs[index] as Dictionary).duplicate(true))
 	return {
 		"entries": entries,
-		"next_cursor": str(_session_logs.size()),
+		"next_cursor": str(_session_log_cursor),
+		"oldest_cursor": str(oldest_cursor),
+		"truncated": dropped_entries > 0,
+		"dropped_entries": dropped_entries,
 	}
 
 
@@ -1848,7 +1900,7 @@ func _live_edit_protocol_response(command_name: String, result: Dictionary, requ
 
 
 func _is_temporal_assert_command(command_name: String) -> bool:
-	return command_name in ["assert.temporal.max_delta_position", "assert.temporal.follows", "assert.temporal.never", "assert.temporal.within_limits", "assert.temporal.distance_changed", "assert.observe_until"]
+	return command_name in ["assert.temporal.max_delta_position", "assert.temporal.follows", "assert.temporal.never", "assert.temporal.within_limits", "assert.temporal.distance_changed", "assert.temporal.trend", "assert.temporal.frame_time", "assert.observe_until"]
 
 
 func _is_visual_assert_command(command_name: String) -> bool:
